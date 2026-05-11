@@ -6,7 +6,11 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # FLEXIMOD
 
-FLEXIMOD models an industrial hybrid ETES + gas boiler plant participating sequentially in electricity markets. The MVP implements a Germany day-ahead case with a rule-based market strategy and a Pyomo rolling-horizon steam plant dispatch model.
+FlexIMOD stands for **Flexible Industrial Market-Oriented Dispatch Model**.
+
+It is a modelling framework for industrial energy systems that participate in electricity and flexibility markets. The goal is to represent industrial plants, their connected technologies, and their market-oriented dispatch decisions in a modular and extensible way.
+
+The current MVP uses a hybrid ETES + gas boiler steam plant as the first case study. This first case implements a Germany day-ahead market setup with a rule-based market strategy and a Pyomo rolling-horizon plant dispatch model. Future cases can extend the same structure to other industrial processes, technologies, countries, and market designs.
 
 The architecture is intentionally modular:
 
@@ -26,7 +30,7 @@ data/input/hybrid_ETES_DE/
 `-- forecasts_df.csv
 ```
 
-`plants.csv` groups technologies by plant name. For example, two rows with `name=plant_1` define the ETES storage and gas boiler attached to the same plant.
+`plants.csv` groups technologies by plant name. For example, two rows with `name=plant_1` define the ETES storage and gas boiler attached to the same industrial plant.
 
 `forecasts_df.csv` contains all time series. The DA-only MVP needs:
 
@@ -40,7 +44,7 @@ co2_price
 
 Heat demand is interpreted as average MW_th over the time step and is converted internally to MWh_th using `case.timestep_minutes`.
 
-## Run The DA-Only Case
+## Run The First DA-Only Case
 
 FLEXIMOD targets Python 3.13 or newer.
 
@@ -111,14 +115,14 @@ To activate later stages, set the relevant market block to `enabled: true` and p
 
 ## Pyomo Rolling Horizon
 
-The plant dispatch is deterministic rolling horizon:
+The plant dispatch is deterministic rolling horizon. In the first case:
 
 - solve a 48-hour Pyomo dispatch horizon;
 - implement the first 24 hours;
 - carry the ETES state of charge into the next solve;
 - repeat until the simulation period ends.
 
-The Pyomo model enforces heat balance, ETES state of charge, charge/discharge limits, gas boiler heat limits, and emergency unmet-heat slack with a high penalty.
+The Pyomo model enforces heat balance, technology limits, storage state of charge, and emergency unmet-demand slack with a high penalty. For the current ETES + gas boiler case, this includes ETES charge/discharge limits and gas boiler heat limits.
 
 The plant model follows a component/plant split similar to the reference ASSUME-style scripts:
 
