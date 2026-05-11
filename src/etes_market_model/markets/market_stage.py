@@ -4,10 +4,10 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class MarketStage(str, Enum):
+class MarketStage(StrEnum):
     DAY_AHEAD = "day_ahead"
     INTRADAY_CONTINUOUS = "intraday_continuous"
     AFRR_ENERGY = "afrr_energy"

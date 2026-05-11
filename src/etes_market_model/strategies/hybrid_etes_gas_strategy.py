@@ -8,14 +8,12 @@ import pandas as pd
 
 from etes_market_model.config.case_config import CaseConfig
 from etes_market_model.plants.steam_generation_plant import (
-    DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL,
     DispatchSignals,
     SteamGenerationPlant,
 )
 from etes_market_model.strategies.base_strategy import BaseStrategy
 
 GAS_PRICE_SIGNAL = "natural_gas_price"
-CO2_PRICE_SIGNAL = "co2_price"
 ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH = 0.0
 IDC_SELL_MARGIN_EUR_PER_MWH = 10.0
 IDC_BUY_MARGIN_EUR_PER_MWH = 10.0
@@ -28,7 +26,7 @@ class HybridETESGasStrategy(BaseStrategy):
         self.config = config
 
     def required_forecast_columns(self) -> set[str]:
-        return {GAS_PRICE_SIGNAL, CO2_PRICE_SIGNAL}
+        return {GAS_PRICE_SIGNAL}
 
     def decide_day_ahead(
         self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
@@ -45,10 +43,8 @@ class HybridETESGasStrategy(BaseStrategy):
         signals = DispatchSignals(
             electricity_price_col=price_col,
             gas_price_col=GAS_PRICE_SIGNAL,
-            co2_price_col=CO2_PRICE_SIGNAL,
             gas_benchmark_eur_per_mwh_th=benchmark,
             charge_allowed=charge_allowed,
-            co2_emission_factor_t_per_mwh_fuel=DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL,
         )
         return plant.solve_rolling(self.config, forecasts, signals)
 
@@ -82,12 +78,8 @@ class HybridETESGasStrategy(BaseStrategy):
         if plant.gas_boiler is None:
             raise ValueError(f"Plant '{plant.name}' has no gas boiler")
 
-        emission_factor = DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL
         gas_input_per_mwh_heat = 1.0 / plant.gas_boiler.efficiency
-        benchmark = (
-            forecasts[GAS_PRICE_SIGNAL].astype(float) * gas_input_per_mwh_heat
-            + forecasts[CO2_PRICE_SIGNAL].astype(float) * emission_factor * gas_input_per_mwh_heat
-        )
+        benchmark = forecasts[GAS_PRICE_SIGNAL].astype(float) * gas_input_per_mwh_heat
         benchmark.name = "gas_based_heat_benchmark_EUR_per_MWh_th"
         return benchmark
 

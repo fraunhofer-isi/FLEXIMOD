@@ -30,9 +30,9 @@ DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL = 0.0
 class DispatchSignals:
     electricity_price_col: str
     gas_price_col: str
-    co2_price_col: str
     gas_benchmark_eur_per_mwh_th: pd.Series
     charge_allowed: pd.Series
+    co2_price_col: str | None = None
     co2_emission_factor_t_per_mwh_fuel: float = DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL
 
 
@@ -192,7 +192,10 @@ class SteamGenerationPlant(BasePlant):
         heat_demand_mwh = forecasts[self.heat_demand_column].astype(float).to_numpy() * dt_hours
         electricity_price = forecasts[signals.electricity_price_col].astype(float).to_numpy()
         gas_price = forecasts[signals.gas_price_col].astype(float).to_numpy()
-        co2_price = forecasts[signals.co2_price_col].astype(float).to_numpy()
+        if signals.co2_price_col and signals.co2_price_col in forecasts.columns:
+            co2_price = forecasts[signals.co2_price_col].astype(float).to_numpy()
+        else:
+            co2_price = [0.0 for _ in steps]
         charge_allowed = signals.charge_allowed.astype(bool).reindex(forecasts.index).fillna(False)
 
         m.heat_demand = pyo.Param(m.T, initialize={t: heat_demand_mwh[t] for t in steps})
@@ -252,7 +255,8 @@ class SteamGenerationPlant(BasePlant):
         @m.Objective(sense=pyo.minimize)
         def objective(mm: pyo.ConcreteModel) -> pyo.Expression:
             return pyo.quicksum(
-                mm.electricity_cost[t] + mm.gas_cost[t] + mm.co2_cost[t] + mm.unmet_heat_penalty[t]
+                # CO2 cost is disabled for the first MVP and kept as a zero output column.
+                mm.electricity_cost[t] + mm.gas_cost[t] + mm.unmet_heat_penalty[t]
                 for t in mm.T
             )
 
@@ -276,6 +280,11 @@ class SteamGenerationPlant(BasePlant):
             gas_cost = _value(model.gas_cost[t])
             co2_cost = _value(model.co2_cost[t])
             unmet_penalty = _value(model.unmet_heat_penalty[t])
+            co2_price = (
+                float(forecasts[signals.co2_price_col].iloc[t])
+                if signals.co2_price_col and signals.co2_price_col in forecasts.columns
+                else 0.0
+            )
             row = {
                 "datetime": timestamp,
                 "plant_name": self.name,
@@ -284,10 +293,10 @@ class SteamGenerationPlant(BasePlant):
                     forecasts[signals.electricity_price_col].iloc[t]
                 ),
                 "gas_price_EUR_per_MWh": float(forecasts[signals.gas_price_col].iloc[t]),
-                "co2_price_EUR_per_t": float(forecasts[signals.co2_price_col].iloc[t]),
+                "co2_price_EUR_per_t": co2_price,
                 "day_ahead_price_signal": signals.electricity_price_col,
                 "gas_price_signal": signals.gas_price_col,
-                "co2_price_signal": signals.co2_price_col,
+                "co2_price_signal": signals.co2_price_col or "",
                 "gas_based_heat_benchmark_EUR_per_MWh_th": float(
                     signals.gas_benchmark_eur_per_mwh_th.iloc[t]
                 ),
@@ -302,7 +311,7 @@ class SteamGenerationPlant(BasePlant):
                 "gas_cost_EUR": gas_cost,
                 "co2_cost_EUR": co2_cost,
                 "unmet_heat_penalty_EUR": unmet_penalty,
-                "operating_cost_EUR": electricity_cost + gas_cost + co2_cost + unmet_penalty,
+                "operating_cost_EUR": electricity_cost + gas_cost + unmet_penalty,
                 "charge_allowed_by_strategy": bool(signals.charge_allowed.iloc[t]),
                 "solver": solver_name,
             }

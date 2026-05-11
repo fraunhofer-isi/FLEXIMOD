@@ -39,8 +39,10 @@ datetime
 plant_1_heat_demand
 DE_DA_price
 natural_gas_price
-co2_price
 ```
+
+CO2 cost is currently disabled in the active MVP objective and benchmark, so
+`co2_price` is optional for now.
 
 Heat demand is interpreted as average MW_th over the time step and is converted internally to MWh_th using `case.timestep_minutes`.
 
@@ -63,7 +65,7 @@ python scripts/run_case.py --case data/input/hybrid_ETES_DE
 Create plots from existing output files:
 
 ```bash
-python scripts/plot_case.py --example hybrid_etes_de
+python scripts/plot_case.py --case data/input/hybrid_ETES_DE --format png
 ```
 
 Outputs are written by the runner to `data/output/hybrid_ETES_DE/` by default:
@@ -75,6 +77,14 @@ storage_cost_ledger.csv
 summary_indicators.csv
 plots/
 ```
+
+The plotting command recalculates analytics from the output CSV files, refreshes
+`summary_indicators.csv`, and writes report-ready figures to
+`data/output/<case_name>/plots/`. The first plotting suite includes combined
+plant operation and storage dynamics, market prices and benchmark, electricity
+procurement, storage content by source market, a sample-day explanation figure,
+cost breakdown, heat supply share, electricity market share, and price-response
+plots.
 
 ## Pre-Commit Hooks
 
@@ -92,6 +102,13 @@ pre-commit run --all-files
 ```
 
 The configured hooks run REUSE SPDX annotation, Ruff linting and formatting, basic file hygiene checks, YAML/TOML checks, and codespell.
+
+## Documentation
+
+Additional documentation is available in:
+
+- [Modeling Philosophy And Architecture](docs/modeling_philosophy_and_architecture.md)
+- [Strategy Documentation](docs/strategies.md)
 
 ## Configuration Philosophy
 

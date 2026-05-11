@@ -16,7 +16,8 @@ from etes_market_model.ledgers.storage_cost_ledger import StorageCostLedger
 from etes_market_model.markets.market_stage import MarketStage
 from etes_market_model.plants.steam_generation_plant import SteamGenerationPlant
 from etes_market_model.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
-from etes_market_model.visualisation.plots import create_case_plots
+from flexi_mod.visualisation.analytics import calculate_summary_indicators
+from flexi_mod.visualisation.plots import create_case_plots
 
 
 @dataclass(frozen=True)
@@ -87,14 +88,24 @@ class SimulationRunner:
                 output_dir / "storage_cost_ledger.csv"
             )
 
-        summary = self._build_summary(dispatch_results)
+        summary = calculate_summary_indicators(
+            dispatch_results,
+            market_ledger=market_ledger.to_dataframe(),
+            storage_cost_ledger=storage_ledger.to_dataframe(),
+        )
         if self.output_options.save_summary_indicators:
             path = output_dir / "summary_indicators.csv"
             summary.to_csv(path, index=False)
             output_paths["summary_indicators"] = path
 
         if self.output_options.create_plots:
-            output_paths["plots"] = create_case_plots(dispatch_results, summary, output_dir)
+            output_paths["plots"] = create_case_plots(
+                dispatch_results,
+                summary,
+                output_dir,
+                market_ledger=market_ledger.to_dataframe(),
+                storage_cost_ledger=storage_ledger.to_dataframe(),
+            )
 
         return output_paths
 

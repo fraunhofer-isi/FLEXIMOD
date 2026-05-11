@@ -20,7 +20,18 @@ STORAGE_COST_LEDGER_COLUMNS = [
     "effective_heat_cost_EUR_per_MWh_th",
     "remaining_stored_heat_MWh",
     "weighted_average_storage_cost_EUR_per_MWh_th",
+    "remaining_stored_heat_day_ahead_MWh",
+    "remaining_stored_heat_IDC_MWh",
+    "remaining_stored_heat_afrr_energy_MWh",
+    "remaining_stored_heat_other_MWh",
 ]
+
+STORAGE_SOURCE_COLUMNS = {
+    "day_ahead": "remaining_stored_heat_day_ahead_MWh",
+    "intraday_continuous": "remaining_stored_heat_IDC_MWh",
+    "afrr_energy": "remaining_stored_heat_afrr_energy_MWh",
+    "other": "remaining_stored_heat_other_MWh",
+}
 
 
 class StorageCostLedger:
@@ -29,6 +40,7 @@ class StorageCostLedger:
     def __init__(self) -> None:
         self.rows = pd.DataFrame(columns=STORAGE_COST_LEDGER_COLUMNS)
         self._state_by_plant: dict[str, tuple[float, float]] = {}
+        self._source_inventory_by_plant: dict[str, dict[str, float]] = {}
 
     def record_storage_event(
         self,
@@ -41,6 +53,10 @@ class StorageCostLedger:
         remaining_stored_heat_mwh: float | None = None,
     ) -> None:
         previous_remaining, previous_average_cost = self._state_by_plant.get(plant_name, (0.0, 0.0))
+        source_inventory = self._source_inventory_by_plant.get(
+            plant_name,
+            {source: 0.0 for source in STORAGE_SOURCE_COLUMNS},
+        )
 
         added_cost = electricity_price_eur_per_mwh * electricity_volume_mwh
         inventory_after_charge = previous_remaining + stored_heat_added_mwh
@@ -61,10 +77,16 @@ class StorageCostLedger:
         if remaining <= 1e-12:
             weighted_average = 0.0
 
+        source = _normalise_source_market(source_market)
+        if stored_heat_added_mwh > 1e-12:
+            source_inventory[source] = source_inventory.get(source, 0.0) + stored_heat_added_mwh
+        source_inventory = _reconcile_source_inventory(source_inventory, remaining)
+
         effective_heat_cost = (
             added_cost / stored_heat_added_mwh if stored_heat_added_mwh > 1e-12 else pd.NA
         )
         self._state_by_plant[plant_name] = (remaining, weighted_average)
+        self._source_inventory_by_plant[plant_name] = source_inventory
 
         record = {
             "datetime": pd.Timestamp(datetime),
@@ -76,6 +98,10 @@ class StorageCostLedger:
             "effective_heat_cost_EUR_per_MWh_th": effective_heat_cost,
             "remaining_stored_heat_MWh": remaining,
             "weighted_average_storage_cost_EUR_per_MWh_th": weighted_average,
+            **{
+                column: float(source_inventory.get(source, 0.0))
+                for source, column in STORAGE_SOURCE_COLUMNS.items()
+            },
         }
         self.rows.loc[len(self.rows)] = record
 
@@ -110,3 +136,34 @@ class StorageCostLedger:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.rows.to_csv(path, index=False)
         return path
+
+
+def _normalise_source_market(source_market: str) -> str:
+    value = str(source_market).strip().lower()
+    if value in {"da", "day-ahead", "day_ahead"}:
+        return "day_ahead"
+    if value in {"idc", "intraday", "intraday_continuous"}:
+        return "intraday_continuous"
+    if value in {"afrr", "afrr_energy", "afrr energy"}:
+        return "afrr_energy"
+    if not value:
+        return "other"
+    return value if value in STORAGE_SOURCE_COLUMNS else "other"
+
+
+def _reconcile_source_inventory(
+    source_inventory: dict[str, float],
+    remaining_total_mwh: float,
+) -> dict[str, float]:
+    reconciled = {
+        source: max(float(source_inventory.get(source, 0.0)), 0.0)
+        for source in STORAGE_SOURCE_COLUMNS
+    }
+    current_total = sum(reconciled.values())
+    if remaining_total_mwh <= 1e-12:
+        return {source: 0.0 for source in STORAGE_SOURCE_COLUMNS}
+    if current_total <= 1e-12:
+        reconciled["other"] = remaining_total_mwh
+        return reconciled
+    scale = remaining_total_mwh / current_total
+    return {source: value * scale for source, value in reconciled.items()}

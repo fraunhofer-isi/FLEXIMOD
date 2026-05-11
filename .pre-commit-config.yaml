@@ -44,4 +44,4 @@ repos:
         additional_dependencies:
           - tomli
         types_or: [python, rst, markdown, yaml, toml]
-        files: ^(src|scripts|tests|README\.md|pyproject\.toml|\.pre-commit-config\.yaml|data/input/.*/config\.yaml)
+        files: ^(src|scripts|tests|docs|README\.md|pyproject\.toml|\.pre-commit-config\.yaml|data/input/.*/config\.yaml)

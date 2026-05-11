@@ -36,7 +36,7 @@ market_sequence:
 markets:
   day_ahead:
     enabled: true
-    product_resolution: "1h"
+    product_resolution: "15min"
     gate_close:
       day_relation: "D-1"
       time: "12:00"
