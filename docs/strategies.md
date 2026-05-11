@@ -38,8 +38,9 @@ decide_afrr_energy(...)
 decide_afrr_capacity(...)
 ```
 
-Only `decide_day_ahead` is implemented for the first MVP. The other stages are
-placeholders and should later respect fixed decisions from earlier markets.
+`decide_day_ahead` and the first `decide_intraday_continuous` implementation are
+available. aFRR energy and aFRR capacity remain placeholders and should later
+respect fixed decisions from earlier markets.
 
 ## First Implemented Strategy
 
@@ -60,7 +61,7 @@ It is designed for the first case study:
 ```text
 hybrid ETES + gas boiler steam plant
 Germany
-day-ahead market only
+day-ahead market with optional intraday continuous adjustment
 15-minute dispatch resolution
 ```
 
@@ -179,8 +180,87 @@ consumption:
 DA_position_MWh = electricity_consumption_MWh
 ```
 
-Because the current MVP has no intraday or aFRR stage active, all electricity
-used for ETES charging is assigned to the day-ahead market.
+When IDC is disabled, all electricity used for ETES charging is assigned to the
+day-ahead market. When IDC is enabled, the DA position remains fixed and the
+final ETES charging position is adjusted through IDC buy or sell/reduction
+volumes.
+
+## Intraday Continuous Strategy Logic
+
+The first IDC implementation is an index-based adjustment model. It uses the
+configured intraday price signal, for example an ID3 column in a German case,
+but the strategy reads the signal name from:
+
+```text
+markets.intraday_continuous.signals.price
+```
+
+IDC is not modelled as an order book. There are no repeated trading loops,
+liquidity limits, bid depth assumptions, or individual transactions. The IDC
+volume signal may exist in the input data, but it is optional and unused in this
+first implementation.
+
+The day-ahead result is fixed before IDC is evaluated. IDC can only adjust the
+fixed DA position:
+
+```text
+final_planned_electricity_MWh =
+    DA_position_MWh + IDC_buy_MWh - IDC_sell_MWh
+```
+
+For the current hybrid ETES + gas plant, this final planned electricity is the
+ETES charging electricity:
+
+```text
+etes_charge_MWh = final_planned_electricity_MWh
+```
+
+This mapping is plant-specific and will need to be generalized for future
+industrial plants with several electric processes.
+
+## IDC Benchmark And Rules
+
+The gas benchmark is converted to an electricity-side ETES benchmark:
+
+```text
+electricity_trading_benchmark =
+    gas_based_heat_cost
+    * ETES charge efficiency
+    * ETES discharge efficiency
+```
+
+The current IDC margin is embedded in the strategy code:
+
+```text
+IDC_MARGIN_EUR_PER_MWH = 10.0
+```
+
+The rules are:
+
+```text
+if IDC_price < electricity_trading_benchmark - margin:
+    allow IDC buy
+
+if IDC_price > electricity_trading_benchmark + margin:
+    allow IDC sell/reduction
+
+otherwise:
+    no IDC action
+```
+
+The strategy creates upper bounds. Pyomo decides the feasible volume:
+
+```text
+IDC_buy_upper_bound =
+    max(0, ETES max charge per timestep - DA_position_MWh)
+
+IDC_sell_upper_bound =
+    DA_position_MWh
+```
+
+If individual IDC price values are missing, the strategy issues a warning and
+sets both IDC buy and sell bounds to zero for those timesteps. Missing prices
+are not silently filled for trading logic.
 
 ## What Pyomo Decides
 
@@ -207,15 +287,15 @@ decides how much charging is useful and feasible.
 
 ## Current Simplifications
 
-The day-ahead strategy is deliberately simple:
+The current DA + IDC strategy is deliberately simple:
 
 - the plant is treated as a price taker;
 - there is no explicit bid curve;
 - there is no market clearing uncertainty;
-- there is no sell-back or arbitrage trading yet;
-- day-ahead positions are not fixed before the plant optimization;
+- IDC is an index-based adjustment, not an order-book model;
+- day-ahead positions are fixed before IDC adjustments;
 - CO2 cost is disabled for the active MVP objective and benchmark;
-- day-ahead prices are treated as deterministic input data.
+- day-ahead and IDC prices are treated as deterministic input data.
 
 These simplifications are acceptable for the first MVP because the objective is
 to test the plant physics, ledgers, and output workflow before adding more
@@ -225,9 +305,8 @@ realistic market mechanisms.
 
 The next strategy stages should be added in this order:
 
-1. Intraday continuous using an ID3 price signal.
-2. Negative aFRR energy using exogenous activation.
-3. Negative aFRR capacity with reserved charging headroom.
+1. Negative aFRR energy using exogenous activation.
+2. Negative aFRR capacity with reserved charging headroom.
 
 The key rule for all future stages:
 

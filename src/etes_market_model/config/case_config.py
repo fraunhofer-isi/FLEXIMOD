@@ -141,6 +141,8 @@ class CaseConfig:
                 raise ConfigError(f"Enabled market '{market_name}' must define signals")
             if market_name == "day_ahead" and "price" not in market["signals"]:
                 raise ConfigError("Enabled day_ahead market must define signals.price")
+            if market_name == "intraday_continuous" and "price" not in market["signals"]:
+                raise ConfigError("Enabled intraday_continuous market must define signals.price")
 
 
 def _find_project_root(config_path: Path) -> Path:

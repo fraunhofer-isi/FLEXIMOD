@@ -25,6 +25,17 @@ def day_ahead_only_case(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def idc_case(tmp_path: Path) -> Path:
+    """Create a tiny DA + IDC case where IDC can be varied by each test."""
+
+    case_dir = tmp_path / "idc_case"
+    case_dir.mkdir()
+    _write_config(case_dir / "config.yaml", idc_enabled=True)
+    _write_plants(case_dir / "plants.csv")
+    return case_dir
+
+
+@pytest.fixture
 def day_ahead_only_results(
     day_ahead_only_case: Path,
     tmp_path: Path,
@@ -90,9 +101,138 @@ def test_day_ahead_only_strategy_matches_expected_plant_behaviour(
     assert summary["total_co2_cost_EUR"].iloc[0] == pytest.approx(0.0)
 
 
-def _write_config(path: Path) -> None:
+def test_idc_disabled_keeps_day_ahead_position(
+    day_ahead_only_results: dict[str, pd.DataFrame],
+) -> None:
+    market = day_ahead_only_results["market"]
+
+    assert market["IDC_buy_MWh"].sum() == pytest.approx(0.0)
+    assert market["IDC_sell_MWh"].sum() == pytest.approx(0.0)
+    assert market["final_planned_electricity_MWh"].sum() == pytest.approx(
+        market["DA_position_MWh"].sum()
+    )
+
+
+def test_cheap_idc_creates_incremental_buy(idc_case: Path, tmp_path: Path) -> None:
+    _write_forecasts(
+        idc_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[20.0] * 8,
+    )
+
+    results = _run_case(idc_case, tmp_path)
+    market = results["market"]
+
+    assert market["IDC_buy_MWh"].sum() > 0.0
+    assert market["IDC_sell_MWh"].sum() == pytest.approx(0.0)
+    _assert_final_planned_balance(market)
+    _assert_heat_is_feasible(results["dispatch"])
+
+
+def test_expensive_idc_creates_sell_without_exceeding_da(
+    idc_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        idc_case / "forecasts_df.csv",
+        da_prices=[10.0] * 8,
+        idc_prices=[120.0] * 8,
+    )
+
+    results = _run_case(idc_case, tmp_path)
+    market = results["market"]
+
+    assert market["IDC_sell_MWh"].sum() > 0.0
+    assert market["IDC_buy_MWh"].sum() == pytest.approx(0.0)
+    assert (market["IDC_sell_MWh"] <= market["DA_position_MWh"] + 1e-8).all()
+    _assert_final_planned_balance(market)
+    _assert_heat_is_feasible(results["dispatch"])
+
+
+def test_neutral_idc_creates_no_adjustment(idc_case: Path, tmp_path: Path) -> None:
+    _write_forecasts(
+        idc_case / "forecasts_df.csv",
+        da_prices=[10.0] * 8,
+        idc_prices=[75.0] * 8,
+    )
+
+    results = _run_case(idc_case, tmp_path)
+    market = results["market"]
+
+    assert market["IDC_buy_MWh"].sum() == pytest.approx(0.0)
+    assert market["IDC_sell_MWh"].sum() == pytest.approx(0.0)
+    _assert_final_planned_balance(market)
+
+
+def test_missing_idc_values_create_no_action_timestep(
+    idc_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        idc_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[20.0, None, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0],
+    )
+
+    with pytest.warns(UserWarning, match="IDC price contains missing values"):
+        results = _run_case(idc_case, tmp_path)
+    market = results["market"].sort_values("datetime")
+    missing_price_row = market[market["IDC_price"].isna()].iloc[0]
+
+    assert missing_price_row["IDC_buy_MWh"] == pytest.approx(0.0)
+    assert missing_price_row["IDC_sell_MWh"] == pytest.approx(0.0)
+
+
+def test_missing_idc_price_column_raises_clear_error(
+    idc_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        idc_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[20.0] * 8,
+    )
+    forecasts = pd.read_csv(idc_case / "forecasts_df.csv")
+    forecasts = forecasts.drop(columns=["DE_ID3_price"])
+    forecasts.to_csv(idc_case / "forecasts_df.csv", index=False)
+
+    with pytest.raises(ValueError, match="DE_ID3_price"):
+        _run_case(idc_case, tmp_path)
+
+
+def _run_case(case_dir: Path, tmp_path: Path) -> dict[str, pd.DataFrame]:
+    runner = SimulationRunner(
+        case_dir=case_dir,
+        input_dir=case_dir,
+        output_dir=tmp_path / "output",
+        output_options=OutputOptions(create_plots=False),
+    )
+    outputs = runner.run()
+    return {
+        "dispatch": pd.read_csv(outputs["dispatch_results"], parse_dates=["datetime"]),
+        "market": pd.read_csv(outputs["market_ledger"], parse_dates=["datetime"]),
+        "storage": pd.read_csv(outputs["storage_cost_ledger"], parse_dates=["datetime"]),
+        "summary": pd.read_csv(outputs["summary_indicators"]),
+    }
+
+
+def _assert_final_planned_balance(market: pd.DataFrame) -> None:
+    expected = market["DA_position_MWh"] + market["IDC_buy_MWh"] - market["IDC_sell_MWh"]
+    assert market["final_planned_electricity_MWh"].to_numpy() == pytest.approx(expected.to_numpy())
+    assert market["actual_electricity_consumption_MWh"].to_numpy() == pytest.approx(
+        market["final_planned_electricity_MWh"].to_numpy()
+    )
+
+
+def _assert_heat_is_feasible(dispatch: pd.DataFrame) -> None:
+    supplied_heat = dispatch["gas_heat_MWh"] + dispatch["etes_discharge_MWh"]
+    assert (supplied_heat >= dispatch["heat_demand_MWh"] - 1e-8).all()
+    assert dispatch["unmet_heat_MWh"].sum() == pytest.approx(0.0)
+
+
+def _write_config(path: Path, idc_enabled: bool = False) -> None:
     path.write_text(
-        """
+        f"""
 case:
   name: day_ahead_strategy_test_case
   country: DE
@@ -133,7 +273,7 @@ markets:
       price: "DE_DA_price"
 
   intraday_continuous:
-    enabled: false
+    enabled: {str(idc_enabled).lower()}
     product_resolution: "15min"
     gate_close:
       relative_to_delivery_start_minutes: -5
@@ -212,16 +352,23 @@ def _write_plants(path: Path) -> None:
     plants.to_csv(path, index=False)
 
 
-def _write_forecasts(path: Path) -> None:
+def _write_forecasts(
+    path: Path,
+    da_prices: list[float] | None = None,
+    idc_prices: list[float | None] | None = None,
+) -> None:
     datetimes = pd.date_range("2025-01-01 00:00", periods=8, freq="15min")
+    da_prices = da_prices or [10.0] * 4 + [120.0] * 4
     forecasts = pd.DataFrame(
         {
             "datetime": datetimes,
             "plant_1_heat_demand": [2.0] * 8,
-            "DE_DA_price": [10.0] * 4 + [120.0] * 4,
+            "DE_DA_price": da_prices,
             "natural_gas_price": [80.0] * 8,
         }
     )
+    if idc_prices is not None:
+        forecasts["DE_ID3_price"] = idc_prices
     forecasts.to_csv(path, index=False)
 
 

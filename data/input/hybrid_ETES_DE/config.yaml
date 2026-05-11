@@ -44,7 +44,7 @@ markets:
       price: "DE_DA_price"
 
   intraday_continuous:
-    enabled: false
+    enabled: true
     product_resolution: "15min"
     gate_close:
       relative_to_delivery_start_minutes: -5

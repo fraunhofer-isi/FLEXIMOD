@@ -37,6 +37,20 @@ class DispatchSignals:
 
 
 @dataclass
+class IDCAdjustmentSignals:
+    da_price_col: str
+    idc_price_col: str
+    gas_price_col: str
+    da_position_mwh: pd.Series
+    idc_buy_upper_bound_mwh: pd.Series
+    idc_sell_upper_bound_mwh: pd.Series
+    gas_benchmark_eur_per_mwh_th: pd.Series
+    electricity_trading_benchmark_eur_per_mwh_el: pd.Series
+    co2_price_col: str | None = None
+    co2_emission_factor_t_per_mwh_fuel: float = DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL
+
+
+@dataclass
 class SteamGenerationPlant(BasePlant):
     """Plant-level Pyomo model connecting steam/heat technologies on one heat bus."""
 
@@ -138,6 +152,55 @@ class SteamGenerationPlant(BasePlant):
 
         return pd.concat(implemented_frames).sort_index()
 
+    def solve_intraday_adjustment_rolling(
+        self,
+        config: CaseConfig,
+        forecasts: pd.DataFrame,
+        signals: IDCAdjustmentSignals,
+    ) -> pd.DataFrame:
+        dt_hours = config.timestep_minutes / 60.0
+        horizon_hours = float(config.dispatch_setting("dispatch_horizon_hours", 48))
+        step_hours = float(config.dispatch_setting("rolling_step_hours", 24))
+        horizon_steps = max(1, int(round(horizon_hours / dt_hours)))
+        step_steps = max(1, int(round(step_hours / dt_hours)))
+
+        implemented_frames: list[pd.DataFrame] = []
+        initial_soc = self.etes.initial_soc_mwh
+        position = 0
+
+        while position < len(forecasts):
+            horizon = forecasts.iloc[position : position + horizon_steps].copy()
+            horizon_signals = IDCAdjustmentSignals(
+                da_price_col=signals.da_price_col,
+                idc_price_col=signals.idc_price_col,
+                gas_price_col=signals.gas_price_col,
+                co2_price_col=signals.co2_price_col,
+                da_position_mwh=signals.da_position_mwh.loc[horizon.index],
+                idc_buy_upper_bound_mwh=signals.idc_buy_upper_bound_mwh.loc[horizon.index],
+                idc_sell_upper_bound_mwh=signals.idc_sell_upper_bound_mwh.loc[horizon.index],
+                gas_benchmark_eur_per_mwh_th=signals.gas_benchmark_eur_per_mwh_th.loc[
+                    horizon.index
+                ],
+                electricity_trading_benchmark_eur_per_mwh_el=(
+                    signals.electricity_trading_benchmark_eur_per_mwh_el.loc[horizon.index]
+                ),
+                co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
+            )
+            horizon_result = self.solve_intraday_adjustment_horizon(
+                config=config,
+                forecasts=horizon,
+                signals=horizon_signals,
+                initial_soc_mwh=initial_soc,
+            )
+            implement_count = min(step_steps, len(forecasts) - position)
+            implemented = horizon_result.iloc[:implement_count].copy()
+            implemented_frames.append(implemented)
+
+            initial_soc = float(implemented["etes_soc_MWh"].iloc[-1])
+            position += implement_count
+
+        return pd.concat(implemented_frames).sort_index()
+
     def solve_horizon(
         self,
         config: CaseConfig,
@@ -175,6 +238,51 @@ class SteamGenerationPlant(BasePlant):
 
         raise RuntimeError(
             "Dispatch solve failed for all configured solvers. " + " | ".join(solve_errors)
+        )
+
+    def solve_intraday_adjustment_horizon(
+        self,
+        config: CaseConfig,
+        forecasts: pd.DataFrame,
+        signals: IDCAdjustmentSignals,
+        initial_soc_mwh: float | None = None,
+    ) -> pd.DataFrame:
+        model = self._build_intraday_adjustment_model(
+            config=config,
+            forecasts=forecasts,
+            signals=signals,
+            initial_soc_mwh=self.etes.initial_soc_mwh
+            if initial_soc_mwh is None
+            else initial_soc_mwh,
+        )
+        solver_name = ""
+        solve_errors: list[str] = []
+        for candidate_name, solver in self._available_solvers(config):
+            solver_name = candidate_name
+            try:
+                result = solver.solve(model, tee=config.solver_tee)
+            except (ApplicationError, RuntimeError, OSError) as exc:
+                solve_errors.append(f"{candidate_name}: {exc}")
+                continue
+
+            termination = result.solver.termination_condition
+            status = result.solver.status
+            if status == SolverStatus.ok and termination in {
+                TerminationCondition.optimal,
+                TerminationCondition.feasible,
+            }:
+                return self._extract_intraday_adjustment_results(
+                    model,
+                    config,
+                    forecasts,
+                    signals,
+                    solver_name,
+                )
+
+            solve_errors.append(f"{candidate_name}: status={status}, termination={termination}")
+
+        raise RuntimeError(
+            "IDC adjustment solve failed for all configured solvers. " + " | ".join(solve_errors)
         )
 
     def _build_model(
@@ -262,6 +370,157 @@ class SteamGenerationPlant(BasePlant):
 
         return m
 
+    def _build_intraday_adjustment_model(
+        self,
+        config: CaseConfig,
+        forecasts: pd.DataFrame,
+        signals: IDCAdjustmentSignals,
+        initial_soc_mwh: float,
+    ) -> pyo.ConcreteModel:
+        dt_hours = config.timestep_minutes / 60.0
+        m = pyo.ConcreteModel(name=f"{self.name}_idc_adjustment")
+        steps = list(range(len(forecasts)))
+        m.T = pyo.Set(initialize=steps, ordered=True)
+
+        heat_demand_mwh = forecasts[self.heat_demand_column].astype(float).to_numpy() * dt_hours
+        da_price = forecasts[signals.da_price_col].astype(float).to_numpy()
+        idc_price = forecasts[signals.idc_price_col].astype(float).fillna(0.0).to_numpy()
+        gas_price = forecasts[signals.gas_price_col].astype(float).to_numpy()
+        if signals.co2_price_col and signals.co2_price_col in forecasts.columns:
+            co2_price = forecasts[signals.co2_price_col].astype(float).to_numpy()
+        else:
+            co2_price = [0.0 for _ in steps]
+
+        da_position = (
+            signals.da_position_mwh.astype(float).reindex(forecasts.index).fillna(0.0).to_numpy()
+        )
+        idc_buy_upper_bound = (
+            signals.idc_buy_upper_bound_mwh.astype(float)
+            .reindex(forecasts.index)
+            .fillna(0.0)
+            .clip(lower=0.0)
+            .to_numpy()
+        )
+        idc_sell_upper_bound = (
+            signals.idc_sell_upper_bound_mwh.astype(float)
+            .reindex(forecasts.index)
+            .fillna(0.0)
+            .clip(lower=0.0)
+            .to_numpy()
+        )
+
+        m.heat_demand = pyo.Param(m.T, initialize={t: heat_demand_mwh[t] for t in steps})
+        m.da_price = pyo.Param(m.T, initialize={t: da_price[t] for t in steps})
+        m.idc_price = pyo.Param(m.T, initialize={t: idc_price[t] for t in steps})
+        m.electricity_price = pyo.Param(m.T, initialize={t: idc_price[t] for t in steps})
+        m.gas_price = pyo.Param(m.T, initialize={t: gas_price[t] for t in steps})
+        m.co2_price = pyo.Param(m.T, initialize={t: co2_price[t] for t in steps})
+        m.da_position_mwh = pyo.Param(m.T, initialize={t: da_position[t] for t in steps})
+        m.idc_buy_upper_bound_mwh = pyo.Param(
+            m.T,
+            initialize={t: idc_buy_upper_bound[t] for t in steps},
+        )
+        m.idc_sell_upper_bound_mwh = pyo.Param(
+            m.T,
+            initialize={t: idc_sell_upper_bound[t] for t in steps},
+        )
+        m.co2_emission_factor = pyo.Param(
+            initialize=float(signals.co2_emission_factor_t_per_mwh_fuel)
+        )
+
+        m.technology_blocks = pyo.Block(list(self.components.keys()))
+        for technology, component in self.components.items():
+            context = {
+                "dt_hours": dt_hours,
+                "initial_soc_mwh": initial_soc_mwh if technology == "thermal_storage" else None,
+            }
+            component.add_to_model(m, m.technology_blocks[technology], m.T, context)
+
+        m.unmet_heat = pyo.Var(m.T, within=pyo.NonNegativeReals)
+        m.electricity_consumption = pyo.Var(m.T, within=pyo.NonNegativeReals)
+        m.idc_buy_mwh = pyo.Var(m.T, within=pyo.NonNegativeReals)
+        m.idc_sell_mwh = pyo.Var(m.T, within=pyo.NonNegativeReals)
+        m.final_planned_electricity_mwh = pyo.Var(m.T, within=pyo.NonNegativeReals)
+
+        @m.Constraint(m.T)
+        def idc_buy_limit(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            return mm.idc_buy_mwh[t] <= mm.idc_buy_upper_bound_mwh[t]
+
+        @m.Constraint(m.T)
+        def idc_sell_limit(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            return mm.idc_sell_mwh[t] <= mm.idc_sell_upper_bound_mwh[t]
+
+        @m.Constraint(m.T)
+        def idc_sell_da_limit(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            return mm.idc_sell_mwh[t] <= mm.da_position_mwh[t]
+
+        @m.Constraint(m.T)
+        def final_planned_position(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            return (
+                mm.final_planned_electricity_mwh[t]
+                == mm.da_position_mwh[t] + mm.idc_buy_mwh[t] - mm.idc_sell_mwh[t]
+            )
+
+        @m.Constraint(m.T)
+        def etes_charge_matches_final_position(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            storage = mm.technology_blocks["thermal_storage"]
+            # For the current hybrid ETES + gas plant, the electricity market position maps
+            # directly to ETES charging. TODO: Generalise this for industrial plants with
+            # several electric processes sharing one market position.
+            return storage.electric_charge_to_storage[t] == mm.final_planned_electricity_mwh[t]
+
+        @m.Constraint(m.T)
+        def heat_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            storage = mm.technology_blocks["thermal_storage"]
+            boiler = mm.technology_blocks["boiler"]
+            return (
+                storage.discharge_heat[t] + boiler.heat_out[t] + mm.unmet_heat[t]
+                >= mm.heat_demand[t]
+            )
+
+        @m.Constraint(m.T)
+        def electricity_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            storage = mm.technology_blocks["thermal_storage"]
+            return mm.electricity_consumption[t] == storage.electricity_consumption[t]
+
+        @m.Expression(m.T)
+        def da_electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.da_position_mwh[t] * mm.da_price[t]
+
+        @m.Expression(m.T)
+        def idc_buy_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.idc_buy_mwh[t] * mm.idc_price[t]
+
+        @m.Expression(m.T)
+        def idc_sell_revenue(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.idc_sell_mwh[t] * mm.idc_price[t]
+
+        @m.Expression(m.T)
+        def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.da_electricity_cost[t] + mm.idc_buy_cost[t] - mm.idc_sell_revenue[t]
+
+        @m.Expression(m.T)
+        def gas_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.technology_blocks["boiler"].operating_cost[t]
+
+        @m.Expression(m.T)
+        def co2_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.technology_blocks["boiler"].co2_cost[t]
+
+        @m.Expression(m.T)
+        def unmet_heat_penalty(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.unmet_heat[t] * UNMET_HEAT_PENALTY_EUR_PER_MWH
+
+        @m.Objective(sense=pyo.minimize)
+        def objective(mm: pyo.ConcreteModel) -> pyo.Expression:
+            return pyo.quicksum(
+                # TODO: Add CO2 cost consistently to the gas benchmark and plant objective.
+                mm.electricity_cost[t] + mm.gas_cost[t] + mm.unmet_heat_penalty[t]
+                for t in mm.T
+            )
+
+        return m
+
     def _extract_results(
         self,
         model: pyo.ConcreteModel,
@@ -306,6 +565,16 @@ class SteamGenerationPlant(BasePlant):
                 "gas_heat_MWh": _value(boiler.heat_out[t]),
                 "gas_input_MWh": _value(boiler.fuel_input[t]),
                 "electricity_consumption_MWh": _value(model.electricity_consumption[t]),
+                "DA_position_MWh": _value(model.electricity_consumption[t]),
+                "IDC_buy_MWh": 0.0,
+                "IDC_sell_MWh": 0.0,
+                "IDC_price_EUR_per_MWh": float("nan"),
+                "planned_electricity_MWh": _value(model.electricity_consumption[t]),
+                "final_planned_electricity_MWh": _value(model.electricity_consumption[t]),
+                "actual_electricity_consumption_MWh": _value(model.electricity_consumption[t]),
+                "DA_electricity_cost_EUR": electricity_cost,
+                "IDC_buy_cost_EUR": 0.0,
+                "IDC_sell_revenue_EUR": 0.0,
                 "unmet_heat_MWh": _value(model.unmet_heat[t]),
                 "electricity_cost_EUR": electricity_cost,
                 "gas_cost_EUR": gas_cost,
@@ -313,6 +582,91 @@ class SteamGenerationPlant(BasePlant):
                 "unmet_heat_penalty_EUR": unmet_penalty,
                 "operating_cost_EUR": electricity_cost + gas_cost + unmet_penalty,
                 "charge_allowed_by_strategy": bool(signals.charge_allowed.iloc[t]),
+                "solver": solver_name,
+            }
+            rows.append(row)
+
+        frame = pd.DataFrame(rows).set_index("datetime")
+        numeric_columns = frame.select_dtypes(include=["number"]).columns
+        frame[numeric_columns] = frame[numeric_columns].mask(
+            frame[numeric_columns].abs() < 1e-9, 0.0
+        )
+        return frame
+
+    def _extract_intraday_adjustment_results(
+        self,
+        model: pyo.ConcreteModel,
+        config: CaseConfig,
+        forecasts: pd.DataFrame,
+        signals: IDCAdjustmentSignals,
+        solver_name: str,
+    ) -> pd.DataFrame:
+        storage = model.technology_blocks["thermal_storage"]
+        boiler = model.technology_blocks["boiler"]
+        dt_hours = config.timestep_minutes / 60.0
+
+        rows = []
+        for t, timestamp in enumerate(forecasts.index):
+            electricity_cost = _value(model.electricity_cost[t])
+            gas_cost = _value(model.gas_cost[t])
+            co2_cost = _value(model.co2_cost[t])
+            unmet_penalty = _value(model.unmet_heat_penalty[t])
+            da_position = _value(model.da_position_mwh[t])
+            idc_buy = _value(model.idc_buy_mwh[t])
+            idc_sell = _value(model.idc_sell_mwh[t])
+            final_planned = _value(model.final_planned_electricity_mwh[t])
+            idc_price = float(forecasts[signals.idc_price_col].iloc[t])
+            co2_price = (
+                float(forecasts[signals.co2_price_col].iloc[t])
+                if signals.co2_price_col and signals.co2_price_col in forecasts.columns
+                else 0.0
+            )
+            row = {
+                "datetime": timestamp,
+                "plant_name": self.name,
+                "heat_demand_MWh": float(forecasts[self.heat_demand_column].iloc[t]) * dt_hours,
+                "day_ahead_price_EUR_per_MWh": float(forecasts[signals.da_price_col].iloc[t]),
+                "IDC_price_EUR_per_MWh": idc_price,
+                "gas_price_EUR_per_MWh": float(forecasts[signals.gas_price_col].iloc[t]),
+                "co2_price_EUR_per_t": co2_price,
+                "day_ahead_price_signal": signals.da_price_col,
+                "IDC_price_signal": signals.idc_price_col,
+                "gas_price_signal": signals.gas_price_col,
+                "co2_price_signal": signals.co2_price_col or "",
+                "gas_based_heat_benchmark_EUR_per_MWh_th": float(
+                    signals.gas_benchmark_eur_per_mwh_th.iloc[t]
+                ),
+                "electricity_trading_benchmark_EUR_per_MWh_el": float(
+                    signals.electricity_trading_benchmark_eur_per_mwh_el.iloc[t]
+                ),
+                "etes_charge_MWh": _value(storage.electric_charge_to_storage[t]),
+                "etes_discharge_MWh": _value(storage.discharge_heat[t]),
+                "etes_soc_MWh": _value(storage.soc[t]),
+                "gas_heat_MWh": _value(boiler.heat_out[t]),
+                "gas_input_MWh": _value(boiler.fuel_input[t]),
+                "electricity_consumption_MWh": _value(model.electricity_consumption[t]),
+                "DA_position_MWh": da_position,
+                "IDC_buy_MWh": idc_buy,
+                "IDC_sell_MWh": idc_sell,
+                "planned_electricity_MWh": final_planned,
+                "final_planned_electricity_MWh": final_planned,
+                "actual_electricity_consumption_MWh": _value(model.electricity_consumption[t]),
+                "DA_electricity_cost_EUR": _value(model.da_electricity_cost[t]),
+                "IDC_buy_cost_EUR": _value(model.idc_buy_cost[t]),
+                "IDC_sell_revenue_EUR": _value(model.idc_sell_revenue[t]),
+                "unmet_heat_MWh": _value(model.unmet_heat[t]),
+                "electricity_cost_EUR": electricity_cost,
+                "gas_cost_EUR": gas_cost,
+                "co2_cost_EUR": co2_cost,
+                "unmet_heat_penalty_EUR": unmet_penalty,
+                "operating_cost_EUR": electricity_cost + gas_cost + unmet_penalty,
+                "charge_allowed_by_strategy": bool(signals.idc_buy_upper_bound_mwh.iloc[t] > 1e-12),
+                "idc_buy_allowed_by_strategy": bool(
+                    signals.idc_buy_upper_bound_mwh.iloc[t] > 1e-12
+                ),
+                "idc_sell_allowed_by_strategy": bool(
+                    signals.idc_sell_upper_bound_mwh.iloc[t] > 1e-12
+                ),
                 "solver": solver_name,
             }
             rows.append(row)

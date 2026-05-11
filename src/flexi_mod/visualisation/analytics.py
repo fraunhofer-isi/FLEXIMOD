@@ -291,6 +291,15 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
     idc_buy = _sum(market, "IDC_buy_MWh")
     idc_sell = _sum(market, "IDC_sell_MWh")
     afrr = _sum(market, "afrr_energy_activated_MWh")
+    final_planned = _sum(
+        market,
+        "final_planned_electricity_MWh",
+        fallback=_sum(
+            market,
+            "planned_electricity_MWh",
+            fallback=da + idc_buy - idc_sell,
+        ),
+    )
     actual = _sum(
         market,
         "actual_electricity_consumption_MWh",
@@ -299,6 +308,9 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
     denominator = actual if abs(actual) > 1e-12 else 1.0
     return {
         "total_DA_electricity_MWh": da,
+        "total_IDC_buy_MWh": idc_buy,
+        "total_IDC_sell_MWh": idc_sell,
+        "total_final_planned_electricity_MWh": final_planned,
         "total_IDC_buy_electricity_MWh": idc_buy,
         "total_IDC_sell_electricity_MWh": idc_sell,
         "total_afrr_activated_electricity_MWh": afrr,
@@ -317,6 +329,12 @@ def _economic_indicators(
     heat_demand = _sum(dispatch, "heat_demand_MWh")
     total_operating_cost = _sum(dispatch, "operating_cost_EUR")
     total_electricity_cost = _sum(dispatch, "electricity_cost_EUR")
+    idc_buy_cost, idc_sell_revenue = _trading_cashflows(
+        market,
+        buy_col="IDC_buy_MWh",
+        sell_col="IDC_sell_MWh",
+        price_col="IDC_price",
+    )
     idc_value = _trading_value(
         market,
         buy_col="IDC_buy_MWh",
@@ -342,6 +360,9 @@ def _economic_indicators(
         "total_gas_cost_EUR": _sum(dispatch, "gas_cost_EUR"),
         "total_co2_cost_EUR": _sum(dispatch, "co2_cost_EUR"),
         "total_unmet_heat_penalty_EUR": _sum(dispatch, "unmet_heat_penalty_EUR"),
+        "IDC_buy_cost_EUR": idc_buy_cost,
+        "IDC_sell_revenue_EUR": idc_sell_revenue,
+        "IDC_net_cashflow_EUR": idc_sell_revenue - idc_buy_cost,
         "total_IDC_trading_value_EUR": idc_value,
         "total_afrr_energy_value_EUR": afrr_energy_value,
         "total_afrr_capacity_revenue_EUR": afrr_capacity_revenue,
@@ -416,6 +437,20 @@ def _trading_value(
     buys = frame[buy_col].fillna(0.0).astype(float) if buy_col in frame.columns else 0.0
     sells = frame[sell_col].fillna(0.0).astype(float) if sell_col in frame.columns else 0.0
     return float((sells * price - buys * price).sum())
+
+
+def _trading_cashflows(
+    frame: pd.DataFrame,
+    buy_col: str,
+    sell_col: str,
+    price_col: str,
+) -> tuple[float, float]:
+    if frame.empty or price_col not in frame.columns:
+        return 0.0, 0.0
+    price = frame[price_col].fillna(0.0).astype(float)
+    buys = frame[buy_col].fillna(0.0).astype(float) if buy_col in frame.columns else 0.0
+    sells = frame[sell_col].fillna(0.0).astype(float) if sell_col in frame.columns else 0.0
+    return float((buys * price).sum()), float((sells * price).sum())
 
 
 def _energy_value(frame: pd.DataFrame, volume_col: str, price_col: str) -> float:

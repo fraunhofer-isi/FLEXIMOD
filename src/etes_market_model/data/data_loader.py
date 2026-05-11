@@ -84,7 +84,12 @@ class DataLoader:
 
         for market_name in self.config.enabled_markets:
             market = self.config.market(market_name)
-            required.update(str(column) for column in market.get("signals", {}).values())
+            signals = market.get("signals", {})
+            if market_name in {"day_ahead", "intraday_continuous"}:
+                if "price" in signals:
+                    required.add(str(signals["price"]))
+                continue
+            required.update(str(column) for column in signals.values())
 
         for plant_name, plant_rows in plants.groupby("name"):
             demand_column = _demand_column_for_plant(str(plant_name), plant_rows)
@@ -118,6 +123,14 @@ class DataLoader:
         observed_minutes = _infer_step_minutes(forecasts.index)
         if observed_minutes == target_minutes:
             return forecasts
+
+        if "intraday_continuous" in self.config.enabled_markets:
+            raise DataValidationError(
+                "Intraday continuous is enabled, so forecasts_df.csv must already use "
+                f"the configured {target_minutes}-minute timestep. Observed "
+                f"{observed_minutes}-minute data. IDC prices are not resampled or "
+                "forward-filled in this implementation."
+            )
 
         if observed_minutes > target_minutes and observed_minutes % target_minutes == 0:
             # Hourly market data is commonly supplied for DA. Forward-fill to the model

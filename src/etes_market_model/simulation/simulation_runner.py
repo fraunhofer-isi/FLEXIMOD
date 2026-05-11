@@ -132,10 +132,12 @@ class SimulationRunner:
                 raise NotImplementedError("The MVP requires the day_ahead market to be enabled")
 
             if MarketStage.INTRADAY_CONTINUOUS.value in enabled:
-                raise NotImplementedError(
-                    "intraday_continuous is present as a module placeholder but is "
-                    "disabled in the MVP"
+                dispatch = strategy.decide_intraday_continuous(
+                    plant,
+                    forecasts,
+                    fixed_positions,
                 )
+                fixed_positions = dispatch
             if MarketStage.AFRR_ENERGY.value in enabled:
                 raise NotImplementedError(
                     "aFRR energy is present as a module placeholder but is disabled in the MVP"

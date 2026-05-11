@@ -105,6 +105,74 @@ class StorageCostLedger:
         }
         self.rows.loc[len(self.rows)] = record
 
+    def record_storage_step(
+        self,
+        datetime: pd.Timestamp,
+        plant_name: str,
+        source_events: list[tuple[str, float, float, float]],
+        remaining_stored_heat_mwh: float,
+    ) -> None:
+        previous_remaining, previous_average_cost = self._state_by_plant.get(plant_name, (0.0, 0.0))
+        source_inventory = self._source_inventory_by_plant.get(
+            plant_name,
+            {source: 0.0 for source in STORAGE_SOURCE_COLUMNS},
+        )
+
+        filtered_events = [
+            (source, float(price), float(electricity_volume), float(stored_heat))
+            for source, price, electricity_volume, stored_heat in source_events
+            if float(electricity_volume) > 1e-12 and float(stored_heat) > 1e-12
+        ]
+        added_cost = sum(
+            price * electricity_volume for _, price, electricity_volume, _ in filtered_events
+        )
+        added_heat = sum(stored_heat for _, _, _, stored_heat in filtered_events)
+        inventory_after_charge = previous_remaining + added_heat
+        if inventory_after_charge > 1e-12 and added_heat > 0:
+            weighted_average = (
+                previous_remaining * previous_average_cost + added_cost
+            ) / inventory_after_charge
+        elif previous_remaining > 1e-12:
+            weighted_average = previous_average_cost
+        else:
+            weighted_average = 0.0
+
+        remaining = max(float(remaining_stored_heat_mwh), 0.0)
+        if remaining <= 1e-12:
+            weighted_average = 0.0
+
+        for source_market, _, _, stored_heat in filtered_events:
+            source = _normalise_source_market(source_market)
+            source_inventory[source] = source_inventory.get(source, 0.0) + stored_heat
+        source_inventory = _reconcile_source_inventory(source_inventory, remaining)
+
+        self._state_by_plant[plant_name] = (remaining, weighted_average)
+        self._source_inventory_by_plant[plant_name] = source_inventory
+
+        if not filtered_events:
+            filtered_events = [("", 0.0, 0.0, 0.0)]
+
+        for source_market, price, electricity_volume, stored_heat in filtered_events:
+            effective_heat_cost = (
+                price * electricity_volume / stored_heat if stored_heat > 1e-12 else pd.NA
+            )
+            record = {
+                "datetime": pd.Timestamp(datetime),
+                "plant_name": plant_name,
+                "source_market": source_market,
+                "electricity_price_EUR_per_MWh": price,
+                "electricity_volume_MWh": electricity_volume,
+                "stored_heat_added_MWh": stored_heat,
+                "effective_heat_cost_EUR_per_MWh_th": effective_heat_cost,
+                "remaining_stored_heat_MWh": remaining,
+                "weighted_average_storage_cost_EUR_per_MWh_th": weighted_average,
+                **{
+                    column: float(source_inventory.get(source, 0.0))
+                    for source, column in STORAGE_SOURCE_COLUMNS.items()
+                },
+            }
+            self.rows.loc[len(self.rows)] = record
+
     def build_from_dispatch_results(
         self,
         dispatch_results: pd.DataFrame,
@@ -116,15 +184,59 @@ class StorageCostLedger:
             plant = plant_by_name[plant_name]
             if plant.etes is None:
                 continue
-            electricity_volume = float(row["etes_charge_MWh"])
-            stored_heat_added = electricity_volume * plant.etes.efficiency_charge
-            self.record_storage_event(
+            actual_charge = max(float(row["etes_charge_MWh"]), 0.0)
+            da_source = max(float(row.get("DA_position_MWh", actual_charge)), 0.0)
+            idc_sell = max(float(row.get("IDC_sell_MWh", 0.0)), 0.0)
+            idc_buy = max(float(row.get("IDC_buy_MWh", 0.0)), 0.0)
+            da_source = max(da_source - idc_sell, 0.0)
+            source_volumes = {
+                "day_ahead": da_source,
+                "intraday_continuous": idc_buy,
+            }
+            total_source_volume = sum(source_volumes.values())
+            if total_source_volume > actual_charge and total_source_volume > 1e-12:
+                scale = actual_charge / total_source_volume
+                source_volumes = {
+                    source: volume * scale for source, volume in source_volumes.items()
+                }
+            elif total_source_volume <= 1e-12 and actual_charge > 1e-12:
+                source_volumes["other"] = actual_charge
+
+            events: list[tuple[str, float, float, float]] = []
+            if source_volumes.get("day_ahead", 0.0) > 1e-12:
+                da_volume = source_volumes["day_ahead"]
+                events.append(
+                    (
+                        "day_ahead",
+                        float(row["day_ahead_price_EUR_per_MWh"]),
+                        da_volume,
+                        da_volume * plant.etes.efficiency_charge,
+                    )
+                )
+            if source_volumes.get("intraday_continuous", 0.0) > 1e-12:
+                idc_volume = source_volumes["intraday_continuous"]
+                events.append(
+                    (
+                        "intraday_continuous",
+                        float(row.get("IDC_price_EUR_per_MWh", 0.0)),
+                        idc_volume,
+                        idc_volume * plant.etes.efficiency_charge,
+                    )
+                )
+            if source_volumes.get("other", 0.0) > 1e-12:
+                other_volume = source_volumes["other"]
+                events.append(
+                    (
+                        "other",
+                        float(row.get("day_ahead_price_EUR_per_MWh", 0.0)),
+                        other_volume,
+                        other_volume * plant.etes.efficiency_charge,
+                    )
+                )
+            self.record_storage_step(
                 datetime=timestamp,
                 plant_name=plant_name,
-                source_market="day_ahead" if electricity_volume > 1e-12 else "",
-                electricity_price_eur_per_mwh=float(row["day_ahead_price_EUR_per_MWh"]),
-                electricity_volume_mwh=electricity_volume,
-                stored_heat_added_mwh=stored_heat_added,
+                source_events=events,
                 remaining_stored_heat_mwh=float(row["etes_soc_MWh"]),
             )
 
