@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: FLEXIMOD Developers
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+case:
+  name: hybrid_ETES_DE
+  country: DE
+  description: "Hybrid ETES + gas boiler case for Germany"
+  timestep_minutes: 15
+  simulation_start: "2025-01-01 00:00"
+  simulation_end: "2025-01-07 23:45"
+  timezone: "Europe/Berlin"
+
+strategy:
+  name: hybrid_etes_gas
+  dispatch:
+    dispatch_method: pyomo
+    rolling_horizon_enabled: true
+    dispatch_horizon_hours: 48
+    rolling_step_hours: 24
+
+solver:
+  name: highs
+  fallback_solvers:
+    - gurobi
+  tee: false
+
+market_sequence:
+  # For the first MVP only day_ahead is enabled.
+  # Later stages can be enabled one by one.
+  - day_ahead
+  - intraday_continuous
+  - afrr_energy
+  - afrr_capacity
+
+markets:
+  day_ahead:
+    enabled: true
+    product_resolution: "1h"
+    gate_close:
+      day_relation: "D-1"
+      time: "12:00"
+    signals:
+      price: "DE_DA_price"
+
+  intraday_continuous:
+    enabled: false
+    product_resolution: "15min"
+    gate_close:
+      relative_to_delivery_start_minutes: -5
+    signals:
+      price: "DE_ID3_price"
+      volume: "DE_ID3_volume"
+
+  afrr_energy:
+    enabled: false
+    direction: "negative"
+    product_resolution: "15min"
+    gate_close:
+      relative_to_delivery_start_minutes: -25
+    signals:
+      price: "DE_afrr_energy_neg_price"
+      activation_volume: "DE_afrr_energy_neg_activation"
+
+  afrr_capacity:
+    enabled: false
+    direction: "negative"
+    product_length: "4h"
+    min_bid_mw: 1.0
+    bid_increment_mw: 1.0
+    gate_close:
+      day_relation: "D-1"
+      time: "09:00"
+    signals:
+      capacity_price: "DE_afrr_capacity_neg_price"

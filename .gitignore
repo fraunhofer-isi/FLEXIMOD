@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: FLEXIMOD Developers
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+*.egg-info/
+
+data/input/**/forecasts_df.csv
+data/output/
+data/processed/
+*.xlsx
+*.parquet
+*.zip
+*.7z

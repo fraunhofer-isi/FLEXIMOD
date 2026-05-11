@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: FLEXIMOD Developers
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+repos:
+  - repo: https://github.com/fsfe/reuse-tool
+    rev: v4.0.3
+    hooks:
+      - id: reuse
+        args:
+          [
+            "annotate",
+            "--license",
+            "AGPL-3.0-or-later",
+            "--recursive",
+            "--copyright",
+            "FLEXIMOD Developers",
+            "--exclude-year",
+            "--skip-unrecognised",
+            "--skip-existing",
+            ".",
+          ]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.6
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-illegal-windows-names
+      - id: check-yaml
+      - id: check-toml
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.3.0
+    hooks:
+      - id: codespell
+        additional_dependencies:
+          - tomli
+        types_or: [python, rst, markdown, yaml, toml]
+        files: ^(src|scripts|tests|README\.md|pyproject\.toml|\.pre-commit-config\.yaml|data/input/.*/config\.yaml)
