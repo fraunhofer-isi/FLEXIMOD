@@ -22,8 +22,15 @@ MARKET_LEDGER_COLUMNS = [
     "afrr_capacity_reserved_MW",
     "afrr_capacity_price",
     "afrr_energy_bid_MW",
+    "afrr_energy_bid_MWh",
     "afrr_energy_activated_MWh",
     "afrr_energy_price",
+    "afrr_energy_price_clean",
+    "afrr_raw_system_activation",
+    "afrr_raw_system_activation_MWh",
+    "afrr_system_activation_MWh_clean",
+    "afrr_down_system_activation_MWh_clean",
+    "afrr_data_quality_flag",
     "actual_electricity_consumption_MWh",
     "gas_heat_MWh",
     "etes_charge_MWh",
@@ -39,7 +46,11 @@ ZERO_COLUMNS = [
     "final_planned_electricity_MWh",
     "afrr_capacity_reserved_MW",
     "afrr_energy_bid_MW",
+    "afrr_energy_bid_MWh",
     "afrr_energy_activated_MWh",
+    "afrr_raw_system_activation_MWh",
+    "afrr_system_activation_MWh_clean",
+    "afrr_down_system_activation_MWh_clean",
     "actual_electricity_consumption_MWh",
     "gas_heat_MWh",
     "etes_charge_MWh",
@@ -108,17 +119,17 @@ class MarketLedger:
                 "final_planned_electricity_MWh",
                 da_position + idc_buy - idc_sell,
             )
+            afrr_activation = _row_float(row, "afrr_energy_activated_MWh", 0.0)
             actual_electricity = _row_float(
                 row,
                 "actual_electricity_consumption_MWh",
                 row["electricity_consumption_MWh"],
             )
-            # TODO: Once aFRR energy activation is implemented, actual electricity will
-            # include activated aFRR energy on top of the final planned electricity.
-            if abs(actual_electricity - final_planned) > 1e-6:
+            expected_actual = final_planned + afrr_activation
+            if abs(actual_electricity - expected_actual) > 1e-6:
                 raise ValueError(
                     "actual_electricity_consumption_MWh must match "
-                    "final_planned_electricity_MWh for the current DA + IDC implementation"
+                    "final_planned_electricity_MWh plus afrr_energy_activated_MWh"
                 )
 
             indexed.loc[key, "DA_position_MWh"] = da_position
@@ -129,6 +140,32 @@ class MarketLedger:
             indexed.loc[key, "planned_electricity_MWh"] = final_planned
             indexed.loc[key, "final_planned_electricity_MWh"] = final_planned
             indexed.loc[key, "actual_electricity_consumption_MWh"] = actual_electricity
+            indexed.loc[key, "afrr_energy_bid_MWh"] = _row_float(row, "afrr_energy_bid_MWh", 0.0)
+            indexed.loc[key, "afrr_energy_bid_MW"] = _row_float(
+                row,
+                "afrr_energy_bid_MW",
+                _row_float(row, "afrr_energy_bid_MWh", 0.0),
+            )
+            indexed.loc[key, "afrr_energy_activated_MWh"] = afrr_activation
+            indexed.loc[key, "afrr_energy_price"] = _row_float(
+                row, "afrr_energy_price_EUR_per_MWh", pd.NA
+            )
+            indexed.loc[key, "afrr_energy_price_clean"] = _row_float(
+                row, "afrr_energy_price_clean_EUR_per_MWh", pd.NA
+            )
+            indexed.loc[key, "afrr_raw_system_activation"] = _row_float(
+                row, "afrr_raw_system_activation", pd.NA
+            )
+            indexed.loc[key, "afrr_raw_system_activation_MWh"] = _row_float(
+                row, "afrr_raw_system_activation_MWh", 0.0
+            )
+            indexed.loc[key, "afrr_system_activation_MWh_clean"] = _row_float(
+                row, "afrr_system_activation_MWh_clean", 0.0
+            )
+            indexed.loc[key, "afrr_down_system_activation_MWh_clean"] = _row_float(
+                row, "afrr_down_system_activation_MWh_clean", 0.0
+            )
+            indexed.loc[key, "afrr_data_quality_flag"] = row.get("afrr_data_quality_flag", "")
             indexed.loc[key, "gas_heat_MWh"] = float(row["gas_heat_MWh"])
             indexed.loc[key, "etes_charge_MWh"] = float(row["etes_charge_MWh"])
             indexed.loc[key, "etes_discharge_MWh"] = float(row["etes_discharge_MWh"])
@@ -149,7 +186,10 @@ class MarketLedger:
 
     def _coerce_numeric_columns(self) -> None:
         for column in MARKET_LEDGER_COLUMNS:
-            if column not in {"datetime", "plant_name"} and column in self.rows.columns:
+            if (
+                column not in {"datetime", "plant_name", "afrr_data_quality_flag"}
+                and column in self.rows.columns
+            ):
                 self.rows[column] = pd.to_numeric(self.rows[column], errors="coerce")
 
 

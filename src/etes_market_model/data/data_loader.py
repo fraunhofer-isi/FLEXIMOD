@@ -64,14 +64,19 @@ class DataLoader:
 
         forecasts = pd.read_csv(path, skipinitialspace=True)
         datetime_col = _find_datetime_column(forecasts)
-        forecasts[datetime_col] = pd.to_datetime(forecasts[datetime_col], errors="raise")
+        forecasts[datetime_col] = _parse_datetime_column(forecasts[datetime_col], datetime_col)
         forecasts = (
             forecasts.rename(columns={datetime_col: "datetime"}).set_index("datetime").sort_index()
         )
         forecasts = forecasts[~forecasts.index.duplicated(keep="first")]
 
-        forecasts = self._ensure_resolution(forecasts)
-        forecasts = self._filter_time_range(forecasts)
+        if self._requires_native_resolution():
+            forecasts = self._slice_time_range(forecasts)
+            forecasts = self._ensure_resolution(forecasts)
+            self._check_expected_period_count(forecasts)
+        else:
+            forecasts = self._ensure_resolution(forecasts)
+            forecasts = self._filter_time_range(forecasts)
         self._check_required_columns(forecasts, required_columns or set())
         return forecasts
 
@@ -98,6 +103,11 @@ class DataLoader:
         return required
 
     def _filter_time_range(self, forecasts: pd.DataFrame) -> pd.DataFrame:
+        filtered = self._slice_time_range(forecasts)
+        self._check_expected_period_count(filtered)
+        return filtered
+
+    def _slice_time_range(self, forecasts: pd.DataFrame) -> pd.DataFrame:
         start = pd.Timestamp(self.config.simulation_start)
         end = pd.Timestamp(self.config.simulation_end)
         filtered = forecasts.loc[(forecasts.index >= start) & (forecasts.index <= end)].copy()
@@ -105,15 +115,19 @@ class DataLoader:
             raise DataValidationError(
                 f"forecasts_df.csv has no rows in configured simulation range {start} to {end}"
             )
+        return filtered
+
+    def _check_expected_period_count(self, forecasts: pd.DataFrame) -> None:
+        start = pd.Timestamp(self.config.simulation_start)
+        end = pd.Timestamp(self.config.simulation_end)
         expected_periods = (
             int(((end - start).total_seconds() / 60) / self.config.timestep_minutes) + 1
         )
-        if len(filtered) != expected_periods:
+        if len(forecasts) != expected_periods:
             raise DataValidationError(
-                f"Filtered forecast range has {len(filtered)} rows, expected {expected_periods} "
+                f"Filtered forecast range has {len(forecasts)} rows, expected {expected_periods} "
                 f"for {self.config.timestep_minutes}-minute resolution"
             )
-        return filtered
 
     def _ensure_resolution(self, forecasts: pd.DataFrame) -> pd.DataFrame:
         if len(forecasts.index) < 2:
@@ -124,12 +138,15 @@ class DataLoader:
         if observed_minutes == target_minutes:
             return forecasts
 
-        if "intraday_continuous" in self.config.enabled_markets:
+        no_resample_markets = {"intraday_continuous", "afrr_energy"}
+        active_no_resample = no_resample_markets.intersection(self.config.enabled_markets)
+        if active_no_resample:
             raise DataValidationError(
-                "Intraday continuous is enabled, so forecasts_df.csv must already use "
+                "Intraday continuous or aFRR energy is enabled, so forecasts_df.csv "
+                "must already use "
                 f"the configured {target_minutes}-minute timestep. Observed "
-                f"{observed_minutes}-minute data. IDC prices are not resampled or "
-                "forward-filled in this implementation."
+                f"{observed_minutes}-minute data. IDC and aFRR energy signals are not "
+                "resampled or forward-filled in this implementation."
             )
 
         if observed_minutes > target_minutes and observed_minutes % target_minutes == 0:
@@ -147,6 +164,10 @@ class DataLoader:
             f"but config requires {target_minutes} minutes"
         )
 
+    def _requires_native_resolution(self) -> bool:
+        native_resolution_markets = {"intraday_continuous", "afrr_energy"}
+        return bool(native_resolution_markets.intersection(self.config.enabled_markets))
+
     @staticmethod
     def _check_required_columns(forecasts: pd.DataFrame, required_columns: set[str]) -> None:
         missing = sorted(required_columns - set(forecasts.columns))
@@ -161,6 +182,28 @@ def _find_datetime_column(frame: pd.DataFrame) -> str:
         if candidate in frame.columns:
             return candidate
     raise DataValidationError("forecasts_df.csv must contain a datetime column")
+
+
+def _parse_datetime_column(series: pd.Series, column_name: str) -> pd.Series:
+    if series.astype(str).str.match(r"\s*\d{1,2}\.\d{1,2}\.\d{4}").any():
+        try:
+            return pd.to_datetime(series, errors="raise", format="mixed", dayfirst=True)
+        except (TypeError, ValueError) as dotted_error:
+            raise DataValidationError(
+                f"Could not parse datetime column '{column_name}' in forecasts_df.csv. "
+                "Use a consistent datetime format such as YYYY-MM-DD HH:MM or DD.MM.YYYY HH:MM."
+            ) from dotted_error
+
+    try:
+        return pd.to_datetime(series, errors="raise")
+    except (TypeError, ValueError):
+        try:
+            return pd.to_datetime(series, errors="raise", format="mixed", dayfirst=True)
+        except (TypeError, ValueError) as second_error:
+            raise DataValidationError(
+                f"Could not parse datetime column '{column_name}' in forecasts_df.csv. "
+                "Use a consistent datetime format such as YYYY-MM-DD HH:MM or DD.MM.YYYY HH:MM."
+            ) from second_error
 
 
 def _infer_step_minutes(index: pd.DatetimeIndex) -> int:

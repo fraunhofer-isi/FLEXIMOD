@@ -11,13 +11,12 @@ from etes_market_model.config.case_config import CaseConfig
 from etes_market_model.data.data_loader import DataLoader, DataValidationError
 from etes_market_model.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 
-CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_DE"
 
-
-def test_forecasts_are_loaded_and_filtered() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_forecasts_are_loaded_and_filtered(tmp_path: Path) -> None:
+    case_dir = _write_loader_case(tmp_path)
+    config = CaseConfig.from_case_dir(case_dir)
     strategy = HybridETESGasStrategy(config)
-    loader = DataLoader(config, input_dir=CASE_DIR)
+    loader = DataLoader(config, input_dir=case_dir)
     plants = loader.load_plants()
     required_columns = loader.required_forecast_columns(
         plants,
@@ -29,9 +28,15 @@ def test_forecasts_are_loaded_and_filtered() -> None:
     assert forecasts.index.min() == pd.Timestamp("2025-01-01 00:00")
     assert forecasts.index.max() == pd.Timestamp("2025-01-07 23:45")
     assert len(forecasts) == 7 * 24 * 4
-    assert {"plant_1_heat_demand", "DE_DA_price", "natural_gas_price", "co2_price"}.issubset(
-        forecasts.columns
-    )
+    assert {
+        "plant_1_heat_demand",
+        "DE_DA_price",
+        "DE_ID3_price",
+        "natural_gas_price",
+        "co2_price",
+        "aFRR_energy_down_price",
+        "aFRR_energy_down_quantity",
+    }.issubset(forecasts.columns)
 
 
 def test_idc_enabled_does_not_resample_price_grid(tmp_path: Path) -> None:
@@ -44,7 +49,7 @@ case:
   country: DE
   timestep_minutes: 15
   simulation_start: "2025-01-01 00:00"
-  simulation_end: "2025-01-01 00:45"
+  simulation_end: "2025-01-01 01:00"
 strategy:
   name: hybrid_etes_gas
   dispatch:
@@ -82,5 +87,97 @@ markets:
     config = CaseConfig.from_case_dir(case_dir)
     loader = DataLoader(config, input_dir=case_dir)
 
-    with pytest.raises(DataValidationError, match="Intraday continuous is enabled"):
+    with pytest.raises(DataValidationError, match="Intraday continuous or aFRR energy is enabled"):
         loader.load_forecasts(required_columns={"DE_ID3_price"})
+
+
+def _write_loader_case(tmp_path: Path) -> Path:
+    case_dir = tmp_path / "loader_case"
+    case_dir.mkdir()
+    (case_dir / "config.yaml").write_text(
+        """
+case:
+  name: loader_case
+  country: DE
+  timestep_minutes: 15
+  simulation_start: "2025-01-01 00:00"
+  simulation_end: "2025-01-07 23:45"
+strategy:
+  name: hybrid_etes_gas
+  dispatch:
+    dispatch_method: pyomo
+solver:
+  name: highs
+  fallback_solvers: []
+  tee: false
+market_sequence:
+  - day_ahead
+  - intraday_continuous
+  - afrr_energy
+markets:
+  day_ahead:
+    enabled: true
+    signals:
+      price: DE_DA_price
+  intraday_continuous:
+    enabled: true
+    signals:
+      price: DE_ID3_price
+      volume: DE_ID3_volume
+  afrr_energy:
+    enabled: true
+    direction: down
+    product_resolution: "15min"
+    product_rules:
+      min_bid_mw: 1.0
+      bid_increment_mw: 1.0
+      validity_period_minutes: 15
+    signals:
+      price: aFRR_energy_down_price
+      system_activation: aFRR_energy_down_quantity
+    interpretation:
+      activation_unit: MW
+""".strip(),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {
+                "name": "plant_1",
+                "unit_type": "steam_plant",
+                "technology": "thermal_storage",
+                "demand": "plant_1_heat_demand",
+                "max_capacity": 4.0,
+                "min_capacity": 0.0,
+                "max_power_charge": 7.0,
+                "max_power_discharge": 7.0,
+                "initial_soc": 0.0,
+                "efficiency_charge": 0.92,
+                "efficiency_discharge": 0.92,
+                "storage_loss_rate": 0.0,
+            },
+            {
+                "name": "plant_1",
+                "unit_type": "steam_plant",
+                "technology": "boiler",
+                "fuel_type": "natural_gas",
+                "max_power": 5.0,
+                "min_power": 0.0,
+                "efficiency": 0.9,
+            },
+        ]
+    ).to_csv(case_dir / "plants.csv", index=False)
+    index = pd.date_range("2025-01-01 00:00", "2025-01-07 23:45", freq="15min")
+    pd.DataFrame(
+        {
+            "datetime": [timestamp.strftime("%d.%m.%Y %H:%M") for timestamp in index],
+            "plant_1_heat_demand": [2.0] * len(index),
+            "DE_DA_price": [50.0] * len(index),
+            "DE_ID3_price": [45.0] * len(index),
+            "natural_gas_price": [80.0] * len(index),
+            "co2_price": [0.0] * len(index),
+            "aFRR_energy_down_price": [20.0] * len(index),
+            "aFRR_energy_down_quantity": [0.0] * len(index),
+        }
+    ).to_csv(case_dir / "forecasts_df.csv", index=False)
+    return case_dir

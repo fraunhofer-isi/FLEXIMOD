@@ -143,6 +143,21 @@ class CaseConfig:
                 raise ConfigError("Enabled day_ahead market must define signals.price")
             if market_name == "intraday_continuous" and "price" not in market["signals"]:
                 raise ConfigError("Enabled intraday_continuous market must define signals.price")
+            if market_name == "afrr_energy":
+                signals = market["signals"]
+                if "price" not in signals:
+                    raise ConfigError("Enabled afrr_energy market must define signals.price")
+                if "system_activation" not in signals:
+                    raise ConfigError(
+                        "Enabled afrr_energy market must define signals.system_activation"
+                    )
+                rules = market.get("product_rules", {})
+                validity_period = int(rules.get("validity_period_minutes", 0))
+                if validity_period != self.timestep_minutes:
+                    raise ConfigError(
+                        "afrr_energy.product_rules.validity_period_minutes must match "
+                        "case.timestep_minutes"
+                    )
 
 
 def _find_project_root(config_path: Path) -> Path:

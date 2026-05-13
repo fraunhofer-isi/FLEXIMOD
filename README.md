@@ -10,7 +10,7 @@ FlexIMOD stands for **Flexible Industrial Market-Oriented Dispatch Model**.
 
 It is a modelling framework for industrial energy systems that participate in electricity and flexibility markets. The goal is to represent industrial plants, their connected technologies, and their market-oriented dispatch decisions in a modular and extensible way.
 
-The current MVP uses a hybrid ETES + gas boiler steam plant as the first case study. This first case implements a Germany day-ahead market setup with a rule-based market strategy and a Pyomo rolling-horizon plant dispatch model. Future cases can extend the same structure to other industrial processes, technologies, countries, and market designs.
+The current MVP uses a hybrid ETES + gas boiler steam plant as the first case study. This first case implements Germany-oriented day-ahead, intraday continuous, and proxy aFRR down energy stages with a rule-based market strategy and a Pyomo rolling-horizon plant dispatch model. Future cases can extend the same structure to other industrial processes, technologies, countries, and market designs.
 
 The architecture is intentionally modular:
 
@@ -32,13 +32,16 @@ data/input/hybrid_ETES_DE/
 
 `plants.csv` groups technologies by plant name. For example, two rows with `name=plant_1` define the ETES storage and gas boiler attached to the same industrial plant.
 
-`forecasts_df.csv` contains all time series. The DA-only MVP needs:
+`forecasts_df.csv` contains all time series. The current hybrid case uses:
 
 ```text
 datetime
 plant_1_heat_demand
 DE_DA_price
+DE_ID3_price
 natural_gas_price
+aFRR_energy_down_price
+aFRR_energy_down_quantity
 ```
 
 CO2 cost is currently disabled in the active MVP objective and benchmark, so
@@ -46,7 +49,7 @@ CO2 cost is currently disabled in the active MVP objective and benchmark, so
 
 Heat demand is interpreted as average MW_th over the time step and is converted internally to MWh_th using `case.timestep_minutes`.
 
-## Run The First DA-Only Case
+## Run The First Case
 
 FLEXIMOD targets Python 3.13 or newer.
 
@@ -75,6 +78,7 @@ dispatch_results.csv
 market_ledger.csv
 storage_cost_ledger.csv
 summary_indicators.csv
+afrr_energy_data_quality_summary.csv
 plots/
 ```
 
@@ -126,9 +130,17 @@ The gas-based benchmark and later IDC/aFRR bidding rules are embedded in `Hybrid
 
 ## Sequential Simulation
 
-Markets are evaluated in the order given by `market_sequence`. The MVP enables only `day_ahead`; `intraday_continuous`, `afrr_energy`, and `afrr_capacity` are present as disabled placeholders. Later stages should respect fixed earlier decisions, so IDC may adjust but not overwrite DA positions, and aFRR energy must use only remaining ETES charging headroom.
+Markets are evaluated in the order given by `market_sequence`. Day-ahead creates a fixed electricity baseline. Intraday continuous can adjust that baseline through buy/sell volumes. aFRR down energy adds proxy activated electricity consumption on top of the final planned position. aFRR capacity remains a disabled placeholder.
 
-To activate later stages, set the relevant market block to `enabled: true` and provide the configured signal columns in `forecasts_df.csv`. The implementation currently raises a clear `NotImplementedError` if those future stages are enabled.
+The aFRR down activation signal is system-level/proxy activation, not plant-specific activation. Results should be interpreted as a scenario based on the available system activation proxy unless plant-specific bid acceptance and activation data are available.
+
+The aFRR down price sign convention is:
+
+- positive price: the plant pays for activated electricity;
+- zero price: activated electricity is settled at zero price;
+- negative price: the plant is effectively paid to consume electricity.
+
+If source data use another convention, preprocess it before putting it into `forecasts_df.csv`.
 
 ## Pyomo Rolling Horizon
 

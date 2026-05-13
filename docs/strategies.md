@@ -38,9 +38,9 @@ decide_afrr_energy(...)
 decide_afrr_capacity(...)
 ```
 
-`decide_day_ahead` and the first `decide_intraday_continuous` implementation are
-available. aFRR energy and aFRR capacity remain placeholders and should later
-respect fixed decisions from earlier markets.
+`decide_day_ahead`, `decide_intraday_continuous`, and the first aFRR down energy
+implementation are available. aFRR capacity remains a placeholder and should
+later respect fixed decisions from earlier markets.
 
 ## First Implemented Strategy
 
@@ -61,7 +61,7 @@ It is designed for the first case study:
 ```text
 hybrid ETES + gas boiler steam plant
 Germany
-day-ahead market with optional intraday continuous adjustment
+day-ahead market with optional intraday continuous and aFRR down energy stages
 15-minute dispatch resolution
 ```
 
@@ -262,6 +262,53 @@ If individual IDC price values are missing, the strategy issues a warning and
 sets both IDC buy and sell bounds to zero for those timesteps. Missing prices
 are not silently filled for trading logic.
 
+## Negative aFRR Down Energy Strategy Logic
+
+The first aFRR energy implementation uses direction-specific down columns:
+
+```text
+markets.afrr_energy.signals.price
+markets.afrr_energy.signals.system_activation
+```
+
+The input quantity is interpreted as a system-level/proxy activation magnitude
+for aFRR down, not plant-specific activation. Positive quantities are used
+directly. Negative quantities are converted to absolute magnitude and flagged in
+the data-quality summary. Missing prices always block bidding, even if
+activation quantity is zero. Price values of zero are valid.
+
+The strategy calculates feasible bid potential before Pyomo. The bid potential
+uses:
+
+```text
+charge-power headroom after DA + IDC
+storage-capacity headroom
+minimum bid eligibility in MW
+```
+
+The 1 MW minimum bid rule applies to bid potential, not realised activation.
+Actual proxy activation is calculated before the plant solve:
+
+```text
+afrr_energy_activated_MWh =
+    min(afrr_energy_bid_upper_bound_MWh,
+        afrr_down_system_activation_MWh_clean)
+```
+
+Pyomo receives the activated volume as a fixed parameter. It does not decide TSO
+activation. For the current hybrid ETES + gas plant:
+
+```text
+actual_electricity_consumption_MWh =
+    final_planned_electricity_MWh + afrr_energy_activated_MWh
+
+etes_charge_MWh =
+    actual_electricity_consumption_MWh
+```
+
+This ETES mapping is plant-specific and must be generalized for future
+industrial plants with multiple electric processes.
+
 ## What Pyomo Decides
 
 After the strategy computes the benchmark and charging gate, the plant model
@@ -287,15 +334,18 @@ decides how much charging is useful and feasible.
 
 ## Current Simplifications
 
-The current DA + IDC strategy is deliberately simple:
+The current DA + IDC + aFRR down strategy is deliberately simple:
 
 - the plant is treated as a price taker;
 - there is no explicit bid curve;
 - there is no market clearing uncertainty;
 - IDC is an index-based adjustment, not an order-book model;
+- aFRR down activation is proxy/scenario activation, not plant-specific TSO
+  activation;
 - day-ahead positions are fixed before IDC adjustments;
+- DA and IDC positions are fixed before aFRR down activation;
 - CO2 cost is disabled for the active MVP objective and benchmark;
-- day-ahead and IDC prices are treated as deterministic input data.
+- day-ahead, IDC, and aFRR down prices are treated as deterministic input data.
 
 These simplifications are acceptable for the first MVP because the objective is
 to test the plant physics, ledgers, and output workflow before adding more
@@ -303,10 +353,9 @@ realistic market mechanisms.
 
 ## Planned Strategy Extensions
 
-The next strategy stages should be added in this order:
+The next strategy stage should be:
 
-1. Negative aFRR energy using exogenous activation.
-2. Negative aFRR capacity with reserved charging headroom.
+1. Negative aFRR capacity with reserved charging headroom.
 
 The key rule for all future stages:
 

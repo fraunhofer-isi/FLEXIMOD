@@ -12,7 +12,7 @@ build/
 dist/
 *.egg-info/
 
-data/input/**/forecasts_df.csv
+data/input/aFRR activate volume
 data/output/
 data/processed/
 *.xlsx

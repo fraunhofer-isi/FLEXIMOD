@@ -188,10 +188,12 @@ class StorageCostLedger:
             da_source = max(float(row.get("DA_position_MWh", actual_charge)), 0.0)
             idc_sell = max(float(row.get("IDC_sell_MWh", 0.0)), 0.0)
             idc_buy = max(float(row.get("IDC_buy_MWh", 0.0)), 0.0)
+            afrr_energy = max(float(row.get("afrr_energy_activated_MWh", 0.0)), 0.0)
             da_source = max(da_source - idc_sell, 0.0)
             source_volumes = {
                 "day_ahead": da_source,
                 "intraday_continuous": idc_buy,
+                "afrr_energy": afrr_energy,
             }
             total_source_volume = sum(source_volumes.values())
             if total_source_volume > actual_charge and total_source_volume > 1e-12:
@@ -221,6 +223,16 @@ class StorageCostLedger:
                         float(row.get("IDC_price_EUR_per_MWh", 0.0)),
                         idc_volume,
                         idc_volume * plant.etes.efficiency_charge,
+                    )
+                )
+            if source_volumes.get("afrr_energy", 0.0) > 1e-12:
+                afrr_volume = source_volumes["afrr_energy"]
+                events.append(
+                    (
+                        "afrr_energy",
+                        float(row.get("afrr_energy_price_clean_EUR_per_MWh", 0.0)),
+                        afrr_volume,
+                        afrr_volume * plant.etes.efficiency_charge,
                     )
                 )
             if source_volumes.get("other", 0.0) > 1e-12:

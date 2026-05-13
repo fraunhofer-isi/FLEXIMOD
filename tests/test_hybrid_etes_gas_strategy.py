@@ -36,6 +36,17 @@ def idc_case(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def afrr_case(tmp_path: Path) -> Path:
+    """Create a tiny DA + IDC + aFRR down case."""
+
+    case_dir = tmp_path / "afrr_case"
+    case_dir.mkdir()
+    _write_config(case_dir / "config.yaml", idc_enabled=True, afrr_enabled=True)
+    _write_plants(case_dir / "plants.csv")
+    return case_dir
+
+
+@pytest.fixture
 def day_ahead_only_results(
     day_ahead_only_case: Path,
     tmp_path: Path,
@@ -200,6 +211,180 @@ def test_missing_idc_price_column_raises_clear_error(
         _run_case(idc_case, tmp_path)
 
 
+def test_afrr_disabled_keeps_final_planned_electricity(
+    idc_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        idc_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+    )
+
+    results = _run_case(idc_case, tmp_path)
+    market = results["market"]
+
+    assert market["afrr_energy_bid_MWh"].sum() == pytest.approx(0.0)
+    assert market["afrr_energy_activated_MWh"].sum() == pytest.approx(0.0)
+    assert market["actual_electricity_consumption_MWh"].to_numpy() == pytest.approx(
+        market["final_planned_electricity_MWh"].to_numpy()
+    )
+
+
+def test_cheap_afrr_down_creates_proxy_activation(
+    afrr_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        afrr_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[2.0] * 8,
+        heat_demand=[0.0] * 8,
+    )
+
+    results = _run_case(afrr_case, tmp_path)
+    market = results["market"]
+    dispatch = results["dispatch"]
+
+    assert market["afrr_energy_bid_MWh"].sum() > 0.0
+    assert market["afrr_energy_activated_MWh"].sum() > 0.0
+    assert (market["afrr_energy_activated_MWh"] <= market["afrr_energy_bid_MWh"] + 1e-8).all()
+    assert (
+        market["afrr_energy_activated_MWh"]
+        <= market["afrr_down_system_activation_MWh_clean"] + 1e-8
+    ).all()
+    _assert_actual_electricity_with_afrr(market)
+    assert dispatch["etes_charge_MWh"].to_numpy() == pytest.approx(
+        dispatch["actual_electricity_consumption_MWh"].to_numpy()
+    )
+    _assert_heat_is_feasible(dispatch)
+
+
+def test_expensive_afrr_down_creates_no_bid_or_activation(
+    afrr_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        afrr_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[120.0] * 8,
+        afrr_quantities=[2.0] * 8,
+    )
+
+    results = _run_case(afrr_case, tmp_path)
+    market = results["market"]
+
+    assert market["afrr_energy_bid_MWh"].sum() == pytest.approx(0.0)
+    assert market["afrr_energy_activated_MWh"].sum() == pytest.approx(0.0)
+    _assert_actual_electricity_with_afrr(market)
+
+
+def test_afrr_missing_price_blocks_bid_even_with_activation(
+    afrr_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        afrr_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[None] + [20.0] * 7,
+        afrr_quantities=[2.0] * 8,
+    )
+
+    with pytest.warns(UserWarning, match="aFRR down price contains missing values"):
+        results = _run_case(afrr_case, tmp_path)
+    first = results["market"].sort_values("datetime").iloc[0]
+
+    assert first["afrr_energy_bid_MWh"] == pytest.approx(0.0)
+    assert first["afrr_energy_activated_MWh"] == pytest.approx(0.0)
+    assert first["afrr_energy_price_clean"] == pytest.approx(0.0)
+    assert first["afrr_data_quality_flag"] == "activation_without_price"
+
+
+def test_afrr_minimum_bid_rule_uses_mw_headroom(
+    afrr_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_plants(afrr_case / "plants.csv", storage_initial_soc=3.8)
+    _write_forecasts(
+        afrr_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[2.0] * 8,
+        heat_demand=[0.0] * 8,
+    )
+
+    results = _run_case(afrr_case, tmp_path)
+    first = results["market"].sort_values("datetime").iloc[0]
+
+    assert first["afrr_energy_bid_MWh"] == pytest.approx(0.0)
+    assert first["afrr_energy_activated_MWh"] == pytest.approx(0.0)
+
+
+def test_afrr_bid_uses_storage_capacity_headroom(
+    afrr_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_plants(afrr_case / "plants.csv", storage_initial_soc=3.6)
+    _write_forecasts(
+        afrr_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[10.0] * 8,
+        heat_demand=[0.0] * 8,
+    )
+
+    results = _run_case(afrr_case, tmp_path)
+    market = results["market"].sort_values("datetime")
+    first = market.iloc[0]
+
+    assert first["afrr_energy_bid_MWh"] <= (4.0 - 3.6) / 0.92 + 1e-8
+    _assert_actual_electricity_with_afrr(market)
+
+
+def test_missing_afrr_down_price_column_raises_clear_error(
+    afrr_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        afrr_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[2.0] * 8,
+    )
+    forecasts = pd.read_csv(afrr_case / "forecasts_df.csv")
+    forecasts = forecasts.drop(columns=["aFRR_energy_down_price"])
+    forecasts.to_csv(afrr_case / "forecasts_df.csv", index=False)
+
+    with pytest.raises(ValueError, match="aFRR_energy_down_price"):
+        _run_case(afrr_case, tmp_path)
+
+
+def test_missing_afrr_down_activation_column_raises_clear_error(
+    afrr_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        afrr_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[2.0] * 8,
+    )
+    forecasts = pd.read_csv(afrr_case / "forecasts_df.csv")
+    forecasts = forecasts.drop(columns=["aFRR_energy_down_quantity"])
+    forecasts.to_csv(afrr_case / "forecasts_df.csv", index=False)
+
+    with pytest.raises(ValueError, match="aFRR_energy_down_quantity"):
+        _run_case(afrr_case, tmp_path)
+
+
 def _run_case(case_dir: Path, tmp_path: Path) -> dict[str, pd.DataFrame]:
     runner = SimulationRunner(
         case_dir=case_dir,
@@ -230,7 +415,14 @@ def _assert_heat_is_feasible(dispatch: pd.DataFrame) -> None:
     assert dispatch["unmet_heat_MWh"].sum() == pytest.approx(0.0)
 
 
-def _write_config(path: Path, idc_enabled: bool = False) -> None:
+def _assert_actual_electricity_with_afrr(market: pd.DataFrame) -> None:
+    expected = market["final_planned_electricity_MWh"] + market["afrr_energy_activated_MWh"]
+    assert market["actual_electricity_consumption_MWh"].to_numpy() == pytest.approx(
+        expected.to_numpy()
+    )
+
+
+def _write_config(path: Path, idc_enabled: bool = False, afrr_enabled: bool = False) -> None:
     path.write_text(
         f"""
 case:
@@ -282,14 +474,20 @@ markets:
       volume: "DE_ID3_volume"
 
   afrr_energy:
-    enabled: false
-    direction: "negative"
+    enabled: {str(afrr_enabled).lower()}
+    direction: "down"
     product_resolution: "15min"
     gate_close:
       relative_to_delivery_start_minutes: -25
+    product_rules:
+      min_bid_mw: 1.0
+      bid_increment_mw: 1.0
+      validity_period_minutes: 15
     signals:
-      price: "DE_afrr_energy_neg_price"
-      activation_volume: "DE_afrr_energy_neg_activation"
+      price: "aFRR_energy_down_price"
+      system_activation: "aFRR_energy_down_quantity"
+    interpretation:
+      activation_unit: "MW"
 
   afrr_capacity:
     enabled: false
@@ -307,7 +505,7 @@ markets:
     )
 
 
-def _write_plants(path: Path) -> None:
+def _write_plants(path: Path, storage_initial_soc: float = 0.0) -> None:
     plants = pd.DataFrame(
         [
             {
@@ -328,7 +526,7 @@ def _write_plants(path: Path) -> None:
                 "min_capacity": 0.0,
                 "max_power_charge": 7.0,
                 "max_power_discharge": 7.0,
-                "initial_soc": 0.0,
+                "initial_soc": storage_initial_soc,
                 "efficiency_charge": 0.92,
                 "efficiency_discharge": 0.92,
                 "storage_loss_rate": 0.0,
@@ -356,19 +554,26 @@ def _write_forecasts(
     path: Path,
     da_prices: list[float] | None = None,
     idc_prices: list[float | None] | None = None,
+    afrr_prices: list[float | None] | None = None,
+    afrr_quantities: list[float | None] | None = None,
+    heat_demand: list[float] | None = None,
 ) -> None:
     datetimes = pd.date_range("2025-01-01 00:00", periods=8, freq="15min")
     da_prices = da_prices or [10.0] * 4 + [120.0] * 4
     forecasts = pd.DataFrame(
         {
             "datetime": datetimes,
-            "plant_1_heat_demand": [2.0] * 8,
+            "plant_1_heat_demand": heat_demand or [2.0] * 8,
             "DE_DA_price": da_prices,
             "natural_gas_price": [80.0] * 8,
         }
     )
     if idc_prices is not None:
         forecasts["DE_ID3_price"] = idc_prices
+    if afrr_prices is not None:
+        forecasts["aFRR_energy_down_price"] = afrr_prices
+    if afrr_quantities is not None:
+        forecasts["aFRR_energy_down_quantity"] = afrr_quantities
     forecasts.to_csv(path, index=False)
 
 

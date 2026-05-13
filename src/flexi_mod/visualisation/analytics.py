@@ -93,6 +93,7 @@ def calculate_summary_indicators(
                 **_market_indicators(plant_dispatch, plant_market),
                 **_economic_indicators(plant_dispatch, plant_market, plant_storage),
                 **_storage_source_indicators(plant_storage),
+                **_afrr_data_quality_indicators(plant_market),
             }
         )
     return pd.DataFrame(records)
@@ -291,6 +292,7 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
     idc_buy = _sum(market, "IDC_buy_MWh")
     idc_sell = _sum(market, "IDC_sell_MWh")
     afrr = _sum(market, "afrr_energy_activated_MWh")
+    afrr_bid = _sum(market, "afrr_energy_bid_MWh")
     final_planned = _sum(
         market,
         "final_planned_electricity_MWh",
@@ -311,6 +313,8 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
         "total_IDC_buy_MWh": idc_buy,
         "total_IDC_sell_MWh": idc_sell,
         "total_final_planned_electricity_MWh": final_planned,
+        "total_afrr_energy_bid_MWh": afrr_bid,
+        "total_afrr_energy_activated_MWh": afrr,
         "total_IDC_buy_electricity_MWh": idc_buy,
         "total_IDC_sell_electricity_MWh": idc_sell,
         "total_afrr_activated_electricity_MWh": afrr,
@@ -342,6 +346,16 @@ def _economic_indicators(
         price_col="IDC_price",
     )
     afrr_energy_value = _energy_value(market, "afrr_energy_activated_MWh", "afrr_energy_price")
+    afrr_energy_cost = _sum(
+        dispatch,
+        "afrr_energy_cost_EUR",
+        fallback=_energy_value(
+            market,
+            "afrr_energy_activated_MWh",
+            "afrr_energy_price_clean",
+        ),
+    )
+    afrr_savings = _sum(dispatch, "afrr_energy_savings_vs_benchmark_EUR")
     afrr_capacity_revenue = _energy_value(
         market,
         "afrr_capacity_reserved_MW",
@@ -363,6 +377,8 @@ def _economic_indicators(
         "IDC_buy_cost_EUR": idc_buy_cost,
         "IDC_sell_revenue_EUR": idc_sell_revenue,
         "IDC_net_cashflow_EUR": idc_sell_revenue - idc_buy_cost,
+        "afrr_energy_cost_EUR": afrr_energy_cost,
+        "afrr_energy_savings_vs_benchmark_EUR": afrr_savings,
         "total_IDC_trading_value_EUR": idc_value,
         "total_afrr_energy_value_EUR": afrr_energy_value,
         "total_afrr_capacity_revenue_EUR": afrr_capacity_revenue,
@@ -396,6 +412,59 @@ def _storage_source_indicators(storage: pd.DataFrame) -> dict[str, float]:
         "weighted_average_stored_heat_cost_EUR_per_MWh_th": _last_non_missing(
             storage,
             "weighted_average_storage_cost_EUR_per_MWh_th",
+        ),
+    }
+
+
+def _afrr_data_quality_indicators(market: pd.DataFrame) -> dict[str, float]:
+    empty = {
+        "aFRR_down_total_rows": 0.0,
+        "aFRR_down_valid_activation_rows": 0.0,
+        "aFRR_down_zero_activation_rows": 0.0,
+        "aFRR_down_missing_price_rows": 0.0,
+        "aFRR_down_missing_quantity_rows": 0.0,
+        "aFRR_down_activation_without_price_rows": 0.0,
+        "aFRR_down_skipped_activation_MWh_due_to_missing_price": 0.0,
+        "aFRR_down_used_system_activation_MWh": 0.0,
+        "aFRR_down_negative_quantity_rows": 0.0,
+        "aFRR_down_price_zero_with_activation_rows": 0.0,
+    }
+    if market.empty or "afrr_data_quality_flag" not in market.columns:
+        return empty
+
+    flags = market["afrr_data_quality_flag"].fillna("").astype(str)
+    raw_price = pd.to_numeric(
+        market["afrr_energy_price"]
+        if "afrr_energy_price" in market.columns
+        else pd.Series(pd.NA, index=market.index),
+        errors="coerce",
+    )
+    raw_quantity = pd.to_numeric(
+        market["afrr_raw_system_activation"]
+        if "afrr_raw_system_activation" in market.columns
+        else pd.Series(pd.NA, index=market.index),
+        errors="coerce",
+    )
+    raw_activation_mwh = _series(market, "afrr_raw_system_activation_MWh")
+    clean_activation = _series(market, "afrr_down_system_activation_MWh_clean")
+    missing_price = raw_price.isna()
+    missing_quantity = raw_quantity.isna()
+    activation_without_price = flags == "activation_without_price"
+
+    return {
+        "aFRR_down_total_rows": float(len(market)),
+        "aFRR_down_valid_activation_rows": float((clean_activation > 1e-12).sum()),
+        "aFRR_down_zero_activation_rows": float((clean_activation <= 1e-12).sum()),
+        "aFRR_down_missing_price_rows": float(missing_price.sum()),
+        "aFRR_down_missing_quantity_rows": float(missing_quantity.sum()),
+        "aFRR_down_activation_without_price_rows": float(activation_without_price.sum()),
+        "aFRR_down_skipped_activation_MWh_due_to_missing_price": float(
+            raw_activation_mwh.loc[activation_without_price].sum()
+        ),
+        "aFRR_down_used_system_activation_MWh": float(clean_activation.sum()),
+        "aFRR_down_negative_quantity_rows": float((flags == "negative_quantity_converted").sum()),
+        "aFRR_down_price_zero_with_activation_rows": float(
+            ((raw_price == 0.0) & (clean_activation > 1e-12)).sum()
         ),
     }
 

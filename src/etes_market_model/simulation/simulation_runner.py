@@ -98,6 +98,14 @@ class SimulationRunner:
             summary.to_csv(path, index=False)
             output_paths["summary_indicators"] = path
 
+        if (
+            MarketStage.AFRR_ENERGY.value in self.config.enabled_markets
+            and not strategy.afrr_energy_data_quality_summary.empty
+        ):
+            path = output_dir / "afrr_energy_data_quality_summary.csv"
+            strategy.afrr_energy_data_quality_summary.to_csv(path, index=False)
+            output_paths["afrr_energy_data_quality_summary"] = path
+
         if self.output_options.create_plots:
             output_paths["plots"] = create_case_plots(
                 dispatch_results,
@@ -139,9 +147,12 @@ class SimulationRunner:
                 )
                 fixed_positions = dispatch
             if MarketStage.AFRR_ENERGY.value in enabled:
-                raise NotImplementedError(
-                    "aFRR energy is present as a module placeholder but is disabled in the MVP"
+                dispatch = strategy.decide_afrr_energy(
+                    plant,
+                    forecasts,
+                    fixed_positions,
                 )
+                fixed_positions = dispatch
 
             dispatch_parts.append(fixed_positions)
 
