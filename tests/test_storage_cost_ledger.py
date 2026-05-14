@@ -42,3 +42,33 @@ def test_storage_cost_ledger_saves(tmp_path: Path) -> None:
     )
     path = ledger.save(tmp_path / "storage_cost_ledger.csv")
     assert path.exists()
+
+
+def test_storage_cost_ledger_schema_is_modeller_facing() -> None:
+    ledger = StorageCostLedger()
+    ledger.record_storage_step(
+        datetime="2025-01-01 00:00",
+        plant_name="plant_1",
+        source_events=[],
+        remaining_stored_heat_mwh=0.0,
+    )
+
+    frame = ledger.to_dataframe()
+
+    expected_columns = {
+        "datetime",
+        "plant_name",
+        "source_market",
+        "electricity_price_EUR_per_MWh",
+        "electricity_volume_MWh",
+        "stored_heat_added_MWh",
+        "effective_heat_cost_EUR_per_MWh_th",
+        "remaining_stored_heat_MWh",
+        "weighted_average_storage_cost_EUR_per_MWh_th",
+        "remaining_stored_heat_day_ahead_MWh",
+        "remaining_stored_heat_IDC_MWh",
+        "remaining_stored_heat_afrr_energy_MWh",
+        "remaining_stored_heat_other_MWh",
+    }
+    assert set(frame.columns) == expected_columns
+    assert frame["source_market"].iloc[0] == "none"
