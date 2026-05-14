@@ -21,6 +21,10 @@ dependencies = [
     "highspy>=1.7",
 ]
 
+[project.scripts]
+fleximod-run-case = "flexi_mod.simulation.run_case:main"
+fleximod-plot-case = "flexi_mod.simulation.plot_case:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
@@ -39,9 +43,6 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-
-[tool.ruff.lint.per-file-ignores]
-"scripts/*.py" = ["E402"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

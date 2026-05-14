@@ -18,7 +18,8 @@ plant physics.
 In FlexIMOD, the intended split is:
 
 ```text
-strategy: market logic, eligibility, benchmarks, bid rules
+markets: product rules, timing, configured signal preparation
+strategy: operator decisions, eligibility, benchmarks, bid rules
 plant model: feasible dispatch, heat balance, storage balance, costs
 runner: sequencing, input/output coordination
 ```
@@ -189,10 +190,11 @@ volumes.
 
 The first IDC implementation is an index-based adjustment model. It uses the
 configured intraday price signal, for example an ID3 column in a German case,
-but the strategy reads the signal name from:
+through the intraday continuous market class and the configured price signal.
+In `config.yaml`, that signal lives under:
 
 ```text
-markets.intraday_continuous.signals.price
+markets -> intraday_continuous -> signals -> price
 ```
 
 IDC is not modelled as an order book. There are no repeated trading loops,
@@ -267,8 +269,8 @@ are not silently filled for trading logic.
 The first aFRR energy implementation uses direction-specific down columns:
 
 ```text
-markets.afrr_energy.signals.price
-markets.afrr_energy.signals.system_activation
+markets -> afrr_energy -> signals -> price
+markets -> afrr_energy -> signals -> system_activation
 ```
 
 The input quantity is interpreted as a system-level/proxy activation magnitude

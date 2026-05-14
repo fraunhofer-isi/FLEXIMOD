@@ -9,7 +9,9 @@ import warnings
 import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.markets.afrr_energy import clean_afrr_down_data
+from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
+from flexi_mod.markets.day_ahead import DayAheadMarket
+from flexi_mod.markets.intraday_continuous import IntradayContinuousMarket
 from flexi_mod.plants.steam_generation_plant import (
     AFRRDownSignals,
     DispatchSignals,
@@ -29,7 +31,12 @@ AFRR_ENERGY_MARGIN_EUR_PER_MWH = 0.0
 
 
 class HybridETESGasStrategy(BaseStrategy):
-    """Rule-based market wrapper around the Pyomo plant dispatch model."""
+    """Operator strategy for electricity procurement and plant operation.
+
+    The configured market classes describe market products and prepare market
+    inputs. This strategy decides how the industrial operator acts on those
+    inputs using the gas benchmark, margins and plant flexibility.
+    """
 
     def __init__(self, config: CaseConfig):
         self.config = config
@@ -47,12 +54,14 @@ class HybridETESGasStrategy(BaseStrategy):
     def decide_day_ahead(
         self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
     ) -> pd.DataFrame:
-        price_col = self.config.market_signal("day_ahead", "price")
+        market = DayAheadMarket("day_ahead", self.config.market("day_ahead"))
+        market_data = market.prepare_market_data(forecasts)
+        price_col = market.signal_column("price")
 
         benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         charge_allowed = self._calculate_charge_gate(
             plant=plant,
-            electricity_price=forecasts[price_col].astype(float),
+            electricity_price=market_data["day_ahead_price_EUR_per_MWh"],
             benchmark=benchmark,
         )
 
@@ -70,18 +79,23 @@ class HybridETESGasStrategy(BaseStrategy):
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
     ) -> pd.DataFrame:
-        idc_price_col = self.config.market_signal("intraday_continuous", "price")
+        idc_market = IntradayContinuousMarket(
+            "intraday_continuous",
+            self.config.market("intraday_continuous"),
+        )
+        idc_data = idc_market.prepare_market_data(forecasts)
+        idc_price_col = idc_market.signal_column("price")
         da_price_col = self.config.market_signal("day_ahead", "price")
 
         da_position = self._fixed_da_position(fixed_positions, forecasts.index)
-        idc_price = forecasts[idc_price_col].astype(float)
+        idc_price = idc_data["IDC_price_EUR_per_MWh"]
         gas_heat_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         electricity_benchmark = self.calculate_electricity_trading_benchmark(
             plant,
             gas_heat_benchmark,
         )
 
-        missing_price = idc_price.isna()
+        missing_price = ~idc_data["IDC_price_available"]
         if missing_price.any():
             warnings.warn(
                 "IDC price contains missing values. IDC action is set to zero for "
@@ -123,27 +137,17 @@ class HybridETESGasStrategy(BaseStrategy):
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
     ) -> pd.DataFrame:
-        price_col = self.config.market_signal("afrr_energy", "price")
-        activation_col = self.config.market_signal("afrr_energy", "system_activation")
         da_price_col = self.config.market_signal("day_ahead", "price")
         idc_price_col = self.config.market_signal("intraday_continuous", "price")
         if idc_price_col not in forecasts.columns:
             forecasts = forecasts.copy()
             forecasts[idc_price_col] = 0.0
         timestep_hours = self.config.timestep_minutes / 60.0
-        afrr_market = self.config.market("afrr_energy")
-        interpretation = afrr_market.get("interpretation", {})
-        activation_unit = str(interpretation.get("activation_unit", "MW"))
-        product_rules = afrr_market.get("product_rules", {})
+        afrr_market = AFRRDownEnergyMarket("afrr_energy", self.config.market("afrr_energy"))
+        product_rules = afrr_market.product_rules
         min_bid_mw = float(product_rules.get("min_bid_mw", 0.0))
 
-        cleaned = clean_afrr_down_data(
-            forecasts=forecasts,
-            price_col=price_col,
-            quantity_col=activation_col,
-            activation_unit=activation_unit,
-            timestep_hours=timestep_hours,
-        )
+        cleaned = afrr_market.prepare_market_data(forecasts, timestep_hours=timestep_hours)
         self.afrr_energy_data_quality_summary = cleaned.quality_summary
         clean_afrr = cleaned.frame
 

@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+"""Command-line entry point for running configured FLEXIMOD cases."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,12 +11,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+def _find_project_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return Path.cwd().resolve()
+
+
+PROJECT_ROOT = _find_project_root()
 SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
-
-from flexi_mod.simulation.simulation_runner import OutputOptions, SimulationRunner
 
 available_examples: dict[str, dict[str, str]] = {
     "hybrid_etes_de": {
@@ -31,15 +39,6 @@ available_examples: dict[str, dict[str, str]] = {
 
 # Select the example to run from the available examples above.
 example = "hybrid_etes_de"
-
-
-default_output_options = OutputOptions(
-    save_dispatch_results=True,
-    save_market_ledger=True,
-    save_storage_cost_ledger=True,
-    save_summary_indicators=True,
-    create_plots=True,
-)
 
 
 def resolve_example_paths(example: str) -> dict[str, Path]:
@@ -73,6 +72,8 @@ def resolve_example_paths(example: str) -> dict[str, Path]:
 
 
 def build_runner_settings(args: argparse.Namespace) -> dict[str, Any]:
+    from flexi_mod.simulation.simulation_runner import OutputOptions
+
     if args.case:
         case_dir = Path(args.case).resolve()
         output_dir = (
@@ -90,16 +91,15 @@ def build_runner_settings(args: argparse.Namespace) -> dict[str, Any]:
         if args.output_dir:
             paths["output_dir"] = Path(args.output_dir).resolve()
 
+    defaults = _default_output_options()
     output_options = OutputOptions(
-        save_dispatch_results=default_output_options.save_dispatch_results
-        and not args.skip_dispatch_results,
-        save_market_ledger=default_output_options.save_market_ledger
-        and not args.skip_market_ledger,
-        save_storage_cost_ledger=default_output_options.save_storage_cost_ledger
+        save_dispatch_results=defaults.save_dispatch_results and not args.skip_dispatch_results,
+        save_market_ledger=defaults.save_market_ledger and not args.skip_market_ledger,
+        save_storage_cost_ledger=defaults.save_storage_cost_ledger
         and not args.skip_storage_cost_ledger,
-        save_summary_indicators=default_output_options.save_summary_indicators
+        save_summary_indicators=defaults.save_summary_indicators
         and not args.skip_summary_indicators,
-        create_plots=default_output_options.create_plots and not args.no_plots,
+        create_plots=defaults.create_plots and not args.no_plots,
     )
 
     return {
@@ -110,15 +110,27 @@ def build_runner_settings(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _default_output_options() -> Any:
+    from flexi_mod.simulation.simulation_runner import OutputOptions
+
+    return OutputOptions(
+        save_dispatch_results=True,
+        save_market_ledger=True,
+        save_storage_cost_ledger=True,
+        save_summary_indicators=True,
+        create_plots=True,
+    )
+
+
 def main() -> None:
+    from flexi_mod.simulation.simulation_runner import SimulationRunner
+
     parser = argparse.ArgumentParser(description="Run a FLEXIMOD case.")
     parser.add_argument(
         "--example",
         default=example,
         choices=sorted(available_examples),
-        help=(
-            "Named example from the runner registry. Defaults to the script-level example variable."
-        ),
+        help="Named example from the runner registry. Defaults to the module-level example.",
     )
     parser.add_argument(
         "--case",

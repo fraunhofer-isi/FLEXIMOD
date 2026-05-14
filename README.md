@@ -14,8 +14,8 @@ The current MVP uses a hybrid ETES + gas boiler steam plant as the first case st
 
 The architecture is intentionally modular:
 
-- `config.yaml` contains modelling settings, active markets, market timing and market signal mappings.
-- `scripts/run_case.py` contains example selection, input paths, output paths and output switches.
+- `config.yaml` contains modelling settings, active markets, market product rules, market timing and market signal mappings.
+- `flexi_mod.simulation.run_case` contains example selection, input paths, output paths and output switches.
 - `plants.csv` defines one plant by grouping connected technology rows.
 - `forecasts_df.csv` contains all time series.
 
@@ -56,19 +56,19 @@ FLEXIMOD targets Python 3.13 or newer.
 Run the registered example:
 
 ```bash
-python scripts/run_case.py --example hybrid_etes_de
+python src/flexi_mod/simulation/run_case.py --example hybrid_etes_de
 ```
 
 You can also run a case directory directly:
 
 ```bash
-python scripts/run_case.py --case data/input/hybrid_ETES_DE
+python src/flexi_mod/simulation/run_case.py --case data/input/hybrid_ETES_DE
 ```
 
 Create plots from existing output files:
 
 ```bash
-python scripts/plot_case.py --case data/input/hybrid_ETES_DE --format png
+python src/flexi_mod/simulation/plot_case.py --case data/input/hybrid_ETES_DE --format png
 ```
 
 Outputs are written by the runner to `data/output/hybrid_ETES_DE/` by default:
@@ -114,6 +114,16 @@ Additional documentation is available in:
 - [Modeling Philosophy And Architecture](docs/modeling_philosophy_and_architecture.md)
 - [Strategy Documentation](docs/strategies.md)
 
+## Market Layer
+
+Market classes live in `src/flexi_mod/markets/`. They describe market design:
+the traded product, product resolution, gate-close metadata, configured signal
+columns and product-rule parameters. They prepare market data for the strategy,
+but they do not decide the industrial operator's buy, sell or bid behaviour.
+
+The current market classes cover day-ahead energy, intraday continuous energy
+adjustments, aFRR down energy, and a disabled aFRR capacity placeholder.
+
 ## Configuration Philosophy
 
 `config.yaml` does not contain file paths, output switches or detailed strategy rules. Those are owned by the runner and strategy classes.
@@ -124,7 +134,7 @@ The current config keeps only case and model assumptions:
 - strategy name and Pyomo rolling-horizon dispatch settings;
 - solver choice;
 - market sequence;
-- market enable flags, timing metadata and signal column mappings.
+- market enable flags, product rules, timing metadata and signal column mappings.
 
 The gas-based benchmark and later IDC/aFRR bidding rules are embedded in `HybridETESGasStrategy`, so the config stays compact and close to the market setup.
 

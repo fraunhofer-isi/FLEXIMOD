@@ -16,15 +16,19 @@ countries, and market designs.
 
 ## Core Philosophy
 
-FlexIMOD separates three questions that are often mixed in monolithic models:
+FlexIMOD separates four questions that are often mixed in monolithic models:
 
 1. Which market stages exist, and in which order are they evaluated?
-2. Which market actions are attractive or allowed according to a strategy?
-3. Which plant operation is physically feasible and cost-minimal?
+2. What are the product rules, signal columns and timing conventions of each
+   market?
+3. Which market actions are attractive or allowed according to an operator
+   strategy?
+4. Which plant operation is physically feasible and cost-minimal?
 
 The answer to the first question belongs to the case configuration and runner.
-The answer to the second question belongs to strategy classes. The answer to the
-third question belongs to the plant and technology model.
+The answer to the second question belongs to market classes. The answer to the
+third question belongs to strategy classes. The answer to the fourth question
+belongs to the plant and technology model.
 
 This gives the project its central modelling principle:
 
@@ -80,6 +84,10 @@ Important modules:
 ```text
 src/flexi_mod/config/case_config.py
 src/flexi_mod/data/data_loader.py
+src/flexi_mod/markets/base_market.py
+src/flexi_mod/markets/day_ahead.py
+src/flexi_mod/markets/intraday_continuous.py
+src/flexi_mod/markets/afrr_energy.py
 src/flexi_mod/plants/technologies.py
 src/flexi_mod/plants/steam_generation_plant.py
 src/flexi_mod/strategies/base_strategy.py
@@ -102,10 +110,33 @@ The case configuration describes modelling assumptions and market setup:
 - market sequence;
 - market enable flags;
 - market timing metadata;
+- market product rules;
 - mapping from market signals to columns in `forecasts_df.csv`.
 
 `config.yaml` intentionally does not contain output paths, output switches, or
 detailed strategy rules. Those belong to the runner and strategy classes.
+
+## Market Layer
+
+Market classes interpret the market design from `config.yaml`. They define what
+kind of product is represented, which signals are required, which product
+resolution or validity period is configured, and how raw market input columns are
+prepared for the strategy.
+
+The current market classes are:
+
+- `DayAheadMarket`, an energy market for the delivery day;
+- `IntradayContinuousMarket`, an incremental energy adjustment market after
+  day-ahead;
+- `AFRRDownEnergyMarket`, an activated down-balancing energy product with
+  system-level proxy activation;
+- `AFRRUpEnergyMarket`, a documented placeholder for later upward balancing
+  energy modelling;
+- `AFRRCapacityMarket`, a documented placeholder for later reserve-capacity
+  modelling.
+
+Market classes do not decide whether the plant operator buys, sells or bids.
+Those decisions stay in the strategy layer.
 
 ## Input Data Layer
 

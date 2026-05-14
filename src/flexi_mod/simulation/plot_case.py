@@ -2,26 +2,33 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+"""Command-line entry point for plotting FLEXIMOD case outputs."""
+
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+def _find_project_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return Path.cwd().resolve()
+
+
+PROJECT_ROOT = _find_project_root()
 SRC_DIR = PROJECT_ROOT / "src"
-SCRIPT_DIR = PROJECT_ROOT / "scripts"
-for path in [SRC_DIR, SCRIPT_DIR]:
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
-
-from run_case import available_examples, resolve_example_paths
-
-from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.visualisation.plots import create_all_plots_from_output
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 
 def main() -> None:
+    from flexi_mod.config.case_config import CaseConfig
+    from flexi_mod.simulation.run_case import available_examples
+    from flexi_mod.visualisation.plots import create_all_plots_from_output
+
     parser = argparse.ArgumentParser(description="Create FlexIMOD report plots for one case.")
     parser.add_argument(
         "--case",
@@ -69,6 +76,8 @@ def main() -> None:
 
 
 def _resolve_case_dir(case: str | None, example: str) -> Path:
+    from flexi_mod.simulation.run_case import resolve_example_paths
+
     if case:
         return Path(case).resolve()
     return resolve_example_paths(example)["case_dir"]

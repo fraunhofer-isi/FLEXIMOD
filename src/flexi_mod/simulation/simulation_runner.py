@@ -13,11 +13,16 @@ from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataLoader
 from flexi_mod.ledgers.market_ledger import MarketLedger
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
-from flexi_mod.markets.market_stage import MarketStage
+from flexi_mod.markets import BaseMarket, build_markets
 from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.visualisation.analytics import calculate_summary_indicators
 from flexi_mod.visualisation.plots import create_case_plots
+
+DAY_AHEAD = "day_ahead"
+INTRADAY_CONTINUOUS = "intraday_continuous"
+AFRR_ENERGY = "afrr_energy"
+AFRR_CAPACITY = "afrr_capacity"
 
 
 @dataclass(frozen=True)
@@ -49,6 +54,7 @@ class SimulationRunner:
             else self.config.project_root / "data" / "output" / self.config.case_name
         )
         self.output_options = output_options or OutputOptions()
+        self.markets = build_markets(self.config)
         self.loader = DataLoader(
             self.config,
             input_dir=self.input_dir,
@@ -100,7 +106,7 @@ class SimulationRunner:
             output_paths["summary_indicators"] = path
 
         if (
-            MarketStage.AFRR_ENERGY.value in self.config.enabled_markets
+            AFRR_ENERGY in self.config.enabled_markets
             and not strategy.afrr_energy_data_quality_summary.empty
         ):
             path = output_dir / "afrr_energy_data_quality_summary.csv"
@@ -125,35 +131,23 @@ class SimulationRunner:
         strategy: HybridETESGasStrategy,
     ) -> pd.DataFrame:
         dispatch_parts: list[pd.DataFrame] = []
-        enabled = set(self.config.enabled_markets)
+        enabled_markets = [
+            market for market in self.markets.values() if market.name in self.config.enabled_markets
+        ]
 
         for plant in plants:
             fixed_positions = pd.DataFrame(index=forecasts.index)
-            if MarketStage.AFRR_CAPACITY.value in enabled:
-                raise NotImplementedError(
-                    "aFRR capacity is present as a module placeholder but is disabled in the MVP"
+            for market in enabled_markets:
+                fixed_positions = self._run_configured_market(
+                    market,
+                    plant,
+                    forecasts,
+                    fixed_positions,
+                    strategy,
                 )
 
-            if MarketStage.DAY_AHEAD.value in enabled:
-                dispatch = strategy.decide_day_ahead(plant, forecasts)
-                fixed_positions = dispatch
-            else:
+            if fixed_positions.empty:
                 raise NotImplementedError("The MVP requires the day_ahead market to be enabled")
-
-            if MarketStage.INTRADAY_CONTINUOUS.value in enabled:
-                dispatch = strategy.decide_intraday_continuous(
-                    plant,
-                    forecasts,
-                    fixed_positions,
-                )
-                fixed_positions = dispatch
-            if MarketStage.AFRR_ENERGY.value in enabled:
-                dispatch = strategy.decide_afrr_energy(
-                    plant,
-                    forecasts,
-                    fixed_positions,
-                )
-                fixed_positions = dispatch
 
             dispatch_parts.append(fixed_positions)
 
@@ -164,6 +158,30 @@ class SimulationRunner:
             .set_index("datetime")
         )
         return combined
+
+    @staticmethod
+    def _run_configured_market(
+        market: BaseMarket,
+        plant: SteamGenerationPlant,
+        forecasts: pd.DataFrame,
+        fixed_positions: pd.DataFrame,
+        strategy: HybridETESGasStrategy,
+    ) -> pd.DataFrame:
+        if market.name == DAY_AHEAD:
+            return strategy.decide_day_ahead(plant, forecasts)
+        if market.name == INTRADAY_CONTINUOUS:
+            if fixed_positions.empty:
+                raise NotImplementedError("IDC requires fixed day-ahead positions")
+            return strategy.decide_intraday_continuous(plant, forecasts, fixed_positions)
+        if market.name == AFRR_ENERGY:
+            if fixed_positions.empty:
+                raise NotImplementedError("aFRR energy requires fixed DA or IDC positions")
+            return strategy.decide_afrr_energy(plant, forecasts, fixed_positions)
+        if market.name == AFRR_CAPACITY:
+            raise NotImplementedError(
+                "aFRR capacity is present as a market placeholder but is disabled in the MVP"
+            )
+        raise NotImplementedError(f"Market '{market.name}' is not implemented")
 
     @staticmethod
     def _build_summary(dispatch_results: pd.DataFrame) -> pd.DataFrame:

@@ -2,6 +2,14 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+"""aFRR energy market rules and data preparation.
+
+This module contains direction-specific aFRR energy products. The implemented
+MVP product is aFRR down energy, interpreted for the hybrid ETES case as
+additional electricity consumption. aFRR up energy is represented as a clean
+placeholder for later industrial cases where upward balancing energy is relevant.
+"""
+
 from __future__ import annotations
 
 import warnings
@@ -9,30 +17,102 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from flexi_mod.markets.base_market import BaseMarket, MarketConfigError
+
 
 @dataclass(frozen=True)
-class AFRRDownData:
+class AFRRDownEnergyData:
     """Cleaned direction-specific aFRR down energy inputs."""
 
     frame: pd.DataFrame
     quality_summary: pd.DataFrame
 
 
-def clean_afrr_down_data(
+class AFRRDownEnergyMarket(BaseMarket):
+    """Configured aFRR down energy product.
+
+    The activation signal is a system-level scenario/proxy cap, not
+    plant-specific realised activation. The strategy decides whether the plant
+    offers feasible bid potential; this class cleans price and activation inputs
+    and validates product rules.
+    """
+
+    REQUIRED_SIGNALS = ("price", "system_activation")
+
+    @property
+    def interpretation(self) -> dict[str, object]:
+        return dict(self.config.get("interpretation", {}))
+
+    def validate_config(self, timestep_minutes: int | None = None) -> None:
+        super().validate_config(timestep_minutes=timestep_minutes)
+        if not self.enabled:
+            return
+
+        activation_unit = self.activation_unit
+        if activation_unit not in {"MW", "MWh"}:
+            raise MarketConfigError(
+                "aFRR energy interpretation.activation_unit must be 'MW' or 'MWh'"
+            )
+        if timestep_minutes is not None:
+            validity_period = int(self.product_rules.get("validity_period_minutes", 0))
+            if validity_period != timestep_minutes:
+                raise MarketConfigError(
+                    "afrr_energy.product_rules.validity_period_minutes must match "
+                    "case.timestep_minutes"
+                )
+
+    @property
+    def activation_unit(self) -> str:
+        return str(self.interpretation.get("activation_unit", "MW"))
+
+    def prepare_market_data(
+        self,
+        forecasts: pd.DataFrame,
+        timestep_hours: float,
+    ) -> AFRRDownEnergyData:
+        self._require_forecast_columns(forecasts)
+        self.validate_config()
+        return prepare_afrr_down_energy_data(
+            forecasts=forecasts,
+            price_col=self.signal_column("price"),
+            quantity_col=self.signal_column("system_activation"),
+            activation_unit=self.activation_unit,
+            timestep_hours=timestep_hours,
+        )
+
+
+class AFRRUpEnergyMarket(BaseMarket):
+    """Configured aFRR up energy placeholder.
+
+    Upward aFRR energy would represent reduced electricity consumption or
+    increased generation for many industrial cases. It is not implemented in
+    the current hybrid ETES + gas case.
+    """
+
+    REQUIRED_SIGNALS = ("price", "system_activation")
+
+    def prepare_market_data(self, forecasts: pd.DataFrame) -> pd.DataFrame:
+        if self.enabled:
+            raise NotImplementedError("aFRR up energy is not implemented yet")
+        return pd.DataFrame(index=forecasts.index)
+
+
+def prepare_afrr_down_energy_data(
     forecasts: pd.DataFrame,
     price_col: str,
     quantity_col: str,
     activation_unit: str,
     timestep_hours: float,
-) -> AFRRDownData:
+) -> AFRRDownEnergyData:
     """Clean direction-specific aFRR down price and system activation data.
 
-    The activation signal is a system-level/proxy activation magnitude, not
-    plant-specific realised activation. Price values of zero are valid.
+    Price values of zero are valid. Missing prices never create bids or
+    activation; internally they are replaced by zero only to keep Pyomo
+    accounting parameters numeric.
     """
 
     if activation_unit not in {"MW", "MWh"}:
-        raise ValueError("aFRR energy interpretation.activation_unit must be 'MW' or 'MWh'")
+        raise MarketConfigError("aFRR energy interpretation.activation_unit must be 'MW' or 'MWh'")
 
     raw_price = forecasts[price_col]
     raw_quantity = forecasts[quantity_col]
@@ -50,12 +130,6 @@ def clean_afrr_down_data(
     clean_activation_mwh = raw_activation_mwh.copy()
     clean_activation_mwh.loc[missing_quantity] = 0.0
     clean_activation_mwh.loc[missing_price] = 0.0
-
-    flags = pd.Series("valid_activation", index=forecasts.index, dtype=object)
-    flags.loc[negative_quantity.fillna(False)] = "negative_quantity_converted"
-    flags.loc[~nonzero_quantity & ~missing_price] = "no_activation_or_missing_quantity"
-    flags.loc[missing_price & ~nonzero_quantity] = "no_activation_or_missing_data"
-    flags.loc[missing_price & nonzero_quantity] = "activation_without_price"
 
     if missing_price.any():
         warnings.warn(
@@ -101,4 +175,4 @@ def clean_afrr_down_data(
             }
         ]
     )
-    return AFRRDownData(frame=clean, quality_summary=summary)
+    return AFRRDownEnergyData(frame=clean, quality_summary=summary)

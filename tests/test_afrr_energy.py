@@ -7,13 +7,13 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from flexi_mod.markets.afrr_energy import clean_afrr_down_data
+from flexi_mod.markets.afrr_energy import prepare_afrr_down_energy_data
 
 
 def test_afrr_down_cleaning_treats_zero_price_as_valid() -> None:
     forecasts = _forecast_frame(prices=[0.0], quantities=[2.0])
 
-    cleaned = clean_afrr_down_data(
+    cleaned = prepare_afrr_down_energy_data(
         forecasts,
         price_col="aFRR_energy_down_price",
         quantity_col="aFRR_energy_down_quantity",
@@ -29,7 +29,7 @@ def test_afrr_down_cleaning_skips_activation_without_price() -> None:
     forecasts = _forecast_frame(prices=[None], quantities=[2.0])
 
     with pytest.warns(UserWarning, match="aFRR down price contains missing values"):
-        cleaned = clean_afrr_down_data(
+        cleaned = prepare_afrr_down_energy_data(
             forecasts,
             price_col="aFRR_energy_down_price",
             quantity_col="aFRR_energy_down_quantity",
@@ -50,7 +50,7 @@ def test_afrr_down_cleaning_missing_quantity_gives_zero_activation() -> None:
     forecasts = _forecast_frame(prices=[10.0], quantities=[None])
 
     with pytest.warns(UserWarning, match="aFRR down system activation contains missing values"):
-        cleaned = clean_afrr_down_data(
+        cleaned = prepare_afrr_down_energy_data(
             forecasts,
             price_col="aFRR_energy_down_price",
             quantity_col="aFRR_energy_down_quantity",
@@ -65,7 +65,7 @@ def test_afrr_down_cleaning_missing_quantity_gives_zero_activation() -> None:
 def test_afrr_down_cleaning_negative_quantity_is_abs_and_flagged() -> None:
     forecasts = _forecast_frame(prices=[10.0], quantities=[-2.0])
 
-    cleaned = clean_afrr_down_data(
+    cleaned = prepare_afrr_down_energy_data(
         forecasts,
         price_col="aFRR_energy_down_price",
         quantity_col="aFRR_energy_down_quantity",
@@ -80,7 +80,7 @@ def test_afrr_down_cleaning_negative_quantity_is_abs_and_flagged() -> None:
 def test_afrr_down_cleaning_mwh_unit_uses_quantity_directly() -> None:
     forecasts = _forecast_frame(prices=[10.0], quantities=[2.0])
 
-    cleaned = clean_afrr_down_data(
+    cleaned = prepare_afrr_down_energy_data(
         forecasts,
         price_col="aFRR_energy_down_price",
         quantity_col="aFRR_energy_down_quantity",
