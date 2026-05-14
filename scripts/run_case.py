@@ -14,7 +14,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from etes_market_model.simulation.simulation_runner import OutputOptions, SimulationRunner
+from flexi_mod.simulation.simulation_runner import OutputOptions, SimulationRunner
 
 available_examples: dict[str, dict[str, str]] = {
     "hybrid_etes_de": {

@@ -7,9 +7,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from etes_market_model.config.case_config import CaseConfig
-from etes_market_model.data.data_loader import DataLoader, DataValidationError
-from etes_market_model.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
+from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.data.data_loader import DataLoader, DataValidationError
+from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 
 
 def test_forecasts_are_loaded_and_filtered(tmp_path: Path) -> None:

@@ -9,13 +9,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from etes_market_model.config.case_config import CaseConfig
-from etes_market_model.data.data_loader import DataLoader
-from etes_market_model.ledgers.market_ledger import MarketLedger
-from etes_market_model.ledgers.storage_cost_ledger import StorageCostLedger
-from etes_market_model.markets.market_stage import MarketStage
-from etes_market_model.plants.steam_generation_plant import SteamGenerationPlant
-from etes_market_model.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
+from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.data.data_loader import DataLoader
+from flexi_mod.ledgers.market_ledger import MarketLedger
+from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
+from flexi_mod.markets.market_stage import MarketStage
+from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
+from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.visualisation.analytics import calculate_summary_indicators
 from flexi_mod.visualisation.plots import create_case_plots
 

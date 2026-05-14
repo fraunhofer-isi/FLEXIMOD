@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from etes_market_model.plants.steam_generation_plant import SteamGenerationPlant
+from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 
 
 class BaseStrategy:

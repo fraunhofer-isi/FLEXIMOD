@@ -8,15 +8,15 @@ import warnings
 
 import pandas as pd
 
-from etes_market_model.config.case_config import CaseConfig
-from etes_market_model.markets.afrr_energy import clean_afrr_down_data
-from etes_market_model.plants.steam_generation_plant import (
+from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.markets.afrr_energy import clean_afrr_down_data
+from flexi_mod.plants.steam_generation_plant import (
     AFRRDownSignals,
     DispatchSignals,
     IDCAdjustmentSignals,
     SteamGenerationPlant,
 )
-from etes_market_model.strategies.base_strategy import BaseStrategy
+from flexi_mod.strategies.base_strategy import BaseStrategy
 
 GAS_PRICE_SIGNAL = "natural_gas_price"
 ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH = 0.0

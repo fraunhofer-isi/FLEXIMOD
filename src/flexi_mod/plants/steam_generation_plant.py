@@ -13,9 +13,9 @@ import pyomo.environ as pyo
 from pyomo.common.errors import ApplicationError
 from pyomo.opt import SolverStatus, TerminationCondition
 
-from etes_market_model.config.case_config import CaseConfig
-from etes_market_model.plants.base_plant import BasePlant
-from etes_market_model.plants.technologies import (
+from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.plants.base_plant import BasePlant
+from flexi_mod.plants.technologies import (
     TECHNOLOGY_REGISTRY,
     GasBoiler,
     ThermalStorage,

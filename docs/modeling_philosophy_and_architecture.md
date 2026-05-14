@@ -1,4 +1,4 @@
-<!--
+﻿<!--
 SPDX-FileCopyrightText: FLEXIMOD Developers
 
 SPDX-License-Identifier: AGPL-3.0-or-later
@@ -69,24 +69,24 @@ This rolling horizon is located in `SteamGenerationPlant.solve_rolling`.
 The market simulation is sequential. The plant dispatch inside each market stage
 is rolling horizon. These are related but distinct concepts.
 
-## Main Packages
+## Main Package
 
-The current Python import package is still `etes_market_model`, while new
-generic visualisation utilities live under `flexi_mod`. Over time, the codebase
-can be migrated further toward the generic FlexIMOD namespace.
+The canonical Python import package is `flexi_mod`. Model configuration, data
+loading, plant components, strategies, ledgers, simulation orchestration, and
+visualisation utilities all live under this namespace.
 
 Important modules:
 
 ```text
-src/etes_market_model/config/case_config.py
-src/etes_market_model/data/data_loader.py
-src/etes_market_model/plants/technologies.py
-src/etes_market_model/plants/steam_generation_plant.py
-src/etes_market_model/strategies/base_strategy.py
-src/etes_market_model/strategies/hybrid_etes_gas_strategy.py
-src/etes_market_model/ledgers/market_ledger.py
-src/etes_market_model/ledgers/storage_cost_ledger.py
-src/etes_market_model/simulation/simulation_runner.py
+src/flexi_mod/config/case_config.py
+src/flexi_mod/data/data_loader.py
+src/flexi_mod/plants/technologies.py
+src/flexi_mod/plants/steam_generation_plant.py
+src/flexi_mod/strategies/base_strategy.py
+src/flexi_mod/strategies/hybrid_etes_gas_strategy.py
+src/flexi_mod/ledgers/market_ledger.py
+src/flexi_mod/ledgers/storage_cost_ledger.py
+src/flexi_mod/simulation/simulation_runner.py
 src/flexi_mod/visualisation/analytics.py
 src/flexi_mod/visualisation/plots.py
 ```

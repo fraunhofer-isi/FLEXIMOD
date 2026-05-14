@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from etes_market_model.simulation.simulation_runner import OutputOptions, SimulationRunner
+from flexi_mod.simulation.simulation_runner import OutputOptions, SimulationRunner
 
 
 @pytest.fixture

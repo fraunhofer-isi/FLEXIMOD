@@ -4,7 +4,7 @@
 
 from pathlib import Path
 
-from etes_market_model.ledgers.storage_cost_ledger import StorageCostLedger
+from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 
 
 def test_weighted_average_storage_cost_updates() -> None:

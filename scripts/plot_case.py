@@ -17,7 +17,7 @@ for path in [SRC_DIR, SCRIPT_DIR]:
 
 from run_case import available_examples, resolve_example_paths
 
-from etes_market_model.config.case_config import CaseConfig
+from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.visualisation.plots import create_all_plots_from_output
 
 

@@ -5,7 +5,7 @@
 import pandas as pd
 import pyomo.environ as pyo
 
-from etes_market_model.plants.technologies import GasBoiler, ThermalStorage
+from flexi_mod.plants.technologies import GasBoiler, ThermalStorage
 
 
 def test_thermal_storage_adds_expected_pyomo_block() -> None:

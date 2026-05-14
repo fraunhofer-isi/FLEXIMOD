@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from etes_market_model.config.case_config import CaseConfig, ConfigError
+from flexi_mod.config.case_config import CaseConfig, ConfigError
 
 CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_DE"
 

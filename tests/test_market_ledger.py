@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from etes_market_model.ledgers.market_ledger import MarketLedger
+from flexi_mod.ledgers.market_ledger import MarketLedger
 
 
 def test_market_ledger_initialises_and_updates_da(tmp_path: Path) -> None:

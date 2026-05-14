@@ -7,15 +7,15 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from etes_market_model.config.case_config import CaseConfig
-from etes_market_model.data.data_loader import DataLoader
-from etes_market_model.plants.steam_generation_plant import (
+from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.data.data_loader import DataLoader
+from flexi_mod.plants.steam_generation_plant import (
     AFRRDownSignals,
     DispatchSignals,
     IDCAdjustmentSignals,
     SteamGenerationPlant,
 )
-from etes_market_model.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
+from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 
 CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_DE"
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from etes_market_model.markets.afrr_energy import clean_afrr_down_data
+from flexi_mod.markets.afrr_energy import clean_afrr_down_data
 
 
 def test_afrr_down_cleaning_treats_zero_price_as_valid() -> None:

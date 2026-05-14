@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from etes_market_model.config.case_config import CaseConfig
+from flexi_mod.config.case_config import CaseConfig
 
 
 class DataValidationError(ValueError):

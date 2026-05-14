@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from etes_market_model.ledgers.storage_cost_ledger import StorageCostLedger
+from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.visualisation.analytics import calculate_summary_indicators
 
 

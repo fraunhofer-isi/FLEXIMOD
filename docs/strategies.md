@@ -1,4 +1,4 @@
-<!--
+﻿<!--
 SPDX-FileCopyrightText: FLEXIMOD Developers
 
 SPDX-License-Identifier: AGPL-3.0-or-later
@@ -26,7 +26,7 @@ runner: sequencing, input/output coordination
 The current base strategy interface is defined in:
 
 ```text
-src/etes_market_model/strategies/base_strategy.py
+src/flexi_mod/strategies/base_strategy.py
 ```
 
 It exposes stage-level methods:
@@ -53,7 +53,7 @@ HybridETESGasStrategy
 It lives in:
 
 ```text
-src/etes_market_model/strategies/hybrid_etes_gas_strategy.py
+src/flexi_mod/strategies/hybrid_etes_gas_strategy.py
 ```
 
 It is designed for the first case study:

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from etes_market_model.plants.steam_generation_plant import SteamGenerationPlant
+from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 
 STORAGE_COST_LEDGER_COLUMNS = [
     "datetime",
