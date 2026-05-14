@@ -45,19 +45,19 @@ def test_analytics_calculates_da_only_summary() -> None:
     assert summary["total_net_operating_cost_EUR"].iloc[0] == 105.0
 
 
-def test_storage_cost_ledger_tracks_source_inventory() -> None:
+def test_storage_cost_ledger_tracks_procurement_market_inventory() -> None:
     ledger = StorageCostLedger()
-    ledger.record_storage_event(
+    ledger.record_charge(
         datetime="2025-01-01 00:00",
         plant_name="plant_1",
-        source_market="day_ahead",
-        electricity_price_eur_per_mwh=40.0,
-        electricity_volume_mwh=1.0,
-        stored_heat_added_mwh=0.9,
-        remaining_stored_heat_mwh=0.9,
+        procurement_market="day_ahead",
+        electricity_price_eur_per_mwh_el=40.0,
+        electricity_procured_mwh_el=1.0,
+        charged_heat_mwh_th=0.9,
+        thermal_inventory_mwh_th=0.9,
     )
 
     frame = ledger.to_dataframe()
 
-    assert "remaining_stored_heat_day_ahead_MWh" in frame.columns
-    assert frame["remaining_stored_heat_day_ahead_MWh"].iloc[0] == 0.9
+    assert "thermal_inventory_day_ahead_MWh_th" in frame.columns
+    assert frame["thermal_inventory_day_ahead_MWh_th"].iloc[0] == 0.9

@@ -226,9 +226,10 @@ plots/
 `market_ledger.csv` contains market positions and electricity consumption by
 market stage.
 
-`storage_cost_ledger.csv` tracks the economic cost of stored heat and now also
-contains source-market inventory columns for future day-ahead, intraday, and aFRR
-storage attribution.
+`storage_cost_ledger.csv` treats ETES as a thermal inventory. It records the
+procurement market, electricity price, electricity procured, charged heat,
+charging cost, thermal inventory, weighted-average inventory cost, and inventory
+shares by procurement market.
 
 `summary_indicators.csv` is calculated from the outputs by the analytics module.
 

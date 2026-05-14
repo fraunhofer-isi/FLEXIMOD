@@ -104,7 +104,7 @@ def test_day_ahead_only_strategy_matches_expected_plant_behaviour(
     )
 
     # Stored heat is attributed to the day-ahead market and CO2 is inactive for this MVP.
-    assert storage["remaining_stored_heat_day_ahead_MWh"].max() > 0
+    assert storage["thermal_inventory_day_ahead_MWh_th"].max() > 0
     assert summary["total_DA_electricity_MWh"].iloc[0] == pytest.approx(
         market["DA_position_MWh"].sum()
     )

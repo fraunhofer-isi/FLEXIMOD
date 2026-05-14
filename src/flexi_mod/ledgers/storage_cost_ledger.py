@@ -2,140 +2,133 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+"""Economic ledger for the cost and origin of stored heat.
+
+The ledger treats ETES as a thermal inventory. Every charging step adds heat to
+that inventory at an electricity procurement cost. Discharging reduces the
+inventory but keeps the weighted-average inventory cost unchanged.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
 from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 
-BASE_COLUMNS = [
-    "datetime",
-    "plant_name",
-]
+EPSILON = 1e-12
+NO_PROCUREMENT = "no_charge"
+PROCUREMENT_MARKETS = ("day_ahead", "intraday_continuous", "afrr_energy", "other")
 
-CHARGE_EVENT_COLUMNS = [
-    "source_market",
-    "electricity_price_EUR_per_MWh",
-    "electricity_volume_MWh",
-    "stored_heat_added_MWh",
-    "effective_heat_cost_EUR_per_MWh_th",
-]
-
-STORAGE_STATE_COLUMNS = [
-    "remaining_stored_heat_MWh",
-    "weighted_average_storage_cost_EUR_per_MWh_th",
-]
-
-SOURCE_INVENTORY_COLUMNS = {
-    "day_ahead": "remaining_stored_heat_day_ahead_MWh",
-    "intraday_continuous": "remaining_stored_heat_IDC_MWh",
-    "afrr_energy": "remaining_stored_heat_afrr_energy_MWh",
-    "other": "remaining_stored_heat_other_MWh",
+INVENTORY_COLUMNS = {
+    "day_ahead": "thermal_inventory_day_ahead_MWh_th",
+    "intraday_continuous": "thermal_inventory_intraday_continuous_MWh_th",
+    "afrr_energy": "thermal_inventory_afrr_energy_MWh_th",
+    "other": "thermal_inventory_other_MWh_th",
 }
 
-STORAGE_COST_LEDGER_COLUMNS = (
-    BASE_COLUMNS
-    + CHARGE_EVENT_COLUMNS
-    + STORAGE_STATE_COLUMNS
-    + list(SOURCE_INVENTORY_COLUMNS.values())
-)
-
-EMPTY_SOURCE = "none"
-
-
-@dataclass(frozen=True)
-class StorageChargeEvent:
-    """One source-market contribution to ETES charging in one dispatch step."""
-
-    source_market: str
-    electricity_price_eur_per_mwh: float
-    electricity_volume_mwh: float
-    stored_heat_added_mwh: float
-
-    @property
-    def source(self) -> str:
-        return _normalise_source_market(self.source_market)
-
-    @property
-    def electricity_cost_eur(self) -> float:
-        return self.electricity_price_eur_per_mwh * self.electricity_volume_mwh
-
-    @property
-    def effective_heat_cost_eur_per_mwh_th(self) -> float | pd.NA:
-        if self.stored_heat_added_mwh <= 1e-12:
-            return pd.NA
-        return self.electricity_cost_eur / self.stored_heat_added_mwh
+STORAGE_COST_LEDGER_COLUMNS = [
+    "datetime",
+    "plant_name",
+    "procurement_market",
+    "electricity_price_EUR_per_MWh_el",
+    "electricity_procured_MWh_el",
+    "charged_heat_MWh_th",
+    "charging_cost_EUR",
+    "charged_heat_cost_EUR_per_MWh_th",
+    "thermal_inventory_MWh_th",
+    "weighted_average_inventory_cost_EUR_per_MWh_th",
+    *INVENTORY_COLUMNS.values(),
+]
 
 
 class StorageCostLedger:
-    """Economic cost and source attribution tracker for stored ETES heat."""
+    """Track weighted-average thermal inventory cost by procurement market."""
 
     def __init__(self) -> None:
-        self.rows = pd.DataFrame(columns=STORAGE_COST_LEDGER_COLUMNS)
-        self._state_by_plant: dict[str, tuple[float, float]] = {}
-        self._source_inventory_by_plant: dict[str, dict[str, float]] = {}
+        self._rows: list[dict[str, Any]] = []
+        self._inventory_mwh_th: dict[str, float] = {}
+        self._average_cost_eur_per_mwh_th: dict[str, float] = {}
+        self._inventory_by_market: dict[str, dict[str, float]] = {}
 
-    def record_storage_event(
+    def record_charge(
         self,
         datetime: pd.Timestamp,
         plant_name: str,
-        source_market: str,
-        electricity_price_eur_per_mwh: float,
-        electricity_volume_mwh: float,
-        stored_heat_added_mwh: float,
-        remaining_stored_heat_mwh: float | None = None,
+        procurement_market: str,
+        electricity_price_eur_per_mwh_el: float,
+        electricity_procured_mwh_el: float,
+        charged_heat_mwh_th: float,
+        thermal_inventory_mwh_th: float | None = None,
     ) -> None:
-        previous_remaining, _ = self._plant_state(plant_name)
-        remaining = (
-            previous_remaining + stored_heat_added_mwh
-            if remaining_stored_heat_mwh is None
-            else remaining_stored_heat_mwh
+        """Record one electricity procurement that charges thermal inventory."""
+
+        previous_inventory = self._inventory_mwh_th.get(plant_name, 0.0)
+        inventory_after_dispatch = (
+            previous_inventory + charged_heat_mwh_th
+            if thermal_inventory_mwh_th is None
+            else thermal_inventory_mwh_th
         )
         self.record_storage_step(
             datetime=datetime,
             plant_name=plant_name,
-            source_events=[
-                StorageChargeEvent(
-                    source_market=source_market,
-                    electricity_price_eur_per_mwh=electricity_price_eur_per_mwh,
-                    electricity_volume_mwh=electricity_volume_mwh,
-                    stored_heat_added_mwh=stored_heat_added_mwh,
-                )
+            charges=[
+                {
+                    "procurement_market": procurement_market,
+                    "electricity_price": electricity_price_eur_per_mwh_el,
+                    "electricity_mwh": electricity_procured_mwh_el,
+                    "charged_heat_mwh_th": charged_heat_mwh_th,
+                }
             ],
-            remaining_stored_heat_mwh=remaining,
+            thermal_inventory_mwh_th=inventory_after_dispatch,
         )
 
     def record_storage_step(
         self,
         datetime: pd.Timestamp,
         plant_name: str,
-        source_events: list[StorageChargeEvent | tuple[str, float, float, float]],
-        remaining_stored_heat_mwh: float,
+        charges: list[dict[str, float | str]],
+        thermal_inventory_mwh_th: float,
     ) -> None:
-        events = _normalise_events(source_events)
-        remaining = max(float(remaining_stored_heat_mwh), 0.0)
+        """Record one dispatch step of charging and resulting inventory."""
 
-        previous_remaining, previous_average_cost = self._plant_state(plant_name)
-        previous_inventory = self._source_inventory(plant_name)
-        average_cost = _weighted_average_cost(
-            previous_remaining=previous_remaining,
-            previous_average_cost=previous_average_cost,
-            added_cost=sum(event.electricity_cost_eur for event in events),
-            added_heat=sum(event.stored_heat_added_mwh for event in events),
-            remaining_after_dispatch=remaining,
+        clean_charges = [_normalise_charge(charge) for charge in charges]
+        clean_charges = [
+            charge
+            for charge in clean_charges
+            if charge["electricity_mwh"] > EPSILON and charge["charged_heat_mwh_th"] > EPSILON
+        ]
+
+        inventory_after_dispatch = max(float(thermal_inventory_mwh_th), 0.0)
+        average_cost = self._update_weighted_average_cost(
+            plant_name,
+            clean_charges,
+            inventory_after_dispatch,
         )
-        source_inventory = _updated_source_inventory(
-            previous_inventory=previous_inventory,
-            events=events,
-            remaining_total_mwh=remaining,
+        inventory_by_market = self._update_inventory_by_market(
+            plant_name,
+            clean_charges,
+            inventory_after_dispatch,
         )
 
-        self._state_by_plant[plant_name] = (remaining, average_cost)
-        self._source_inventory_by_plant[plant_name] = source_inventory
-        self._append_step_records(datetime, plant_name, events, remaining, average_cost)
+        self._inventory_mwh_th[plant_name] = inventory_after_dispatch
+        self._average_cost_eur_per_mwh_th[plant_name] = average_cost
+        self._inventory_by_market[plant_name] = inventory_by_market
+
+        rows = clean_charges or [_empty_charge()]
+        for charge in rows:
+            self._rows.append(
+                _ledger_row(
+                    datetime=datetime,
+                    plant_name=plant_name,
+                    charge=charge,
+                    thermal_inventory_mwh_th=inventory_after_dispatch,
+                    average_cost_eur_per_mwh_th=average_cost,
+                    inventory_by_market=inventory_by_market,
+                )
+            )
 
     def build_from_dispatch_results(
         self,
@@ -145,194 +138,191 @@ class StorageCostLedger:
         plant_by_name = {plant.name: plant for plant in plants}
         for timestamp, row in dispatch_results.sort_index().iterrows():
             plant_name = str(row["plant_name"])
-            plant = plant_by_name[plant_name]
-            events = _storage_events_from_dispatch_row(row, plant)
             self.record_storage_step(
                 datetime=timestamp,
                 plant_name=plant_name,
-                source_events=events,
-                remaining_stored_heat_mwh=float(row["etes_soc_MWh"]),
+                charges=_charges_from_dispatch_row(row, plant_by_name[plant_name]),
+                thermal_inventory_mwh_th=float(row["etes_soc_MWh"]),
             )
 
     def to_dataframe(self) -> pd.DataFrame:
-        return self.rows.copy()
+        return pd.DataFrame(self._rows, columns=STORAGE_COST_LEDGER_COLUMNS)
 
     def save(self, path: str | Path) -> Path:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.rows.to_csv(path, index=False)
+        self.to_dataframe().to_csv(path, index=False)
         return path
 
-    def _plant_state(self, plant_name: str) -> tuple[float, float]:
-        return self._state_by_plant.get(plant_name, (0.0, 0.0))
-
-    def _source_inventory(self, plant_name: str) -> dict[str, float]:
-        return self._source_inventory_by_plant.get(plant_name, _empty_source_inventory())
-
-    def _append_step_records(
+    def _update_weighted_average_cost(
         self,
-        datetime: pd.Timestamp,
         plant_name: str,
-        events: list[StorageChargeEvent],
-        remaining_stored_heat_mwh: float,
-        weighted_average_cost: float,
-    ) -> None:
-        row_events = events if events else [_empty_storage_event()]
-        source_inventory = self._source_inventory(plant_name)
-        for event in row_events:
-            self.rows.loc[len(self.rows)] = {
-                "datetime": pd.Timestamp(datetime),
-                "plant_name": plant_name,
-                "source_market": event.source_market,
-                "electricity_price_EUR_per_MWh": event.electricity_price_eur_per_mwh,
-                "electricity_volume_MWh": event.electricity_volume_mwh,
-                "stored_heat_added_MWh": event.stored_heat_added_mwh,
-                "effective_heat_cost_EUR_per_MWh_th": (event.effective_heat_cost_eur_per_mwh_th),
-                "remaining_stored_heat_MWh": remaining_stored_heat_mwh,
-                "weighted_average_storage_cost_EUR_per_MWh_th": weighted_average_cost,
-                **{
-                    column: float(source_inventory.get(source, 0.0))
-                    for source, column in SOURCE_INVENTORY_COLUMNS.items()
-                },
-            }
+        charges: list[dict[str, float | str]],
+        inventory_after_dispatch: float,
+    ) -> float:
+        if inventory_after_dispatch <= EPSILON:
+            return 0.0
+
+        previous_inventory = self._inventory_mwh_th.get(plant_name, 0.0)
+        previous_cost = self._average_cost_eur_per_mwh_th.get(plant_name, 0.0)
+        added_heat = sum(float(charge["charged_heat_mwh_th"]) for charge in charges)
+        added_cost = sum(_charging_cost(charge) for charge in charges)
+        inventory_after_charge = previous_inventory + added_heat
+
+        if added_heat <= EPSILON or inventory_after_charge <= EPSILON:
+            return previous_cost
+        return (previous_inventory * previous_cost + added_cost) / inventory_after_charge
+
+    def _update_inventory_by_market(
+        self,
+        plant_name: str,
+        charges: list[dict[str, float | str]],
+        inventory_after_dispatch: float,
+    ) -> dict[str, float]:
+        inventory = self._inventory_by_market.get(plant_name, _empty_market_inventory()).copy()
+        for charge in charges:
+            market = str(charge["procurement_market"])
+            inventory[market] = inventory.get(market, 0.0) + float(charge["charged_heat_mwh_th"])
+        return _scale_inventory_to_total(inventory, inventory_after_dispatch)
 
 
-def _storage_events_from_dispatch_row(
+def _charges_from_dispatch_row(
     row: pd.Series,
     plant: SteamGenerationPlant,
-) -> list[StorageChargeEvent]:
-    actual_charge = max(float(row["etes_charge_MWh"]), 0.0)
-    if actual_charge <= 1e-12:
+) -> list[dict[str, float | str]]:
+    actual_charge_mwh_el = max(float(row["etes_charge_MWh"]), 0.0)
+    if actual_charge_mwh_el <= EPSILON:
         return []
 
-    source_volumes = _source_electricity_volumes(row, actual_charge)
+    source_electricity = _procured_electricity_by_market(row, actual_charge_mwh_el)
     return [
-        StorageChargeEvent(
-            source_market=source,
-            electricity_price_eur_per_mwh=_source_price(row, source),
-            electricity_volume_mwh=volume,
-            stored_heat_added_mwh=volume * plant.etes.efficiency_charge,
-        )
-        for source, volume in source_volumes.items()
-        if volume > 1e-12
+        {
+            "procurement_market": market,
+            "electricity_price": _electricity_price(row, market),
+            "electricity_mwh": electricity_mwh,
+            "charged_heat_mwh_th": electricity_mwh * plant.etes.efficiency_charge,
+        }
+        for market, electricity_mwh in source_electricity.items()
+        if electricity_mwh > EPSILON
     ]
 
 
-def _source_electricity_volumes(row: pd.Series, actual_charge_mwh: float) -> dict[str, float]:
-    da_source = max(float(row.get("DA_position_MWh", actual_charge_mwh)), 0.0)
+def _procured_electricity_by_market(
+    row: pd.Series,
+    actual_charge_mwh_el: float,
+) -> dict[str, float]:
+    day_ahead = max(float(row.get("DA_position_MWh", actual_charge_mwh_el)), 0.0)
     idc_sell = max(float(row.get("IDC_sell_MWh", 0.0)), 0.0)
     volumes = {
-        "day_ahead": max(da_source - idc_sell, 0.0),
+        "day_ahead": max(day_ahead - idc_sell, 0.0),
         "intraday_continuous": max(float(row.get("IDC_buy_MWh", 0.0)), 0.0),
         "afrr_energy": max(float(row.get("afrr_energy_activated_MWh", 0.0)), 0.0),
     }
-    total_source_volume = sum(volumes.values())
-    if total_source_volume > actual_charge_mwh and total_source_volume > 1e-12:
-        scale = actual_charge_mwh / total_source_volume
-        return {source: volume * scale for source, volume in volumes.items()}
-    if total_source_volume <= 1e-12:
-        volumes["other"] = actual_charge_mwh
-    return volumes
+
+    total = sum(volumes.values())
+    if total <= EPSILON:
+        return {"other": actual_charge_mwh_el}
+    if total <= actual_charge_mwh_el + EPSILON:
+        return volumes
+
+    scale = actual_charge_mwh_el / total
+    return {market: volume * scale for market, volume in volumes.items()}
 
 
-def _source_price(row: pd.Series, source_market: str) -> float:
+def _electricity_price(row: pd.Series, market: str) -> float:
     price_columns = {
         "day_ahead": "day_ahead_price_EUR_per_MWh",
         "intraday_continuous": "IDC_price_EUR_per_MWh",
         "afrr_energy": "afrr_energy_price_EUR_per_MWh",
         "other": "day_ahead_price_EUR_per_MWh",
     }
-    return float(row.get(price_columns[source_market], 0.0))
+    return float(row.get(price_columns[market], 0.0))
 
 
-def _normalise_events(
-    source_events: list[StorageChargeEvent | tuple[str, float, float, float]],
-) -> list[StorageChargeEvent]:
-    events = [
-        event
-        if isinstance(event, StorageChargeEvent)
-        else StorageChargeEvent(
-            source_market=event[0],
-            electricity_price_eur_per_mwh=float(event[1]),
-            electricity_volume_mwh=float(event[2]),
-            stored_heat_added_mwh=float(event[3]),
-        )
-        for event in source_events
-    ]
-    return [
-        event
-        for event in events
-        if event.electricity_volume_mwh > 1e-12 and event.stored_heat_added_mwh > 1e-12
-    ]
-
-
-def _weighted_average_cost(
-    previous_remaining: float,
-    previous_average_cost: float,
-    added_cost: float,
-    added_heat: float,
-    remaining_after_dispatch: float,
-) -> float:
-    inventory_after_charge = previous_remaining + added_heat
-    if remaining_after_dispatch <= 1e-12:
-        return 0.0
-    if inventory_after_charge > 1e-12 and added_heat > 1e-12:
-        return (previous_remaining * previous_average_cost + added_cost) / inventory_after_charge
-    return previous_average_cost if previous_remaining > 1e-12 else 0.0
-
-
-def _updated_source_inventory(
-    previous_inventory: dict[str, float],
-    events: list[StorageChargeEvent],
-    remaining_total_mwh: float,
-) -> dict[str, float]:
-    inventory = {
-        source: max(float(previous_inventory.get(source, 0.0)), 0.0)
-        for source in SOURCE_INVENTORY_COLUMNS
+def _normalise_charge(charge: dict[str, float | str]) -> dict[str, float | str]:
+    market = _normalise_market(str(charge.get("procurement_market", "other")))
+    return {
+        "procurement_market": market,
+        "electricity_price": float(charge.get("electricity_price", 0.0)),
+        "electricity_mwh": max(float(charge.get("electricity_mwh", 0.0)), 0.0),
+        "charged_heat_mwh_th": max(float(charge.get("charged_heat_mwh_th", 0.0)), 0.0),
     }
-    for event in events:
-        inventory[event.source] = inventory.get(event.source, 0.0) + event.stored_heat_added_mwh
-    return _reconcile_source_inventory(inventory, remaining_total_mwh)
 
 
-def _reconcile_source_inventory(
-    source_inventory: dict[str, float],
-    remaining_total_mwh: float,
+def _ledger_row(
+    datetime: pd.Timestamp,
+    plant_name: str,
+    charge: dict[str, float | str],
+    thermal_inventory_mwh_th: float,
+    average_cost_eur_per_mwh_th: float,
+    inventory_by_market: dict[str, float],
+) -> dict[str, Any]:
+    charged_heat = float(charge["charged_heat_mwh_th"])
+    charging_cost = _charging_cost(charge)
+    heat_cost = charging_cost / charged_heat if charged_heat > EPSILON else pd.NA
+    return {
+        "datetime": pd.Timestamp(datetime),
+        "plant_name": plant_name,
+        "procurement_market": charge["procurement_market"],
+        "electricity_price_EUR_per_MWh_el": charge["electricity_price"],
+        "electricity_procured_MWh_el": charge["electricity_mwh"],
+        "charged_heat_MWh_th": charged_heat,
+        "charging_cost_EUR": charging_cost,
+        "charged_heat_cost_EUR_per_MWh_th": heat_cost,
+        "thermal_inventory_MWh_th": thermal_inventory_mwh_th,
+        "weighted_average_inventory_cost_EUR_per_MWh_th": average_cost_eur_per_mwh_th,
+        **{
+            column: float(inventory_by_market.get(market, 0.0))
+            for market, column in INVENTORY_COLUMNS.items()
+        },
+    }
+
+
+def _charging_cost(charge: dict[str, float | str]) -> float:
+    return float(charge["electricity_price"]) * float(charge["electricity_mwh"])
+
+
+def _scale_inventory_to_total(
+    inventory_by_market: dict[str, float],
+    total_inventory_mwh_th: float,
 ) -> dict[str, float]:
-    if remaining_total_mwh <= 1e-12:
-        return _empty_source_inventory()
+    if total_inventory_mwh_th <= EPSILON:
+        return _empty_market_inventory()
 
-    current_total = sum(source_inventory.values())
-    if current_total <= 1e-12:
-        inventory = _empty_source_inventory()
-        inventory["other"] = remaining_total_mwh
+    current_total = sum(max(float(value), 0.0) for value in inventory_by_market.values())
+    if current_total <= EPSILON:
+        inventory = _empty_market_inventory()
+        inventory["other"] = total_inventory_mwh_th
         return inventory
 
-    scale = remaining_total_mwh / current_total
-    return {source: value * scale for source, value in source_inventory.items()}
+    scale = total_inventory_mwh_th / current_total
+    return {
+        market: max(float(inventory_by_market.get(market, 0.0)), 0.0) * scale
+        for market in PROCUREMENT_MARKETS
+    }
 
 
-def _normalise_source_market(source_market: str) -> str:
-    value = str(source_market).strip().lower()
+def _normalise_market(market: str) -> str:
+    value = market.strip().lower()
     if value in {"da", "day-ahead", "day_ahead"}:
         return "day_ahead"
     if value in {"idc", "intraday", "intraday_continuous"}:
         return "intraday_continuous"
     if value in {"afrr", "afrr_energy", "afrr energy"}:
         return "afrr_energy"
-    if not value or value == EMPTY_SOURCE:
+    if not value or value == NO_PROCUREMENT:
         return "other"
-    return value if value in SOURCE_INVENTORY_COLUMNS else "other"
+    return value if value in PROCUREMENT_MARKETS else "other"
 
 
-def _empty_source_inventory() -> dict[str, float]:
-    return {source: 0.0 for source in SOURCE_INVENTORY_COLUMNS}
+def _empty_market_inventory() -> dict[str, float]:
+    return {market: 0.0 for market in PROCUREMENT_MARKETS}
 
 
-def _empty_storage_event() -> StorageChargeEvent:
-    return StorageChargeEvent(
-        source_market=EMPTY_SOURCE,
-        electricity_price_eur_per_mwh=0.0,
-        electricity_volume_mwh=0.0,
-        stored_heat_added_mwh=0.0,
-    )
+def _empty_charge() -> dict[str, float | str]:
+    return {
+        "procurement_market": NO_PROCUREMENT,
+        "electricity_price": 0.0,
+        "electricity_mwh": 0.0,
+        "charged_heat_mwh_th": 0.0,
+    }

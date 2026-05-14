@@ -219,9 +219,7 @@ def storage_content_by_source(
 ) -> pd.DataFrame:
     """Return storage content columns by source market.
 
-    Current ledgers include source-specific columns after the plotting refactor.
-    Older ledgers are handled with a simplified fallback using total remaining
-    stored heat.
+    Current ledgers include economics-oriented source inventory columns.
     """
 
     storage = ensure_datetime_index(storage_cost_ledger)
@@ -229,34 +227,34 @@ def storage_content_by_source(
         return pd.DataFrame()
 
     source_columns = [
-        "remaining_stored_heat_day_ahead_MWh",
-        "remaining_stored_heat_IDC_MWh",
-        "remaining_stored_heat_afrr_energy_MWh",
-        "remaining_stored_heat_other_MWh",
+        "thermal_inventory_day_ahead_MWh_th",
+        "thermal_inventory_intraday_continuous_MWh_th",
+        "thermal_inventory_afrr_energy_MWh_th",
+        "thermal_inventory_other_MWh_th",
     ]
     available = [column for column in source_columns if column in storage.columns]
     if available:
-        return storage[available].rename(columns=_source_column_labels).fillna(0.0)
+        return storage[available].rename(columns=_inventory_column_label).fillna(0.0)
 
-    if "remaining_stored_heat_MWh" not in storage.columns:
-        warn_missing("remaining_stored_heat_MWh", "storage source plot")
+    if "thermal_inventory_MWh_th" not in storage.columns:
+        warn_missing("thermal_inventory_MWh_th", "storage source plot")
         return pd.DataFrame()
 
-    source_market = ""
-    if "source_market" in storage.columns:
+    procurement_market = ""
+    if "procurement_market" in storage.columns:
         sources = sorted(
             {
                 str(value)
-                for value in storage["source_market"].dropna().unique()
+                for value in storage["procurement_market"].dropna().unique()
                 if str(value).strip()
             }
         )
         if len(sources) == 1:
-            source_market = sources[0]
+            procurement_market = sources[0]
 
-    label = _source_label(source_market) if source_market else "Unknown or mixed source"
+    label = _market_label(procurement_market) if procurement_market else "Unknown or mixed source"
     result = pd.DataFrame(index=storage.index)
-    result[label] = storage["remaining_stored_heat_MWh"].fillna(0.0).astype(float)
+    result[label] = storage["thermal_inventory_MWh_th"].fillna(0.0).astype(float)
 
     if dispatch_results is not None and not dispatch_results.empty:
         dispatch = ensure_datetime_index(dispatch_results)
@@ -363,9 +361,9 @@ def _economic_indicators(
     )
     afrr_savings = _sum(dispatch, "afrr_energy_savings_vs_benchmark_EUR")
     afrr_capacity_revenue = 0.0
-    average_stored_heat_cost = _last_non_missing(
+    average_stored_heat_cost = _last_existing_non_missing(
         storage,
-        "weighted_average_storage_cost_EUR_per_MWh_th",
+        ["weighted_average_inventory_cost_EUR_per_MWh_th"],
     )
     total_net_operating_cost = (
         total_operating_cost - idc_value - afrr_energy_value - afrr_capacity_revenue
@@ -402,18 +400,18 @@ def _storage_source_indicators(storage: pd.DataFrame) -> dict[str, float]:
             "weighted_average_stored_heat_cost_EUR_per_MWh_th": 0.0,
         }
 
-    da_added = _source_added(storage, "day_ahead")
-    idc_added = _source_added(storage, "intraday_continuous")
-    afrr_added = _source_added(storage, "afrr_energy")
+    da_added = _charged_heat_from_market(storage, "day_ahead")
+    idc_added = _charged_heat_from_market(storage, "intraday_continuous")
+    afrr_added = _charged_heat_from_market(storage, "afrr_energy")
     total_added = da_added + idc_added + afrr_added
     denominator = total_added if total_added > 1e-12 else 1.0
     return {
         "share_stored_heat_from_DA": da_added / denominator,
         "share_stored_heat_from_IDC": idc_added / denominator,
         "share_stored_heat_from_afrr_energy": afrr_added / denominator,
-        "weighted_average_stored_heat_cost_EUR_per_MWh_th": _last_non_missing(
+        "weighted_average_stored_heat_cost_EUR_per_MWh_th": _last_existing_non_missing(
             storage,
-            "weighted_average_storage_cost_EUR_per_MWh_th",
+            ["weighted_average_inventory_cost_EUR_per_MWh_th"],
         ),
     }
 
@@ -512,12 +510,17 @@ def _last_non_missing(frame: pd.DataFrame, column: str) -> float:
     return float(values.iloc[-1]) if not values.empty else 0.0
 
 
-def _source_added(storage: pd.DataFrame, source_market: str) -> float:
-    if "source_market" not in storage.columns or "stored_heat_added_MWh" not in storage.columns:
+def _last_existing_non_missing(frame: pd.DataFrame, columns: list[str]) -> float:
+    column = _first_existing(frame, columns)
+    return _last_non_missing(frame, column) if column else 0.0
+
+
+def _charged_heat_from_market(storage: pd.DataFrame, procurement_market: str) -> float:
+    if "procurement_market" not in storage.columns or "charged_heat_MWh_th" not in storage.columns:
         return 0.0
-    normalised = storage["source_market"].fillna("").map(_normalise_source_market)
-    mask = normalised == source_market
-    return float(storage.loc[mask, "stored_heat_added_MWh"].fillna(0.0).astype(float).sum())
+    normalised = storage["procurement_market"].fillna("").map(_normalise_procurement_market)
+    mask = normalised == procurement_market
+    return float(storage.loc[mask, "charged_heat_MWh_th"].fillna(0.0).astype(float).sum())
 
 
 def _first_existing(frame: pd.DataFrame, columns: list[str]) -> str | None:
@@ -533,31 +536,33 @@ def _infer_timestep_hours(index: pd.Index) -> float:
     return float(diffs.mode().iloc[0])
 
 
-def _source_column_labels(column: str) -> str:
+def _inventory_column_label(column: str) -> str:
     labels = {
-        "remaining_stored_heat_day_ahead_MWh": "Day-ahead",
-        "remaining_stored_heat_IDC_MWh": "IDC",
-        "remaining_stored_heat_afrr_energy_MWh": "aFRR energy",
-        "remaining_stored_heat_other_MWh": "Other/unknown",
+        "thermal_inventory_day_ahead_MWh_th": "Day-ahead",
+        "thermal_inventory_intraday_continuous_MWh_th": "IDC",
+        "thermal_inventory_afrr_energy_MWh_th": "aFRR energy",
+        "thermal_inventory_other_MWh_th": "Other/unknown",
     }
     return labels[column]
 
 
-def _source_label(source_market: str) -> str:
+def _market_label(procurement_market: str) -> str:
     labels = {
         "day_ahead": "Day-ahead",
         "intraday_continuous": "IDC",
         "afrr_energy": "aFRR energy",
     }
-    return labels.get(_normalise_source_market(source_market), "Other/unknown")
+    return labels.get(_normalise_procurement_market(procurement_market), "Other/unknown")
 
 
-def _normalise_source_market(source_market: str) -> str:
-    value = str(source_market).strip().lower()
+def _normalise_procurement_market(procurement_market: str) -> str:
+    value = str(procurement_market).strip().lower()
     if value in {"da", "day-ahead", "day_ahead"}:
         return "day_ahead"
     if value in {"idc", "intraday", "intraday_continuous"}:
         return "intraday_continuous"
     if value in {"afrr", "afrr_energy", "afrr energy"}:
         return "afrr_energy"
+    if value in {"no_charge", "none", ""}:
+        return "other"
     return value
