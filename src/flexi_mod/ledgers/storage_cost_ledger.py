@@ -230,7 +230,7 @@ class StorageCostLedger:
                 events.append(
                     (
                         "afrr_energy",
-                        float(row.get("afrr_energy_price_clean_EUR_per_MWh", 0.0)),
+                        float(row.get("afrr_energy_price_EUR_per_MWh", 0.0)),
                         afrr_volume,
                         afrr_volume * plant.etes.efficiency_charge,
                     )

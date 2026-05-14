@@ -59,12 +59,8 @@ class AFRRDownSignals:
     idc_buy_mwh: pd.Series
     idc_sell_mwh: pd.Series
     final_planned_electricity_mwh: pd.Series
-    afrr_energy_down_price_raw: pd.Series
-    afrr_energy_down_price_clean: pd.Series
-    afrr_raw_system_activation: pd.Series
-    afrr_raw_system_activation_mwh: pd.Series
-    afrr_down_system_activation_mwh_clean: pd.Series
-    afrr_data_quality_flag: pd.Series
+    afrr_energy_price: pd.Series
+    afrr_system_activation_mwh: pd.Series
     afrr_energy_bid_mwh: pd.Series
     afrr_energy_activated_mwh: pd.Series
     gas_benchmark_eur_per_mwh_th: pd.Series
@@ -253,18 +249,8 @@ class SteamGenerationPlant(BasePlant):
                 final_planned_electricity_mwh=signals.final_planned_electricity_mwh.loc[
                     horizon.index
                 ],
-                afrr_energy_down_price_raw=signals.afrr_energy_down_price_raw.loc[horizon.index],
-                afrr_energy_down_price_clean=signals.afrr_energy_down_price_clean.loc[
-                    horizon.index
-                ],
-                afrr_raw_system_activation=signals.afrr_raw_system_activation.loc[horizon.index],
-                afrr_raw_system_activation_mwh=signals.afrr_raw_system_activation_mwh.loc[
-                    horizon.index
-                ],
-                afrr_down_system_activation_mwh_clean=(
-                    signals.afrr_down_system_activation_mwh_clean.loc[horizon.index]
-                ),
-                afrr_data_quality_flag=signals.afrr_data_quality_flag.loc[horizon.index],
+                afrr_energy_price=signals.afrr_energy_price.loc[horizon.index],
+                afrr_system_activation_mwh=signals.afrr_system_activation_mwh.loc[horizon.index],
                 afrr_energy_bid_mwh=signals.afrr_energy_bid_mwh.loc[horizon.index],
                 afrr_energy_activated_mwh=signals.afrr_energy_activated_mwh.loc[horizon.index],
                 gas_benchmark_eur_per_mwh_th=signals.gas_benchmark_eur_per_mwh_th.loc[
@@ -683,9 +669,7 @@ class SteamGenerationPlant(BasePlant):
         final_planned = (
             signals.final_planned_electricity_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
         )
-        afrr_price_clean = (
-            signals.afrr_energy_down_price_clean.astype(float).reindex(forecasts.index).fillna(0.0)
-        )
+        afrr_price = signals.afrr_energy_price.astype(float).reindex(forecasts.index).fillna(0.0)
         afrr_bid = signals.afrr_energy_bid_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
         afrr_activation = (
             signals.afrr_energy_activated_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
@@ -696,10 +680,10 @@ class SteamGenerationPlant(BasePlant):
         m.da_price = pyo.Param(m.T, initialize={t: da_price[t] for t in steps})
         m.idc_price = pyo.Param(m.T, initialize={t: idc_price[t] for t in steps})
         m.afrr_energy_price = pyo.Param(
-            m.T, initialize={t: float(afrr_price_clean.iloc[t]) for t in steps}
+            m.T, initialize={t: float(afrr_price.iloc[t]) for t in steps}
         )
         m.electricity_price = pyo.Param(
-            m.T, initialize={t: float(afrr_price_clean.iloc[t]) for t in steps}
+            m.T, initialize={t: float(afrr_price.iloc[t]) for t in steps}
         )
         m.gas_price = pyo.Param(m.T, initialize={t: gas_price[t] for t in steps})
         m.co2_price = pyo.Param(m.T, initialize={t: co2_price[t] for t in steps})
@@ -852,7 +836,6 @@ class SteamGenerationPlant(BasePlant):
                 "IDC_buy_MWh": 0.0,
                 "IDC_sell_MWh": 0.0,
                 "IDC_price_EUR_per_MWh": float("nan"),
-                "planned_electricity_MWh": _value(model.electricity_consumption[t]),
                 "final_planned_electricity_MWh": _value(model.electricity_consumption[t]),
                 "actual_electricity_consumption_MWh": _value(model.electricity_consumption[t]),
                 "DA_electricity_cost_EUR": electricity_cost,
@@ -862,13 +845,7 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_energy_bid_MW": 0.0,
                 "afrr_energy_activated_MWh": 0.0,
                 "afrr_energy_price_EUR_per_MWh": float("nan"),
-                "afrr_energy_price_clean_EUR_per_MWh": 0.0,
-                "afrr_energy_down_price_clean": 0.0,
-                "afrr_raw_system_activation": float("nan"),
-                "afrr_raw_system_activation_MWh": 0.0,
-                "afrr_down_system_activation_MWh_clean": 0.0,
-                "afrr_system_activation_MWh_clean": 0.0,
-                "afrr_data_quality_flag": "",
+                "afrr_system_activation_MWh": 0.0,
                 "afrr_energy_cost_EUR": 0.0,
                 "afrr_energy_savings_vs_benchmark_EUR": 0.0,
                 "unmet_heat_MWh": _value(model.unmet_heat[t]),
@@ -944,7 +921,6 @@ class SteamGenerationPlant(BasePlant):
                 "DA_position_MWh": da_position,
                 "IDC_buy_MWh": idc_buy,
                 "IDC_sell_MWh": idc_sell,
-                "planned_electricity_MWh": final_planned,
                 "final_planned_electricity_MWh": final_planned,
                 "actual_electricity_consumption_MWh": _value(model.electricity_consumption[t]),
                 "DA_electricity_cost_EUR": _value(model.da_electricity_cost[t]),
@@ -954,13 +930,7 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_energy_bid_MW": 0.0,
                 "afrr_energy_activated_MWh": 0.0,
                 "afrr_energy_price_EUR_per_MWh": float("nan"),
-                "afrr_energy_price_clean_EUR_per_MWh": 0.0,
-                "afrr_energy_down_price_clean": 0.0,
-                "afrr_raw_system_activation": float("nan"),
-                "afrr_raw_system_activation_MWh": 0.0,
-                "afrr_down_system_activation_MWh_clean": 0.0,
-                "afrr_system_activation_MWh_clean": 0.0,
-                "afrr_data_quality_flag": "",
+                "afrr_system_activation_MWh": 0.0,
                 "afrr_energy_cost_EUR": 0.0,
                 "afrr_energy_savings_vs_benchmark_EUR": 0.0,
                 "unmet_heat_MWh": _value(model.unmet_heat[t]),
@@ -1042,7 +1012,6 @@ class SteamGenerationPlant(BasePlant):
                 "DA_position_MWh": _value(model.da_position_mwh[t]),
                 "IDC_buy_MWh": _value(model.idc_buy_mwh[t]),
                 "IDC_sell_MWh": _value(model.idc_sell_mwh[t]),
-                "planned_electricity_MWh": final_planned,
                 "final_planned_electricity_MWh": final_planned,
                 "actual_electricity_consumption_MWh": actual_electricity,
                 "DA_electricity_cost_EUR": _value(model.da_electricity_cost[t]),
@@ -1051,25 +1020,8 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_energy_bid_MWh": afrr_bid,
                 "afrr_energy_bid_MW": afrr_bid / dt_hours if dt_hours > 0 else 0.0,
                 "afrr_energy_activated_MWh": afrr_activation,
-                "afrr_energy_price_EUR_per_MWh": _series_float_or_nan(
-                    signals.afrr_energy_down_price_raw, t
-                ),
-                "afrr_energy_price": _series_float_or_nan(signals.afrr_energy_down_price_raw, t),
-                "afrr_energy_price_clean_EUR_per_MWh": afrr_price_clean,
-                "afrr_energy_down_price_clean": afrr_price_clean,
-                "afrr_raw_system_activation": _series_float_or_nan(
-                    signals.afrr_raw_system_activation, t
-                ),
-                "afrr_raw_system_activation_MWh": float(
-                    signals.afrr_raw_system_activation_mwh.iloc[t]
-                ),
-                "afrr_down_system_activation_MWh_clean": float(
-                    signals.afrr_down_system_activation_mwh_clean.iloc[t]
-                ),
-                "afrr_system_activation_MWh_clean": float(
-                    signals.afrr_down_system_activation_mwh_clean.iloc[t]
-                ),
-                "afrr_data_quality_flag": str(signals.afrr_data_quality_flag.iloc[t]),
+                "afrr_energy_price_EUR_per_MWh": afrr_price_clean,
+                "afrr_system_activation_MWh": float(signals.afrr_system_activation_mwh.iloc[t]),
                 "afrr_energy_cost_EUR": _value(model.afrr_energy_cost[t]),
                 "afrr_energy_savings_vs_benchmark_EUR": afrr_savings,
                 "unmet_heat_MWh": _value(model.unmet_heat[t]),

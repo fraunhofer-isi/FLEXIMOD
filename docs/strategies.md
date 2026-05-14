@@ -292,7 +292,7 @@ Actual proxy activation is calculated before the plant solve:
 ```text
 afrr_energy_activated_MWh =
     min(afrr_energy_bid_upper_bound_MWh,
-        afrr_down_system_activation_MWh_clean)
+        afrr_system_activation_MWh)
 ```
 
 Pyomo receives the activated volume as a fixed parameter. It does not decide TSO

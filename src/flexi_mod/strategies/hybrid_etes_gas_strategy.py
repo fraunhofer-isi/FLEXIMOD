@@ -195,9 +195,9 @@ class HybridETESGasStrategy(BaseStrategy):
             axis=1,
         ).min(axis=1)
 
-        valid_price = clean_afrr["afrr_energy_down_price_raw"].notna()
+        valid_price = clean_afrr["afrr_price_available"]
         price_allowed = (
-            clean_afrr["afrr_energy_down_price_clean"]
+            clean_afrr["afrr_energy_down_price_EUR_per_MWh"]
             <= electricity_benchmark - AFRR_ENERGY_MARGIN_EUR_PER_MWH
         ) & valid_price
         feasible_bid_potential = feasible_bid_potential.where(price_allowed, 0.0)
@@ -208,7 +208,7 @@ class HybridETESGasStrategy(BaseStrategy):
         # if exact market-compliant bid granularity is required later.
 
         activated = pd.concat(
-            [bid_upper_bound, clean_afrr["afrr_down_system_activation_MWh_clean"]],
+            [bid_upper_bound, clean_afrr["afrr_system_activation_MWh"]],
             axis=1,
         ).min(axis=1)
         activated = activated.clip(lower=0.0)
@@ -221,14 +221,8 @@ class HybridETESGasStrategy(BaseStrategy):
             idc_buy_mwh=idc_buy,
             idc_sell_mwh=idc_sell,
             final_planned_electricity_mwh=final_planned,
-            afrr_energy_down_price_raw=clean_afrr["afrr_energy_down_price_raw"],
-            afrr_energy_down_price_clean=clean_afrr["afrr_energy_down_price_clean"],
-            afrr_raw_system_activation=clean_afrr["afrr_raw_system_activation"],
-            afrr_raw_system_activation_mwh=clean_afrr["afrr_raw_system_activation_MWh"],
-            afrr_down_system_activation_mwh_clean=clean_afrr[
-                "afrr_down_system_activation_MWh_clean"
-            ],
-            afrr_data_quality_flag=clean_afrr["afrr_data_quality_flag"],
+            afrr_energy_price=clean_afrr["afrr_energy_down_price_EUR_per_MWh"],
+            afrr_system_activation_mwh=clean_afrr["afrr_system_activation_MWh"],
             afrr_energy_bid_mwh=bid_upper_bound,
             afrr_energy_activated_mwh=activated,
             gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,

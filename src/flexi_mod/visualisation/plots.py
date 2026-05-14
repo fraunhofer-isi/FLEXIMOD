@@ -49,6 +49,7 @@ def create_all_plots_from_output(
         results.dispatch_results,
         market_ledger=results.market_ledger,
         storage_cost_ledger=results.storage_cost_ledger,
+        afrr_energy_data_quality_summary=results.afrr_energy_data_quality_summary,
     )
     if not summary.empty:
         save_summary_indicators(summary, results.output_dir)

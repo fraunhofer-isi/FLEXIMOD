@@ -72,12 +72,9 @@ def clean_afrr_down_data(
 
     clean = pd.DataFrame(
         {
-            "afrr_energy_down_price_raw": price,
-            "afrr_energy_down_price_clean": price.fillna(0.0),
-            "afrr_raw_system_activation": quantity,
-            "afrr_raw_system_activation_MWh": raw_activation_mwh,
-            "afrr_down_system_activation_MWh_clean": clean_activation_mwh.clip(lower=0.0),
-            "afrr_data_quality_flag": flags,
+            "afrr_energy_down_price_EUR_per_MWh": price.fillna(0.0),
+            "afrr_price_available": ~missing_price,
+            "afrr_system_activation_MWh": clean_activation_mwh.clip(lower=0.0),
         },
         index=forecasts.index,
     )

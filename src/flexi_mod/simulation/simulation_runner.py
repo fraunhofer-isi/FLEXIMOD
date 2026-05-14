@@ -92,6 +92,7 @@ class SimulationRunner:
             dispatch_results,
             market_ledger=market_ledger.to_dataframe(),
             storage_cost_ledger=storage_ledger.to_dataframe(),
+            afrr_energy_data_quality_summary=strategy.afrr_energy_data_quality_summary,
         )
         if self.output_options.save_summary_indicators:
             path = output_dir / "summary_indicators.csv"

@@ -21,7 +21,7 @@ def test_afrr_down_cleaning_treats_zero_price_as_valid() -> None:
         timestep_hours=0.25,
     )
 
-    assert cleaned.frame["afrr_down_system_activation_MWh_clean"].iloc[0] == pytest.approx(0.5)
+    assert cleaned.frame["afrr_system_activation_MWh"].iloc[0] == pytest.approx(0.5)
     assert cleaned.quality_summary["aFRR_down_price_zero_with_activation_rows"].iloc[0] == 1
 
 
@@ -37,9 +37,10 @@ def test_afrr_down_cleaning_skips_activation_without_price() -> None:
             timestep_hours=0.25,
         )
 
-    assert cleaned.frame["afrr_down_system_activation_MWh_clean"].iloc[0] == pytest.approx(0.0)
-    assert cleaned.frame["afrr_energy_down_price_clean"].iloc[0] == pytest.approx(0.0)
-    assert cleaned.frame["afrr_data_quality_flag"].iloc[0] == "activation_without_price"
+    assert cleaned.frame["afrr_system_activation_MWh"].iloc[0] == pytest.approx(0.0)
+    assert cleaned.frame["afrr_energy_down_price_EUR_per_MWh"].iloc[0] == pytest.approx(0.0)
+    assert not cleaned.frame["afrr_price_available"].iloc[0]
+    assert cleaned.quality_summary["aFRR_down_activation_without_price_rows"].iloc[0] == 1
     assert cleaned.quality_summary["aFRR_down_skipped_activation_MWh_due_to_missing_price"].iloc[
         0
     ] == pytest.approx(0.5)
@@ -57,8 +58,8 @@ def test_afrr_down_cleaning_missing_quantity_gives_zero_activation() -> None:
             timestep_hours=0.25,
         )
 
-    assert cleaned.frame["afrr_down_system_activation_MWh_clean"].iloc[0] == pytest.approx(0.0)
-    assert cleaned.frame["afrr_data_quality_flag"].iloc[0] == "no_activation_or_missing_quantity"
+    assert cleaned.frame["afrr_system_activation_MWh"].iloc[0] == pytest.approx(0.0)
+    assert cleaned.quality_summary["aFRR_down_missing_quantity_rows"].iloc[0] == 1
 
 
 def test_afrr_down_cleaning_negative_quantity_is_abs_and_flagged() -> None:
@@ -72,8 +73,7 @@ def test_afrr_down_cleaning_negative_quantity_is_abs_and_flagged() -> None:
         timestep_hours=0.25,
     )
 
-    assert cleaned.frame["afrr_down_system_activation_MWh_clean"].iloc[0] == pytest.approx(0.5)
-    assert cleaned.frame["afrr_data_quality_flag"].iloc[0] == "negative_quantity_converted"
+    assert cleaned.frame["afrr_system_activation_MWh"].iloc[0] == pytest.approx(0.5)
     assert cleaned.quality_summary["aFRR_down_negative_quantity_rows"].iloc[0] == 1
 
 
@@ -88,7 +88,7 @@ def test_afrr_down_cleaning_mwh_unit_uses_quantity_directly() -> None:
         timestep_hours=0.25,
     )
 
-    assert cleaned.frame["afrr_down_system_activation_MWh_clean"].iloc[0] == pytest.approx(2.0)
+    assert cleaned.frame["afrr_system_activation_MWh"].iloc[0] == pytest.approx(2.0)
 
 
 def _forecast_frame(prices: list[float | None], quantities: list[float | None]) -> pd.DataFrame:

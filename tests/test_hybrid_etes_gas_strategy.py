@@ -252,8 +252,7 @@ def test_cheap_afrr_down_creates_proxy_activation(
     assert market["afrr_energy_activated_MWh"].sum() > 0.0
     assert (market["afrr_energy_activated_MWh"] <= market["afrr_energy_bid_MWh"] + 1e-8).all()
     assert (
-        market["afrr_energy_activated_MWh"]
-        <= market["afrr_down_system_activation_MWh_clean"] + 1e-8
+        market["afrr_energy_activated_MWh"] <= market["afrr_system_activation_MWh"] + 1e-8
     ).all()
     _assert_actual_electricity_with_afrr(market)
     assert dispatch["etes_charge_MWh"].to_numpy() == pytest.approx(
@@ -300,8 +299,8 @@ def test_afrr_missing_price_blocks_bid_even_with_activation(
 
     assert first["afrr_energy_bid_MWh"] == pytest.approx(0.0)
     assert first["afrr_energy_activated_MWh"] == pytest.approx(0.0)
-    assert first["afrr_energy_price_clean"] == pytest.approx(0.0)
-    assert first["afrr_data_quality_flag"] == "activation_without_price"
+    assert first["afrr_energy_price"] == pytest.approx(0.0)
+    assert results["afrr_quality"]["aFRR_down_activation_without_price_rows"].iloc[0] == 1
 
 
 def test_afrr_minimum_bid_rule_uses_mw_headroom(
@@ -393,12 +392,15 @@ def _run_case(case_dir: Path, tmp_path: Path) -> dict[str, pd.DataFrame]:
         output_options=OutputOptions(create_plots=False),
     )
     outputs = runner.run()
-    return {
+    results = {
         "dispatch": pd.read_csv(outputs["dispatch_results"], parse_dates=["datetime"]),
         "market": pd.read_csv(outputs["market_ledger"], parse_dates=["datetime"]),
         "storage": pd.read_csv(outputs["storage_cost_ledger"], parse_dates=["datetime"]),
         "summary": pd.read_csv(outputs["summary_indicators"]),
     }
+    if "afrr_energy_data_quality_summary" in outputs:
+        results["afrr_quality"] = pd.read_csv(outputs["afrr_energy_data_quality_summary"])
+    return results
 
 
 def _assert_final_planned_balance(market: pd.DataFrame) -> None:

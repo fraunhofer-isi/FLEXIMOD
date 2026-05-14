@@ -23,6 +23,28 @@ def test_market_ledger_initialises_and_updates_da(tmp_path: Path) -> None:
     frame = ledger.to_dataframe()
     assert frame["DA_position_MWh"].tolist() == [1.0, 2.0]
     assert frame["DA_price"].tolist() == [50.0, 55.0]
+    assert "final_planned_electricity_MWh" in frame.columns
 
     path = ledger.save(tmp_path / "market_ledger.csv")
     assert path.exists()
+
+
+def test_market_ledger_schema_excludes_internal_afrr_diagnostics() -> None:
+    ledger = MarketLedger()
+    ledger.initialise(pd.date_range("2025-01-01", periods=1, freq="15min"), ["plant_1"])
+
+    frame = ledger.to_dataframe()
+
+    removed_columns = {
+        "planned_" + "electricity_MWh",
+        "afrr_capacity_" + "reserved_MW",
+        "afrr_capacity_" + "price",
+        "afrr_energy_" + "price_clean",
+        "afrr_raw_" + "system_activation",
+        "afrr_raw_" + "system_activation_MWh",
+        "afrr_system_activation_" + "MWh_clean",
+        "afrr_down_" + "system_activation_MWh_clean",
+        "afrr_data_" + "quality_flag",
+    }
+    assert removed_columns.isdisjoint(frame.columns)
+    assert "afrr_system_activation_MWh" in frame.columns

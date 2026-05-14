@@ -15,6 +15,7 @@ RESULT_FILES = {
     "market_ledger": "market_ledger.csv",
     "storage_cost_ledger": "storage_cost_ledger.csv",
     "summary_indicators": "summary_indicators.csv",
+    "afrr_energy_data_quality_summary": "afrr_energy_data_quality_summary.csv",
 }
 
 
@@ -27,6 +28,7 @@ class CaseResults:
     market_ledger: pd.DataFrame
     storage_cost_ledger: pd.DataFrame
     summary_indicators: pd.DataFrame
+    afrr_energy_data_quality_summary: pd.DataFrame
 
 
 def load_results(output_dir: str | Path) -> CaseResults:
@@ -41,12 +43,18 @@ def load_results(output_dir: str | Path) -> CaseResults:
         required=False,
         datetime_index=False,
     )
+    afrr_quality = _load_csv(
+        output_dir / RESULT_FILES["afrr_energy_data_quality_summary"],
+        required=False,
+        datetime_index=False,
+    )
     return CaseResults(
         output_dir=output_dir,
         dispatch_results=dispatch,
         market_ledger=market,
         storage_cost_ledger=storage,
         summary_indicators=summary,
+        afrr_energy_data_quality_summary=afrr_quality,
     )
 
 
@@ -64,6 +72,7 @@ def calculate_summary_indicators(
     dispatch_results: pd.DataFrame,
     market_ledger: pd.DataFrame | None = None,
     storage_cost_ledger: pd.DataFrame | None = None,
+    afrr_energy_data_quality_summary: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Calculate operational, market, economic and storage indicators.
 
@@ -76,6 +85,11 @@ def calculate_summary_indicators(
     storage = (
         ensure_datetime_index(storage_cost_ledger)
         if storage_cost_ledger is not None
+        else pd.DataFrame()
+    )
+    afrr_quality = (
+        afrr_energy_data_quality_summary
+        if afrr_energy_data_quality_summary is not None
         else pd.DataFrame()
     )
 
@@ -93,7 +107,7 @@ def calculate_summary_indicators(
                 **_market_indicators(plant_dispatch, plant_market),
                 **_economic_indicators(plant_dispatch, plant_market, plant_storage),
                 **_storage_source_indicators(plant_storage),
-                **_afrr_data_quality_indicators(plant_market),
+                **_afrr_data_quality_indicators(afrr_quality),
             }
         )
     return pd.DataFrame(records)
@@ -296,11 +310,7 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
     final_planned = _sum(
         market,
         "final_planned_electricity_MWh",
-        fallback=_sum(
-            market,
-            "planned_electricity_MWh",
-            fallback=da + idc_buy - idc_sell,
-        ),
+        fallback=da + idc_buy - idc_sell,
     )
     actual = _sum(
         market,
@@ -349,18 +359,10 @@ def _economic_indicators(
     afrr_energy_cost = _sum(
         dispatch,
         "afrr_energy_cost_EUR",
-        fallback=_energy_value(
-            market,
-            "afrr_energy_activated_MWh",
-            "afrr_energy_price_clean",
-        ),
+        fallback=_energy_value(market, "afrr_energy_activated_MWh", "afrr_energy_price"),
     )
     afrr_savings = _sum(dispatch, "afrr_energy_savings_vs_benchmark_EUR")
-    afrr_capacity_revenue = _energy_value(
-        market,
-        "afrr_capacity_reserved_MW",
-        "afrr_capacity_price",
-    )
+    afrr_capacity_revenue = 0.0
     average_stored_heat_cost = _last_non_missing(
         storage,
         "weighted_average_storage_cost_EUR_per_MWh_th",
@@ -416,7 +418,7 @@ def _storage_source_indicators(storage: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def _afrr_data_quality_indicators(market: pd.DataFrame) -> dict[str, float]:
+def _afrr_data_quality_indicators(quality_summary: pd.DataFrame) -> dict[str, float]:
     empty = {
         "aFRR_down_total_rows": 0.0,
         "aFRR_down_valid_activation_rows": 0.0,
@@ -429,44 +431,15 @@ def _afrr_data_quality_indicators(market: pd.DataFrame) -> dict[str, float]:
         "aFRR_down_negative_quantity_rows": 0.0,
         "aFRR_down_price_zero_with_activation_rows": 0.0,
     }
-    if market.empty or "afrr_data_quality_flag" not in market.columns:
+    if quality_summary.empty:
         return empty
 
-    flags = market["afrr_data_quality_flag"].fillna("").astype(str)
-    raw_price = pd.to_numeric(
-        market["afrr_energy_price"]
-        if "afrr_energy_price" in market.columns
-        else pd.Series(pd.NA, index=market.index),
-        errors="coerce",
-    )
-    raw_quantity = pd.to_numeric(
-        market["afrr_raw_system_activation"]
-        if "afrr_raw_system_activation" in market.columns
-        else pd.Series(pd.NA, index=market.index),
-        errors="coerce",
-    )
-    raw_activation_mwh = _series(market, "afrr_raw_system_activation_MWh")
-    clean_activation = _series(market, "afrr_down_system_activation_MWh_clean")
-    missing_price = raw_price.isna()
-    missing_quantity = raw_quantity.isna()
-    activation_without_price = flags == "activation_without_price"
-
-    return {
-        "aFRR_down_total_rows": float(len(market)),
-        "aFRR_down_valid_activation_rows": float((clean_activation > 1e-12).sum()),
-        "aFRR_down_zero_activation_rows": float((clean_activation <= 1e-12).sum()),
-        "aFRR_down_missing_price_rows": float(missing_price.sum()),
-        "aFRR_down_missing_quantity_rows": float(missing_quantity.sum()),
-        "aFRR_down_activation_without_price_rows": float(activation_without_price.sum()),
-        "aFRR_down_skipped_activation_MWh_due_to_missing_price": float(
-            raw_activation_mwh.loc[activation_without_price].sum()
-        ),
-        "aFRR_down_used_system_activation_MWh": float(clean_activation.sum()),
-        "aFRR_down_negative_quantity_rows": float((flags == "negative_quantity_converted").sum()),
-        "aFRR_down_price_zero_with_activation_rows": float(
-            ((raw_price == 0.0) & (clean_activation > 1e-12)).sum()
-        ),
-    }
+    result = empty.copy()
+    numeric = quality_summary.select_dtypes(include="number")
+    for column in result:
+        if column in numeric.columns:
+            result[column] = float(numeric[column].sum())
+    return result
 
 
 def _group_by_plant(frame: pd.DataFrame):
