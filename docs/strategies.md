@@ -234,7 +234,7 @@ electricity_trading_benchmark =
 The current IDC margin is embedded in the strategy code:
 
 ```text
-IDC_MARGIN_EUR_PER_MWH = 10.0
+IDC_MARGIN_EUR_PER_MWH = 5.0
 ```
 
 The rules are:
@@ -309,6 +309,22 @@ afrr_energy_activated_MWh =
         afrr_system_activation_MWh)
 ```
 
+The aFRR down price rule uses the same electricity-side ETES benchmark as IDC.
+The current aFRR down margin is embedded in the strategy code:
+
+```text
+AFRR_ENERGY_MARGIN_EUR_PER_MWH = 5.0
+```
+
+So the current rule is:
+
+```text
+aFRR_down_price <= electricity_trading_benchmark - 5.0
+```
+
+This means aFRR down electricity must be at least `5 EUR/MWh_el` cheaper than
+the gas-equivalent ETES benchmark before the plant offers bid potential.
+
 Pyomo receives the activated volume as a fixed parameter. It does not decide TSO
 activation. For the current hybrid ETES + gas plant:
 
@@ -331,7 +347,6 @@ decides the feasible dispatch by minimizing:
 ```text
 electricity cost
 + gas fuel cost
-+ unmet heat penalty
 ```
 
 The plant model decides:
@@ -340,7 +355,6 @@ The plant model decides:
 - ETES discharging;
 - ETES state of charge;
 - gas boiler heat output;
-- unmet heat, only as emergency slack;
 - electricity consumption.
 
 The strategy only decides when charging is economically allowed. The plant model

@@ -92,8 +92,9 @@ def test_day_ahead_only_strategy_matches_expected_plant_behaviour(
 
     # The plant operation remains feasible and heat demand is fully supplied.
     supplied_heat = dispatch["gas_heat_MWh"] + dispatch["etes_discharge_MWh"]
-    assert (supplied_heat >= dispatch["heat_demand_MWh"] - 1e-8).all()
-    assert dispatch["unmet_heat_MWh"].sum() == pytest.approx(0.0)
+    assert supplied_heat.to_numpy() == pytest.approx(dispatch["heat_demand_MWh"].to_numpy())
+    assert "unmet_heat_MWh" not in dispatch.columns
+    assert "excess_heat_MWh" not in dispatch.columns
 
     # In the DA-only MVP, the market position is exactly the optimized ETES electricity use.
     assert market["day_ahead_position_MWh_el"].sum() == pytest.approx(
@@ -108,7 +109,8 @@ def test_day_ahead_only_strategy_matches_expected_plant_behaviour(
     assert summary["total_DA_electricity_MWh"].iloc[0] == pytest.approx(
         market["day_ahead_position_MWh_el"].sum()
     )
-    assert summary["total_unmet_heat_MWh"].iloc[0] == pytest.approx(0.0)
+    assert "total_unmet_heat_MWh" not in summary.columns
+    assert "total_excess_heat_MWh" not in summary.columns
     assert summary["total_co2_cost_EUR"].iloc[0] == pytest.approx(0.0)
 
 
@@ -330,7 +332,7 @@ def test_cheap_afrr_down_creates_proxy_activation(
         idc_prices=[75.0] * 8,
         afrr_prices=[20.0] * 8,
         afrr_quantities=[2.0] * 8,
-        heat_demand=[0.0] * 8,
+        heat_demand=[2.0] * 8,
     )
 
     results = _run_case(afrr_case, tmp_path)
@@ -360,6 +362,27 @@ def test_expensive_afrr_down_creates_no_bid_or_activation(
         idc_prices=[75.0] * 8,
         afrr_prices=[120.0] * 8,
         afrr_quantities=[2.0] * 8,
+    )
+
+    results = _run_case(afrr_case, tmp_path)
+    market = results["market"]
+
+    assert market["afrr_energy_bid_MWh_el"].sum() == pytest.approx(0.0)
+    assert market["afrr_energy_activated_MWh_el"].sum() == pytest.approx(0.0)
+    _assert_actual_electricity_with_afrr(market)
+
+
+def test_afrr_down_margin_blocks_price_too_close_to_benchmark(
+    afrr_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        afrr_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[72.0] * 8,
+        afrr_quantities=[2.0] * 8,
+        heat_demand=[2.0] * 8,
     )
 
     results = _run_case(afrr_case, tmp_path)
@@ -423,15 +446,18 @@ def test_afrr_bid_uses_storage_capacity_headroom(
         da_prices=[120.0] * 8,
         idc_prices=[75.0] * 8,
         afrr_prices=[20.0] * 8,
-        afrr_quantities=[10.0] * 8,
-        heat_demand=[0.0] * 8,
+        afrr_quantities=[0.1] * 8,
+        heat_demand=[2.0] * 8,
     )
 
     results = _run_case(afrr_case, tmp_path)
     market = results["market"].sort_values("datetime")
     first = market.iloc[0]
 
-    assert first["afrr_energy_bid_MWh_el"] <= (4.0 - 3.6) / 0.92 + 1e-8
+    first_step_heat_demand_mwh = 2.0 * 0.25
+    baseline_soc_after_heat_dispatch = 3.6 - first_step_heat_demand_mwh / 0.92
+    expected_capacity_limited_bid = (4.0 - baseline_soc_after_heat_dispatch) / 0.92
+    assert first["afrr_energy_bid_MWh_el"] <= expected_capacity_limited_bid + 1e-8
     _assert_actual_electricity_with_afrr(market)
 
 
@@ -508,8 +534,9 @@ def _assert_final_planned_balance(market: pd.DataFrame) -> None:
 
 def _assert_heat_is_feasible(dispatch: pd.DataFrame) -> None:
     supplied_heat = dispatch["gas_heat_MWh"] + dispatch["etes_discharge_MWh"]
-    assert (supplied_heat >= dispatch["heat_demand_MWh"] - 1e-8).all()
-    assert dispatch["unmet_heat_MWh"].sum() == pytest.approx(0.0)
+    assert supplied_heat.to_numpy() == pytest.approx(dispatch["heat_demand_MWh"].to_numpy())
+    assert "unmet_heat_MWh" not in dispatch.columns
+    assert "excess_heat_MWh" not in dispatch.columns
 
 
 def _assert_actual_electricity_with_afrr(market: pd.DataFrame) -> None:

@@ -91,6 +91,31 @@ markets:
         loader.load_forecasts(required_columns={"DE_ID3_price"})
 
 
+def test_day_ahead_only_ignores_dst_irregularities_outside_case_range(tmp_path: Path) -> None:
+    case_dir = _write_day_ahead_only_case(tmp_path)
+    index = pd.date_range("2025-01-01 00:00", "2025-04-01 00:00", freq="15min")
+    index = index.difference(pd.date_range("2025-03-30 02:00", "2025-03-30 02:45", freq="15min"))
+    pd.DataFrame(
+        {
+            "datetime": [timestamp.strftime("%d.%m.%Y %H:%M") for timestamp in index],
+            "plant_1_heat_demand": [2.0] * len(index),
+            "DE_DA_price": [50.0] * len(index),
+            "natural_gas_price": [80.0] * len(index),
+        }
+    ).to_csv(case_dir / "forecasts_df.csv", index=False)
+
+    config = CaseConfig.from_case_dir(case_dir)
+    loader = DataLoader(config, input_dir=case_dir)
+
+    forecasts = loader.load_forecasts(
+        required_columns={"plant_1_heat_demand", "DE_DA_price", "natural_gas_price"}
+    )
+
+    assert forecasts.index.min() == pd.Timestamp("2025-01-01 00:00")
+    assert forecasts.index.max() == pd.Timestamp("2025-01-02 23:45")
+    assert len(forecasts) == 2 * 24 * 4
+
+
 def _write_loader_case(tmp_path: Path) -> Path:
     case_dir = tmp_path / "loader_case"
     case_dir.mkdir()
@@ -180,4 +205,74 @@ markets:
             "aFRR_energy_down_quantity": [0.0] * len(index),
         }
     ).to_csv(case_dir / "forecasts_df.csv", index=False)
+    return case_dir
+
+
+def _write_day_ahead_only_case(tmp_path: Path) -> Path:
+    case_dir = tmp_path / "da_only_loader_case"
+    case_dir.mkdir()
+    (case_dir / "config.yaml").write_text(
+        """
+case:
+  name: da_only_loader_case
+  country: DE
+  timestep_minutes: 15
+  simulation_start: "2025-01-01 00:00"
+  simulation_end: "2025-01-02 23:45"
+strategy:
+  name: hybrid_etes_gas
+  dispatch:
+    dispatch_method: pyomo
+solver:
+  name: highs
+  fallback_solvers: []
+  tee: false
+market_sequence:
+  - day_ahead
+  - intraday_continuous
+  - afrr_energy
+markets:
+  day_ahead:
+    enabled: true
+    signals:
+      price: DE_DA_price
+  intraday_continuous:
+    enabled: false
+    signals:
+      price: DE_ID3_price
+  afrr_energy:
+    enabled: false
+    signals:
+      price: aFRR_energy_down_price
+      system_activation: aFRR_energy_down_quantity
+""".strip(),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {
+                "name": "plant_1",
+                "unit_type": "steam_plant",
+                "technology": "thermal_storage",
+                "demand": "plant_1_heat_demand",
+                "max_capacity": 4.0,
+                "min_capacity": 0.0,
+                "max_power_charge": 7.0,
+                "max_power_discharge": 7.0,
+                "initial_soc": 0.0,
+                "efficiency_charge": 0.92,
+                "efficiency_discharge": 0.92,
+                "storage_loss_rate": 0.0,
+            },
+            {
+                "name": "plant_1",
+                "unit_type": "steam_plant",
+                "technology": "boiler",
+                "fuel_type": "natural_gas",
+                "max_power": 5.0,
+                "min_power": 0.0,
+                "efficiency": 0.9,
+            },
+        ]
+    ).to_csv(case_dir / "plants.csv", index=False)
     return case_dir

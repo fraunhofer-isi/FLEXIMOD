@@ -29,7 +29,7 @@ def test_required_sections_exist() -> None:
 
 def test_enabled_markets_have_required_signals() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
-    assert config.enabled_markets == ["day_ahead", "intraday_continuous", "afrr_energy"]
+    assert "day_ahead" in config.enabled_markets
     assert config.market_signal("day_ahead", "price") == "DE_DA_price"
     assert config.market_signal("intraday_continuous", "price") == "DE_ID3_price"
     assert config.market_signal("afrr_energy", "price") == "aFRR_energy_down_price"

@@ -64,11 +64,11 @@ def test_steam_generation_plant_short_horizon_solves() -> None:
         "etes_soc_MWh",
         "gas_heat_MWh",
         "electricity_consumption_MWh",
-        "unmet_heat_MWh",
     }
     assert required_columns.issubset(result.columns)
-    assert result["unmet_heat_MWh"].sum() == 0
-    assert (result["gas_heat_MWh"] >= result["heat_demand_MWh"] - 1e-8).all()
+    assert "unmet_heat_MWh" not in result.columns
+    assert "excess_heat_MWh" not in result.columns
+    _assert_useful_heat_matches_demand(result)
 
 
 def test_steam_generation_plant_short_idc_adjustment_horizon_solves() -> None:
@@ -117,7 +117,7 @@ def test_steam_generation_plant_short_idc_adjustment_horizon_solves() -> None:
     assert (result["IDC_sell_MWh"] <= result["DA_position_MWh"] + 1e-8).all()
     expected = result["DA_position_MWh"] + result["IDC_buy_MWh"] - result["IDC_sell_MWh"]
     assert result["final_planned_electricity_MWh"].to_numpy() == pytest.approx(expected.to_numpy())
-    assert result["unmet_heat_MWh"].sum() == 0
+    _assert_useful_heat_matches_demand(result)
 
 
 def test_steam_generation_plant_short_afrr_down_horizon_solves() -> None:
@@ -170,4 +170,41 @@ def test_steam_generation_plant_short_afrr_down_horizon_solves() -> None:
     assert result["etes_charge_MWh"].to_numpy() == pytest.approx(
         result["actual_electricity_consumption_MWh"].to_numpy()
     )
-    assert result["unmet_heat_MWh"].sum() == 0
+    _assert_useful_heat_matches_demand(result)
+
+
+def test_steam_generation_plant_fails_when_real_heat_supply_is_insufficient() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    plant = SteamGenerationPlant.from_plants_dataframe(
+        DataLoader(config, input_dir=CASE_DIR).load_plants()
+    )[0]
+    strategy = HybridETESGasStrategy(config)
+
+    index = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
+    forecasts = pd.DataFrame(
+        {
+            "plant_1_heat_demand": [10.0] * 4,
+            "DE_DA_price": [120.0] * 4,
+            "natural_gas_price": [80.0] * 4,
+            "co2_price": [0.0] * 4,
+        },
+        index=index,
+    )
+    signals = DispatchSignals(
+        electricity_price_col="DE_DA_price",
+        gas_price_col="natural_gas_price",
+        co2_price_col="co2_price",
+        gas_benchmark_eur_per_mwh_th=strategy.calculate_gas_based_heat_cost(
+            plant,
+            forecasts,
+        ),
+        charge_allowed=pd.Series(False, index=index),
+    )
+
+    with pytest.raises(RuntimeError, match="infeasible"):
+        plant.solve_horizon(config, forecasts, signals)
+
+
+def _assert_useful_heat_matches_demand(result: pd.DataFrame) -> None:
+    supplied_heat = result["gas_heat_MWh"] + result["etes_discharge_MWh"]
+    assert supplied_heat.to_numpy() == pytest.approx(result["heat_demand_MWh"].to_numpy())

@@ -137,6 +137,7 @@ class SimulationRunner:
 
         for plant in plants:
             fixed_positions = pd.DataFrame(index=forecasts.index)
+            stage_outputs: dict[str, pd.DataFrame] = {}
             for market in enabled_markets:
                 fixed_positions = self._run_configured_market(
                     market,
@@ -145,11 +146,12 @@ class SimulationRunner:
                     fixed_positions,
                     strategy,
                 )
+                stage_outputs[market.name] = fixed_positions.copy()
 
             if fixed_positions.empty:
                 raise NotImplementedError("The MVP requires the day_ahead market to be enabled")
 
-            dispatch_parts.append(fixed_positions)
+            dispatch_parts.append(_add_stage_dispatch_columns(fixed_positions, stage_outputs))
 
         combined = (
             pd.concat(dispatch_parts)
@@ -193,7 +195,6 @@ class SimulationRunner:
                     "total_electricity_cost_EUR": group["electricity_cost_EUR"].sum(),
                     "total_gas_cost_EUR": group["gas_cost_EUR"].sum(),
                     "total_co2_cost_EUR": group["co2_cost_EUR"].sum(),
-                    "total_unmet_heat_penalty_EUR": group["unmet_heat_penalty_EUR"].sum(),
                     "total_operating_cost_EUR": group["operating_cost_EUR"].sum(),
                     "total_heat_demand_MWh": group["heat_demand_MWh"].sum(),
                     "total_gas_heat_MWh": group["gas_heat_MWh"].sum(),
@@ -201,7 +202,30 @@ class SimulationRunner:
                     "total_etes_charged_MWh": group["etes_charge_MWh"].sum(),
                     "total_etes_discharged_MWh": group["etes_discharge_MWh"].sum(),
                     "final_etes_soc_MWh": group["etes_soc_MWh"].iloc[-1],
-                    "total_unmet_heat_MWh": group["unmet_heat_MWh"].sum(),
                 }
             )
         return pd.DataFrame(records)
+
+
+def _add_stage_dispatch_columns(
+    final_dispatch: pd.DataFrame,
+    stage_outputs: dict[str, pd.DataFrame],
+) -> pd.DataFrame:
+    """Attach stage-level heat dispatch columns to the final sequential result."""
+
+    dispatch = final_dispatch.copy()
+    stage_specs = {
+        DAY_AHEAD: "day_ahead",
+        INTRADAY_CONTINUOUS: "intraday",
+        AFRR_ENERGY: "afrr_energy",
+    }
+    for market_name, label in stage_specs.items():
+        stage = stage_outputs.get(market_name)
+        if stage is None:
+            continue
+        stage = stage.reindex(dispatch.index)
+        if "gas_heat_MWh" in stage.columns:
+            dispatch[f"gas_heat_after_{label}_MWh"] = stage["gas_heat_MWh"]
+        if "etes_discharge_MWh" in stage.columns:
+            dispatch[f"etes_discharge_after_{label}_MWh"] = stage["etes_discharge_MWh"]
+    return dispatch

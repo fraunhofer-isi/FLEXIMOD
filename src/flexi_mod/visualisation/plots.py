@@ -113,6 +113,25 @@ def create_case_plots(
         created.extend(plot_heat_supply_share(dispatch, plot_dir, file_format, show))
         created.extend(plot_electricity_market_share(market, dispatch, plot_dir, file_format, show))
         created.extend(plot_price_response_storage_charging(dispatch, plot_dir, file_format, show))
+        created.extend(
+            plot_sequential_market_position_evolution(
+                market,
+                dispatch,
+                plot_dir,
+                file_format,
+                show,
+            )
+        )
+        created.extend(
+            plot_idc_sell_source_and_compensation(
+                market,
+                dispatch,
+                plot_dir,
+                file_format,
+                show,
+            )
+        )
+        created.extend(plot_stagewise_gas_replacement(dispatch, plot_dir, file_format, show))
         return created
 
 
@@ -139,17 +158,15 @@ def plot_operation_and_storage_dynamics(
         gridspec_kw={"height_ratios": [2.0, 1.25]},
     )
     ax.plot(dispatch.index, dispatch["heat_demand_MWh"], color="black", label="Heat demand")
-    stack_columns = ["gas_heat_MWh", "etes_discharge_MWh"]
+    gas_heat = dispatch["gas_heat_MWh"].fillna(0.0)
+    storage_discharge = dispatch["etes_discharge_MWh"].fillna(0.0)
+
+    stack_values = [gas_heat, storage_discharge]
     labels = ["Gas boiler heat", "Storage discharge heat"]
-    if "unmet_heat_MWh" in dispatch.columns and dispatch["unmet_heat_MWh"].sum() > 0:
-        stack_columns.append("unmet_heat_MWh")
-        labels.append("Unmet heat")
-    elif "unmet_heat_MWh" not in dispatch.columns:
-        warn_missing("unmet_heat_MWh", "operation dynamics unmet heat series")
 
     ax.stackplot(
         dispatch.index,
-        *[dispatch[column].fillna(0.0) for column in stack_columns],
+        *stack_values,
         labels=labels,
         alpha=0.78,
     )
@@ -311,18 +328,6 @@ def plot_electricity_procurement_by_market(
     else:
         warn_missing("intraday_sell_MWh_el", "electricity procurement plot")
 
-    if "actual_electricity_consumption_MWh_el" in market.columns:
-        ax.plot(
-            market.index,
-            market["actual_electricity_consumption_MWh_el"],
-            color="black",
-            linewidth=1.4,
-            label="Actual consumption",
-        )
-        plotted = True
-    else:
-        warn_missing("actual_electricity_consumption_MWh_el", "electricity procurement plot")
-
     if not plotted:
         plt.close(fig)
         return []
@@ -472,7 +477,6 @@ def plot_heat_supply_share(
     columns = [
         ("gas_heat_MWh", "Gas boiler heat"),
         ("etes_discharge_MWh", "Storage discharge heat"),
-        ("unmet_heat_MWh", "Unmet heat"),
     ]
     values = [
         (label, _sum_column(dispatch, column)) for column, label in columns if column in dispatch
@@ -578,6 +582,422 @@ def plot_price_response_storage_charging(
     return _save_figure(fig, plot_dir, "10_price_response_storage_charging", file_format, show)
 
 
+def plot_sequential_market_position_evolution(
+    market_ledger: pd.DataFrame,
+    dispatch_results: pd.DataFrame,
+    plot_dir: Path,
+    file_format: str = "png",
+    show: bool = False,
+) -> list[Path]:
+    """Show how electricity positions evolve through DA, IDC and aFRR energy."""
+
+    market = _market_frame(market_ledger, dispatch_results)
+    if market.empty:
+        return []
+
+    if "day_ahead_position_MWh_el" not in market.columns:
+        warn_missing("day_ahead_position_MWh_el", "sequential market position plot")
+        return []
+
+    market = market.sort_index()
+    day_ahead = _column_or_zero(market, "day_ahead_position_MWh_el")
+    intraday_buy = _column_or_zero(market, "intraday_buy_MWh_el")
+    intraday_sell = _column_or_zero(market, "intraday_sell_MWh_el")
+    scheduled = _column_or_default(
+        market,
+        "scheduled_electricity_procurement_MWh_el",
+        day_ahead + intraday_buy - intraday_sell,
+    )
+    afrr_activated = _column_or_zero(market, "afrr_energy_activated_MWh_el")
+    actual = _column_or_default(
+        market,
+        "actual_electricity_consumption_MWh_el",
+        scheduled + afrr_activated,
+    )
+
+    fig, axes = plt.subplots(
+        4,
+        1,
+        figsize=(13, 11.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": [1.0, 1.2, 1.25, 1.0]},
+    )
+    fig.suptitle("Sequential market positions and gas boiler operation", fontsize=15)
+
+    gas_heat = _gas_heat_output_series(market, dispatch_results)
+    _fill_between_series(
+        axes[0],
+        market.index,
+        day_ahead,
+        color="tab:blue",
+        alpha=0.22,
+        label="Day-ahead position",
+    )
+    axes[0].step(
+        market.index,
+        day_ahead,
+        where="post",
+        color="tab:blue",
+        linewidth=1.3,
+        label="DA position",
+    )
+    axes[0].set_title("Day-ahead position")
+    axes[0].set_ylabel("MWh_el")
+    axes[0].axhline(0, color="black", linewidth=0.8)
+
+    _fill_between_series(
+        axes[1],
+        market.index,
+        day_ahead,
+        color="tab:blue",
+        alpha=0.18,
+        label="DA baseline",
+    )
+    _fill_between_series(
+        axes[1],
+        market.index,
+        day_ahead + intraday_buy,
+        lower=day_ahead,
+        color="tab:orange",
+        alpha=0.34,
+        label="IDC buy addition",
+    )
+    _fill_between_series(
+        axes[1],
+        market.index,
+        -intraday_sell,
+        color="tab:red",
+        alpha=0.28,
+        label="IDC sell/reduction",
+    )
+    axes[1].step(
+        market.index,
+        day_ahead,
+        where="post",
+        color="tab:blue",
+        linewidth=1.0,
+        alpha=0.65,
+        label="DA baseline line",
+    )
+    axes[1].step(
+        market.index,
+        scheduled,
+        where="post",
+        color="black",
+        linewidth=1.3,
+        label="Scheduled DA+IDC",
+    )
+    axes[1].axhline(0, color="black", linewidth=0.8)
+    axes[1].set_title("After intraday adjustment")
+    axes[1].set_ylabel("MWh_el")
+
+    _fill_between_series(
+        axes[2],
+        market.index,
+        scheduled,
+        color="tab:blue",
+        alpha=0.18,
+        label="Scheduled DA+IDC",
+    )
+    _fill_between_series(
+        axes[2],
+        market.index,
+        actual,
+        lower=scheduled,
+        color="tab:purple",
+        alpha=0.32,
+        label="aFRR down activation",
+    )
+    axes[2].step(
+        market.index,
+        scheduled,
+        where="post",
+        color="tab:blue",
+        linewidth=1.0,
+        alpha=0.7,
+        label="Scheduled DA+IDC line",
+    )
+    axes[2].step(
+        market.index,
+        actual,
+        where="post",
+        color="black",
+        linewidth=1.3,
+        label="Actual consumption",
+    )
+    axes[2].axhline(0, color="black", linewidth=0.8)
+    axes[2].set_title("After aFRR down energy activation")
+    axes[2].set_ylabel("MWh_el")
+    axes[2].set_xlabel("Time")
+
+    axes[3].set_title("Gas boiler operation")
+    axes[3].set_ylabel("MWh_th")
+    axes[3].set_xlabel("Time")
+    if gas_heat is not None and gas_heat.notna().any():
+        _fill_between_series(
+            axes[3],
+            gas_heat.index,
+            gas_heat,
+            color="tab:red",
+            alpha=0.2,
+            label="Gas boiler heat",
+        )
+        axes[3].step(
+            gas_heat.index,
+            gas_heat,
+            where="post",
+            color="tab:red",
+            linestyle="--",
+            linewidth=1.1,
+            label="Gas boiler heat line",
+        )
+    else:
+        warn_missing("gas_heat_output_MWh_th", "sequential market position plot")
+
+    for ax in axes:
+        _legend_if_present(ax)
+    _format_datetime_axis(axes[-1])
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    return _save_figure(
+        fig,
+        plot_dir,
+        "11_sequential_market_position_evolution",
+        file_format,
+        show,
+    )
+
+
+def plot_idc_sell_source_and_compensation(
+    market_ledger: pd.DataFrame,
+    dispatch_results: pd.DataFrame,
+    plot_dir: Path,
+    file_format: str = "png",
+    show: bool = False,
+) -> list[Path]:
+    """Show which electricity is sold in IDC and how operation is covered afterwards."""
+
+    market = _market_frame(market_ledger, dispatch_results)
+    if market.empty:
+        return []
+    if "intraday_sell_MWh_el" not in market.columns:
+        warn_missing("intraday_sell_MWh_el", "IDC sell source and compensation plot")
+        return []
+
+    market = market.sort_index()
+    idc_sell = _column_or_zero(market, "intraday_sell_MWh_el")
+    sell_mask = idc_sell > 1e-9
+    if not sell_mask.any():
+        warnings.warn(
+            "No IDC sell/reduction volumes found. Skipping IDC sell source and compensation plot.",
+            stacklevel=2,
+        )
+        return []
+
+    da_position = _column_or_zero(market, "day_ahead_position_MWh_el")
+    da_sold_in_idc = idc_sell.clip(upper=da_position)
+    remaining_da = (da_position - da_sold_in_idc).clip(lower=0.0)
+    idc_buy = _column_or_zero(market, "intraday_buy_MWh_el")
+    afrr_activated = _column_or_zero(market, "afrr_energy_activated_MWh_el")
+    dispatch = _aggregate_by_datetime(dispatch_results).reindex(market.index)
+    gas_heat = _gas_heat_output_series(market, dispatch_results)
+    if gas_heat is None:
+        gas_heat = pd.Series(0.0, index=market.index)
+        warn_missing("gas_heat_output_MWh_th", "IDC sell source and compensation plot")
+    else:
+        gas_heat = gas_heat.reindex(market.index).fillna(0.0)
+    storage_discharge = _dispatch_column_or_zero(dispatch, "etes_discharge_MWh")
+
+    fig, axes = plt.subplots(
+        3,
+        1,
+        figsize=(13, 9),
+        sharex=True,
+        gridspec_kw={"height_ratios": [1.0, 1.0, 1.25]},
+    )
+    fig.suptitle("IDC sell source and final operational compensation", fontsize=15)
+
+    _fill_between_series(
+        axes[0],
+        market.index,
+        _only_when(da_position, sell_mask),
+        color="tab:blue",
+        alpha=0.16,
+        label="Available DA position during IDC sell",
+    )
+    _fill_between_series(
+        axes[0],
+        market.index,
+        _only_when(da_sold_in_idc, sell_mask),
+        color="tab:red",
+        alpha=0.38,
+        label="DA electricity sold/reduced in IDC",
+    )
+    axes[0].step(
+        market.index,
+        _only_when(da_sold_in_idc, sell_mask),
+        where="post",
+        color="tab:red",
+        linewidth=1.2,
+        label="IDC sell volume",
+    )
+    axes[0].set_title("Source of IDC sell/reduction")
+    axes[0].set_ylabel("MWh_el")
+
+    _fill_between_series(
+        axes[1],
+        market.index,
+        _only_when(remaining_da, sell_mask),
+        color="tab:blue",
+        alpha=0.18,
+        label="Remaining DA electricity",
+    )
+    _fill_between_series(
+        axes[1],
+        market.index,
+        _only_when(remaining_da + idc_buy, sell_mask),
+        lower=_only_when(remaining_da, sell_mask),
+        color="tab:orange",
+        alpha=0.28,
+        label="IDC buy electricity",
+    )
+    _fill_between_series(
+        axes[1],
+        market.index,
+        _only_when(remaining_da + idc_buy + afrr_activated, sell_mask),
+        lower=_only_when(remaining_da + idc_buy, sell_mask),
+        color="tab:green",
+        alpha=0.3,
+        label="aFRR activated electricity",
+    )
+    axes[1].set_title("Electricity still available from markets during IDC sell timesteps")
+    axes[1].set_ylabel("MWh_el")
+
+    _fill_between_series(
+        axes[2],
+        market.index,
+        _only_when(gas_heat, sell_mask),
+        color="tab:red",
+        alpha=0.25,
+        label="Gas boiler heat",
+    )
+    _fill_between_series(
+        axes[2],
+        market.index,
+        _only_when(gas_heat + storage_discharge, sell_mask),
+        lower=_only_when(gas_heat, sell_mask),
+        color="tab:green",
+        alpha=0.22,
+        label="Storage discharge heat",
+    )
+    axes[2].set_title("Final compensation during IDC sell timesteps")
+    axes[2].set_ylabel("MWh_th")
+    axes[2].set_xlabel("Time")
+
+    for ax in axes:
+        ax.axhline(0, color="black", linewidth=0.8)
+        _legend_if_present(ax)
+    _format_datetime_axis(axes[-1])
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    return _save_figure(
+        fig,
+        plot_dir,
+        "12_idc_sell_source_and_compensation",
+        file_format,
+        show,
+    )
+
+
+def plot_stagewise_gas_replacement(
+    dispatch_results: pd.DataFrame,
+    plot_dir: Path,
+    file_format: str = "png",
+    show: bool = False,
+) -> list[Path]:
+    """Show how each sequential market stage changes gas boiler heat dispatch."""
+
+    dispatch = _aggregate_by_datetime(dispatch_results)
+    required = require_columns(
+        dispatch,
+        ["heat_demand_MWh", "gas_heat_MWh"],
+        "stagewise gas replacement plot",
+    )
+    if len(required) < 2:
+        return []
+
+    dispatch = dispatch.sort_index()
+    heat_demand = dispatch["heat_demand_MWh"].fillna(0.0).astype(float)
+    gas_after_da = _column_or_default(
+        dispatch,
+        "gas_heat_after_day_ahead_MWh",
+        dispatch["gas_heat_MWh"],
+    )
+    gas_after_idc = _column_or_default(
+        dispatch,
+        "gas_heat_after_intraday_MWh",
+        gas_after_da,
+    )
+    gas_final = dispatch["gas_heat_MWh"].fillna(0.0).astype(float)
+
+    fig, axes = plt.subplots(
+        3,
+        1,
+        figsize=(13, 9.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": [1.0, 1.0, 1.0]},
+    )
+    fig.suptitle("Stagewise gas replacement by electricity markets", fontsize=15)
+
+    _draw_gas_replacement_panel(
+        axes[0],
+        dispatch.index,
+        baseline_gas=heat_demand,
+        stage_gas=gas_after_da,
+        baseline_label="Gas-only reference heat demand",
+        stage_label="Gas after day-ahead",
+        replacement_label="Gas replaced by DA electricity/storage",
+        replacement_color="tab:blue",
+        title="Day-ahead stage",
+    )
+    _draw_gas_replacement_panel(
+        axes[1],
+        dispatch.index,
+        baseline_gas=gas_after_da,
+        stage_gas=gas_after_idc,
+        baseline_label="Gas after day-ahead",
+        stage_label="Gas after intraday",
+        replacement_label="Additional gas replaced by IDC",
+        replacement_color="tab:orange",
+        title="Intraday adjustment stage",
+        increase_label="Gas restored by IDC sell/reduction",
+    )
+    _draw_gas_replacement_panel(
+        axes[2],
+        dispatch.index,
+        baseline_gas=gas_after_idc,
+        stage_gas=gas_final,
+        baseline_label="Gas after DA+IDC",
+        stage_label="Final gas after aFRR down",
+        replacement_label="Additional gas replaced by aFRR down",
+        replacement_color="tab:purple",
+        title="aFRR down energy stage",
+    )
+    axes[2].set_xlabel("Time")
+
+    for ax in axes:
+        ax.set_ylabel("Heat per time step [MWh_th]")
+        ax.axhline(0, color="black", linewidth=0.8)
+        _legend_if_present(ax)
+    _format_datetime_axis(axes[-1])
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    return _save_figure(
+        fig,
+        plot_dir,
+        "13_stagewise_gas_replacement",
+        file_format,
+        show,
+    )
+
+
 def _sample_day_prices_panel(
     ax: plt.Axes,
     dispatch: pd.DataFrame,
@@ -644,14 +1064,11 @@ def _sample_day_heat_panel(ax: plt.Axes, dispatch: pd.DataFrame) -> None:
     if "heat_demand_MWh" in dispatch.columns:
         ax.plot(dispatch.index, dispatch["heat_demand_MWh"], color="black", label="Heat demand")
     stack_columns = [
-        column
-        for column in ["gas_heat_MWh", "etes_discharge_MWh", "unmet_heat_MWh"]
-        if column in dispatch
+        column for column in ["gas_heat_MWh", "etes_discharge_MWh"] if column in dispatch
     ]
     labels = {
         "gas_heat_MWh": "Gas heat",
         "etes_discharge_MWh": "Storage discharge",
-        "unmet_heat_MWh": "Unmet heat",
     }
     if stack_columns:
         ax.stackplot(
@@ -743,6 +1160,67 @@ def _draw_storage_operation_panel(ax: plt.Axes, dispatch: pd.DataFrame) -> None:
         ax.legend(loc="best")
 
 
+def _draw_gas_replacement_panel(
+    ax: plt.Axes,
+    index: pd.Index,
+    baseline_gas: pd.Series,
+    stage_gas: pd.Series,
+    baseline_label: str,
+    stage_label: str,
+    replacement_label: str,
+    replacement_color: str,
+    title: str,
+    increase_label: str | None = None,
+) -> None:
+    baseline = baseline_gas.reindex(index).fillna(0.0).astype(float)
+    stage = stage_gas.reindex(index).fillna(0.0).astype(float)
+    replacement_mask = stage < baseline
+    replacement_upper = baseline
+    replacement_lower = stage.where(replacement_mask, baseline)
+
+    _fill_between_series(
+        ax,
+        index,
+        replacement_upper,
+        lower=replacement_lower,
+        color=replacement_color,
+        alpha=0.32,
+        label=replacement_label,
+    )
+    if increase_label is not None:
+        increase_mask = stage > baseline
+        increase_upper = stage.where(increase_mask, baseline)
+        increase_lower = baseline
+        _fill_between_series(
+            ax,
+            index,
+            increase_upper,
+            lower=increase_lower,
+            color="tab:red",
+            alpha=0.2,
+            label=increase_label,
+        )
+
+    ax.step(
+        index,
+        baseline,
+        where="post",
+        color="tab:gray",
+        linestyle="--",
+        linewidth=1.1,
+        label=baseline_label,
+    )
+    ax.step(
+        index,
+        stage,
+        where="post",
+        color="tab:red",
+        linewidth=1.3,
+        label=stage_label,
+    )
+    ax.set_title(title)
+
+
 def _aggregate_by_datetime(frame: pd.DataFrame) -> pd.DataFrame:
     frame = ensure_datetime_index(frame)
     if frame.empty:
@@ -811,6 +1289,75 @@ def _sum_column(frame: pd.DataFrame, column: str) -> float:
     if frame.empty or column not in frame.columns:
         return 0.0
     return float(frame[column].fillna(0.0).astype(float).sum())
+
+
+def _fill_between_series(
+    ax: plt.Axes,
+    index: pd.Index,
+    upper: pd.Series,
+    color: str,
+    alpha: float,
+    label: str,
+    lower: pd.Series | float = 0.0,
+) -> None:
+    if isinstance(lower, pd.Series):
+        lower_values = lower.fillna(0.0).astype(float).to_numpy()
+    else:
+        lower_values = lower
+    ax.fill_between(
+        index,
+        lower_values,
+        upper.fillna(0.0).astype(float).to_numpy(),
+        color=color,
+        alpha=alpha,
+        step="post",
+        label=label,
+    )
+
+
+def _legend_if_present(ax: plt.Axes) -> None:
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(handles, labels, loc="best", ncol=2)
+
+
+def _column_or_zero(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series(0.0, index=frame.index)
+    return frame[column].fillna(0.0).astype(float)
+
+
+def _column_or_default(
+    frame: pd.DataFrame,
+    column: str,
+    default: pd.Series,
+) -> pd.Series:
+    if column not in frame.columns:
+        return default.fillna(0.0).astype(float)
+    return frame[column].fillna(default).fillna(0.0).astype(float)
+
+
+def _dispatch_column_or_zero(dispatch: pd.DataFrame, column: str) -> pd.Series:
+    if column not in dispatch.columns:
+        return pd.Series(0.0, index=dispatch.index)
+    return dispatch[column].fillna(0.0).astype(float)
+
+
+def _only_when(series: pd.Series, mask: pd.Series) -> pd.Series:
+    return series.reindex(mask.index).fillna(0.0).astype(float).where(mask, 0.0)
+
+
+def _gas_heat_output_series(
+    market_ledger: pd.DataFrame,
+    dispatch_results: pd.DataFrame,
+) -> pd.Series | None:
+    if "gas_heat_output_MWh_th" in market_ledger.columns:
+        return market_ledger["gas_heat_output_MWh_th"].fillna(0.0).astype(float)
+
+    dispatch = _aggregate_by_datetime(dispatch_results)
+    if "gas_heat_MWh" in dispatch.columns:
+        return dispatch["gas_heat_MWh"].fillna(0.0).astype(float)
+    return None
 
 
 def _first_existing(frame: pd.DataFrame, columns: list[str]) -> str | None:

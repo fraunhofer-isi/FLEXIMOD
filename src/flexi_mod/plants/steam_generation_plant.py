@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 import pyomo.environ as pyo
 from pyomo.common.errors import ApplicationError
+from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
@@ -22,7 +23,6 @@ from flexi_mod.plants.technologies import (
     first_non_empty,
 )
 
-UNMET_HEAT_PENALTY_EUR_PER_MWH = 100_000.0
 DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL = 0.0
 
 
@@ -297,6 +297,9 @@ class SteamGenerationPlant(BasePlant):
             solver_name = candidate_name
             try:
                 result = solver.solve(model, tee=config.solver_tee)
+            except NoFeasibleSolutionError as exc:
+                message = _strict_heat_infeasibility_message("Dispatch", candidate_name)
+                raise RuntimeError(message) from exc
             except (ApplicationError, RuntimeError, OSError) as exc:
                 solve_errors.append(f"{candidate_name}: {exc}")
                 continue
@@ -308,6 +311,9 @@ class SteamGenerationPlant(BasePlant):
                 TerminationCondition.feasible,
             }:
                 return self._extract_results(model, config, forecasts, signals, solver_name)
+
+            if _is_infeasible_termination(termination):
+                raise RuntimeError(_strict_heat_infeasibility_message("Dispatch", candidate_name))
 
             solve_errors.append(f"{candidate_name}: status={status}, termination={termination}")
 
@@ -336,6 +342,10 @@ class SteamGenerationPlant(BasePlant):
             solver_name = candidate_name
             try:
                 result = solver.solve(model, tee=config.solver_tee)
+            except NoFeasibleSolutionError as exc:
+                raise RuntimeError(
+                    _strict_heat_infeasibility_message("IDC adjustment", candidate_name)
+                ) from exc
             except (ApplicationError, RuntimeError, OSError) as exc:
                 solve_errors.append(f"{candidate_name}: {exc}")
                 continue
@@ -352,6 +362,11 @@ class SteamGenerationPlant(BasePlant):
                     forecasts,
                     signals,
                     solver_name,
+                )
+
+            if _is_infeasible_termination(termination):
+                raise RuntimeError(
+                    _strict_heat_infeasibility_message("IDC adjustment", candidate_name)
                 )
 
             solve_errors.append(f"{candidate_name}: status={status}, termination={termination}")
@@ -381,6 +396,10 @@ class SteamGenerationPlant(BasePlant):
             solver_name = candidate_name
             try:
                 result = solver.solve(model, tee=config.solver_tee)
+            except NoFeasibleSolutionError as exc:
+                raise RuntimeError(
+                    _strict_heat_infeasibility_message("aFRR down adjustment", candidate_name)
+                ) from exc
             except (ApplicationError, RuntimeError, OSError) as exc:
                 solve_errors.append(f"{candidate_name}: {exc}")
                 continue
@@ -397,6 +416,11 @@ class SteamGenerationPlant(BasePlant):
                     forecasts,
                     signals,
                     solver_name,
+                )
+
+            if _is_infeasible_termination(termination):
+                raise RuntimeError(
+                    _strict_heat_infeasibility_message("aFRR down adjustment", candidate_name)
                 )
 
             solve_errors.append(f"{candidate_name}: status={status}, termination={termination}")
@@ -448,17 +472,13 @@ class SteamGenerationPlant(BasePlant):
             }
             component.add_to_model(m, m.technology_blocks[technology], m.T, context)
 
-        m.unmet_heat = pyo.Var(m.T, within=pyo.NonNegativeReals)
         m.electricity_consumption = pyo.Var(m.T, within=pyo.NonNegativeReals)
 
         @m.Constraint(m.T)
         def heat_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
             storage = mm.technology_blocks["thermal_storage"]
             boiler = mm.technology_blocks["boiler"]
-            return (
-                storage.discharge_heat[t] + boiler.heat_out[t] + mm.unmet_heat[t]
-                >= mm.heat_demand[t]
-            )
+            return storage.discharge_heat[t] + boiler.heat_out[t] == mm.heat_demand[t]
 
         @m.Constraint(m.T)
         def electricity_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
@@ -477,15 +497,11 @@ class SteamGenerationPlant(BasePlant):
         def co2_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return mm.technology_blocks["boiler"].co2_cost[t]
 
-        @m.Expression(m.T)
-        def unmet_heat_penalty(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
-            return mm.unmet_heat[t] * UNMET_HEAT_PENALTY_EUR_PER_MWH
-
         @m.Objective(sense=pyo.minimize)
         def objective(mm: pyo.ConcreteModel) -> pyo.Expression:
             return pyo.quicksum(
                 # CO2 cost is disabled for the first MVP and kept as a zero output column.
-                mm.electricity_cost[t] + mm.gas_cost[t] + mm.unmet_heat_penalty[t]
+                mm.electricity_cost[t] + mm.gas_cost[t]
                 for t in mm.T
             )
 
@@ -557,7 +573,6 @@ class SteamGenerationPlant(BasePlant):
             }
             component.add_to_model(m, m.technology_blocks[technology], m.T, context)
 
-        m.unmet_heat = pyo.Var(m.T, within=pyo.NonNegativeReals)
         m.electricity_consumption = pyo.Var(m.T, within=pyo.NonNegativeReals)
         m.idc_buy_mwh = pyo.Var(m.T, within=pyo.NonNegativeReals)
         m.idc_sell_mwh = pyo.Var(m.T, within=pyo.NonNegativeReals)
@@ -594,10 +609,7 @@ class SteamGenerationPlant(BasePlant):
         def heat_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
             storage = mm.technology_blocks["thermal_storage"]
             boiler = mm.technology_blocks["boiler"]
-            return (
-                storage.discharge_heat[t] + boiler.heat_out[t] + mm.unmet_heat[t]
-                >= mm.heat_demand[t]
-            )
+            return storage.discharge_heat[t] + boiler.heat_out[t] == mm.heat_demand[t]
 
         @m.Constraint(m.T)
         def electricity_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
@@ -628,15 +640,11 @@ class SteamGenerationPlant(BasePlant):
         def co2_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return mm.technology_blocks["boiler"].co2_cost[t]
 
-        @m.Expression(m.T)
-        def unmet_heat_penalty(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
-            return mm.unmet_heat[t] * UNMET_HEAT_PENALTY_EUR_PER_MWH
-
         @m.Objective(sense=pyo.minimize)
         def objective(mm: pyo.ConcreteModel) -> pyo.Expression:
             return pyo.quicksum(
                 # TODO: Add CO2 cost consistently to the gas benchmark and plant objective.
-                mm.electricity_cost[t] + mm.gas_cost[t] + mm.unmet_heat_penalty[t]
+                mm.electricity_cost[t] + mm.gas_cost[t]
                 for t in mm.T
             )
 
@@ -716,7 +724,6 @@ class SteamGenerationPlant(BasePlant):
             }
             component.add_to_model(m, m.technology_blocks[technology], m.T, context)
 
-        m.unmet_heat = pyo.Var(m.T, within=pyo.NonNegativeReals)
         m.electricity_consumption = pyo.Var(m.T, within=pyo.NonNegativeReals)
 
         @m.Constraint(m.T)
@@ -736,10 +743,7 @@ class SteamGenerationPlant(BasePlant):
         def heat_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
             storage = mm.technology_blocks["thermal_storage"]
             boiler = mm.technology_blocks["boiler"]
-            return (
-                storage.discharge_heat[t] + boiler.heat_out[t] + mm.unmet_heat[t]
-                >= mm.heat_demand[t]
-            )
+            return storage.discharge_heat[t] + boiler.heat_out[t] == mm.heat_demand[t]
 
         @m.Expression(m.T)
         def da_electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
@@ -774,15 +778,11 @@ class SteamGenerationPlant(BasePlant):
         def co2_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return mm.technology_blocks["boiler"].co2_cost[t]
 
-        @m.Expression(m.T)
-        def unmet_heat_penalty(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
-            return mm.unmet_heat[t] * UNMET_HEAT_PENALTY_EUR_PER_MWH
-
         @m.Objective(sense=pyo.minimize)
         def objective(mm: pyo.ConcreteModel) -> pyo.Expression:
             return pyo.quicksum(
                 # TODO: Add CO2 cost consistently to the gas benchmark and plant objective.
-                mm.electricity_cost[t] + mm.gas_cost[t] + mm.unmet_heat_penalty[t]
+                mm.electricity_cost[t] + mm.gas_cost[t]
                 for t in mm.T
             )
 
@@ -805,7 +805,6 @@ class SteamGenerationPlant(BasePlant):
             electricity_cost = _value(model.electricity_cost[t])
             gas_cost = _value(model.gas_cost[t])
             co2_cost = _value(model.co2_cost[t])
-            unmet_penalty = _value(model.unmet_heat_penalty[t])
             co2_price = (
                 float(forecasts[signals.co2_price_col].iloc[t])
                 if signals.co2_price_col and signals.co2_price_col in forecasts.columns
@@ -848,12 +847,10 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_system_activation_MWh": 0.0,
                 "afrr_energy_cost_EUR": 0.0,
                 "afrr_energy_savings_vs_benchmark_EUR": 0.0,
-                "unmet_heat_MWh": _value(model.unmet_heat[t]),
                 "electricity_cost_EUR": electricity_cost,
                 "gas_cost_EUR": gas_cost,
                 "co2_cost_EUR": co2_cost,
-                "unmet_heat_penalty_EUR": unmet_penalty,
-                "operating_cost_EUR": electricity_cost + gas_cost + unmet_penalty,
+                "operating_cost_EUR": electricity_cost + gas_cost,
                 "charge_allowed_by_strategy": bool(signals.charge_allowed.iloc[t]),
                 "solver": solver_name,
             }
@@ -883,7 +880,6 @@ class SteamGenerationPlant(BasePlant):
             electricity_cost = _value(model.electricity_cost[t])
             gas_cost = _value(model.gas_cost[t])
             co2_cost = _value(model.co2_cost[t])
-            unmet_penalty = _value(model.unmet_heat_penalty[t])
             da_position = _value(model.da_position_mwh[t])
             idc_buy = _value(model.idc_buy_mwh[t])
             idc_sell = _value(model.idc_sell_mwh[t])
@@ -933,12 +929,10 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_system_activation_MWh": 0.0,
                 "afrr_energy_cost_EUR": 0.0,
                 "afrr_energy_savings_vs_benchmark_EUR": 0.0,
-                "unmet_heat_MWh": _value(model.unmet_heat[t]),
                 "electricity_cost_EUR": electricity_cost,
                 "gas_cost_EUR": gas_cost,
                 "co2_cost_EUR": co2_cost,
-                "unmet_heat_penalty_EUR": unmet_penalty,
-                "operating_cost_EUR": electricity_cost + gas_cost + unmet_penalty,
+                "operating_cost_EUR": electricity_cost + gas_cost,
                 "charge_allowed_by_strategy": bool(signals.idc_buy_upper_bound_mwh.iloc[t] > 1e-12),
                 "idc_buy_allowed_by_strategy": bool(
                     signals.idc_buy_upper_bound_mwh.iloc[t] > 1e-12
@@ -974,7 +968,6 @@ class SteamGenerationPlant(BasePlant):
             electricity_cost = _value(model.electricity_cost[t])
             gas_cost = _value(model.gas_cost[t])
             co2_cost = _value(model.co2_cost[t])
-            unmet_penalty = _value(model.unmet_heat_penalty[t])
             final_planned = _value(model.final_planned_electricity_mwh[t])
             afrr_bid = _value(model.afrr_energy_bid_mwh[t])
             afrr_activation = _value(model.afrr_energy_activated_mwh[t])
@@ -1024,12 +1017,10 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_system_activation_MWh": float(signals.afrr_system_activation_mwh.iloc[t]),
                 "afrr_energy_cost_EUR": _value(model.afrr_energy_cost[t]),
                 "afrr_energy_savings_vs_benchmark_EUR": afrr_savings,
-                "unmet_heat_MWh": _value(model.unmet_heat[t]),
                 "electricity_cost_EUR": electricity_cost,
                 "gas_cost_EUR": gas_cost,
                 "co2_cost_EUR": co2_cost,
-                "unmet_heat_penalty_EUR": unmet_penalty,
-                "operating_cost_EUR": electricity_cost + gas_cost + unmet_penalty,
+                "operating_cost_EUR": electricity_cost + gas_cost,
                 "charge_allowed_by_strategy": False,
                 "idc_buy_allowed_by_strategy": False,
                 "idc_sell_allowed_by_strategy": False,
@@ -1082,6 +1073,23 @@ def _solver_precheck(candidate: str) -> bool:
     if candidate == "cbc":
         return shutil.which("cbc") is not None
     return True
+
+
+def _is_infeasible_termination(termination: TerminationCondition) -> bool:
+    return termination in {
+        TerminationCondition.infeasible,
+        TerminationCondition.infeasibleOrUnbounded,
+        TerminationCondition.provenInfeasible,
+    }
+
+
+def _strict_heat_infeasibility_message(stage: str, solver_name: str) -> str:
+    return (
+        f"{stage} solve is infeasible with solver '{solver_name}'. FLEXIMOD now enforces "
+        "strict useful heat dispatch: gas heat plus storage discharge must equal heat demand "
+        "in every timestep, with no unmet-heat or heat-dump slack. Check fixed market "
+        "electricity positions, aFRR activation, ETES storage headroom, and heat demand."
+    )
 
 
 def _value(expression: pyo.Expression) -> float:

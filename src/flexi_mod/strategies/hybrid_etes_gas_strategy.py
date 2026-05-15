@@ -24,10 +24,8 @@ GAS_PRICE_SIGNAL = "natural_gas_price"
 ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH = 0.0
 # TODO: Move IDC_MARGIN_EUR_PER_MWH to config.yaml once multi-country cases
 # or sensitivity analyses are implemented.
-IDC_MARGIN_EUR_PER_MWH = 10.0
-# TODO: Move AFRR_ENERGY_MARGIN_EUR_PER_MWH to config.yaml once sensitivity
-# analysis or multi-country cases are implemented.
-AFRR_ENERGY_MARGIN_EUR_PER_MWH = 0.0
+IDC_MARGIN_EUR_PER_MWH = 5.0
+AFRR_ENERGY_MARGIN_EUR_PER_MWH = 5.0
 
 
 class HybridETESGasStrategy(BaseStrategy):
@@ -189,13 +187,19 @@ class HybridETESGasStrategy(BaseStrategy):
 
         max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours
         charge_power_headroom = (max_charge_mwh - final_planned).clip(lower=0.0)
-        storage_soc = self._series_from_fixed_positions(
+        baseline_storage_soc = self._series_from_fixed_positions(
             fixed_positions,
             "etes_soc_MWh",
             forecasts.index,
             default=plant.etes.initial_soc_mwh,
         )
-        storage_capacity_headroom = (plant.etes.max_capacity_mwh - storage_soc).clip(
+        baseline_gas_heat = self._series_from_fixed_positions(
+            fixed_positions,
+            "gas_heat_MWh",
+            forecasts.index,
+            default=0.0,
+        )
+        storage_capacity_headroom = (plant.etes.max_capacity_mwh - baseline_storage_soc).clip(
             lower=0.0
         ) / plant.etes.efficiency_charge
         feasible_bid_potential = pd.concat(
@@ -215,11 +219,18 @@ class HybridETESGasStrategy(BaseStrategy):
         # TODO: Enforce strict bid increments using integer or discretised variables
         # if exact market-compliant bid granularity is required later.
 
-        activated = pd.concat(
-            [bid_upper_bound, clean_afrr["afrr_system_activation_MWh"]],
-            axis=1,
-        ).min(axis=1)
-        activated = activated.clip(lower=0.0)
+        bid_upper_bound, activated = self._strict_afrr_down_offer_and_activation(
+            plant=plant,
+            forecasts=forecasts,
+            final_planned=final_planned,
+            price_allowed=price_allowed,
+            system_activation_mwh=clean_afrr["afrr_system_activation_MWh"],
+            baseline_bid_upper_bound=bid_upper_bound,
+            baseline_storage_soc=baseline_storage_soc,
+            baseline_gas_heat=baseline_gas_heat,
+            min_bid_mw=min_bid_mw,
+            timestep_hours=timestep_hours,
+        )
 
         signals = AFRRDownSignals(
             da_price_col=da_price_col,
@@ -237,6 +248,61 @@ class HybridETESGasStrategy(BaseStrategy):
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
         )
         return plant.solve_afrr_down_rolling(self.config, forecasts, signals)
+
+    def _strict_afrr_down_offer_and_activation(
+        self,
+        plant: SteamGenerationPlant,
+        forecasts: pd.DataFrame,
+        final_planned: pd.Series,
+        price_allowed: pd.Series,
+        system_activation_mwh: pd.Series,
+        baseline_bid_upper_bound: pd.Series,
+        baseline_storage_soc: pd.Series,
+        baseline_gas_heat: pd.Series,
+        min_bid_mw: float,
+        timestep_hours: float,
+    ) -> tuple[pd.Series, pd.Series]:
+        """Limit aFRR down activation to trajectories that need no heat dumping.
+
+        With strict useful heat dispatch, additional aFRR electricity can only be accepted
+        when it can replace useful gas heat. The first strict implementation is conservative:
+        it accepts only activation that can be converted to useful heat in the same timestep,
+        avoiding hidden carry-over that would later require heat dumping.
+        """
+
+        bid_values: list[float] = []
+        activated_values: list[float] = []
+        max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours
+
+        for timestamp in forecasts.index:
+            planned_charge = max(0.0, float(final_planned.loc[timestamp]))
+            useful_extra_heat_outlet = max(0.0, float(baseline_gas_heat.loc[timestamp]))
+            baseline_soc = max(0.0, float(baseline_storage_soc.loc[timestamp]))
+            storage_capacity_offer = max(0.0, plant.etes.max_capacity_mwh - baseline_soc)
+            power_offer = max_charge_mwh - planned_charge
+            immediate_use_offer = useful_extra_heat_outlet / (
+                plant.etes.efficiency_charge * plant.etes.efficiency_discharge
+            )
+            strict_offer = max(0.0, min(power_offer, storage_capacity_offer, immediate_use_offer))
+
+            if not bool(price_allowed.loc[timestamp]):
+                strict_offer = 0.0
+            strict_offer = min(
+                strict_offer,
+                max(0.0, float(baseline_bid_upper_bound.loc[timestamp])),
+            )
+            if timestep_hours <= 0 or strict_offer / timestep_hours < min_bid_mw:
+                strict_offer = 0.0
+
+            activation = min(strict_offer, max(0.0, float(system_activation_mwh.loc[timestamp])))
+
+            bid_values.append(strict_offer)
+            activated_values.append(activation)
+
+        return (
+            pd.Series(bid_values, index=forecasts.index, name="afrr_energy_bid_MWh"),
+            pd.Series(activated_values, index=forecasts.index, name="afrr_energy_activated_MWh"),
+        )
 
     def decide_afrr_capacity(
         self, plant: SteamGenerationPlant, forecasts: pd.DataFrame

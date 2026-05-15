@@ -75,8 +75,9 @@ class DataLoader:
             forecasts = self._ensure_resolution(forecasts)
             self._check_expected_period_count(forecasts)
         else:
+            forecasts = self._slice_time_range(forecasts)
             forecasts = self._ensure_resolution(forecasts)
-            forecasts = self._filter_time_range(forecasts)
+            self._check_expected_period_count(forecasts)
         self._check_required_columns(forecasts, required_columns or set())
         return forecasts
 
@@ -152,9 +153,16 @@ class DataLoader:
         if observed_minutes > target_minutes and observed_minutes % target_minutes == 0:
             # Hourly market data is commonly supplied for DA. Forward-fill to the model
             # step only when the source grid is a clean multiple of the configured step.
+            start = pd.Timestamp(self.config.simulation_start)
+            end = pd.Timestamp(self.config.simulation_end)
+            if forecasts.index.min() > start:
+                raise DataValidationError(
+                    "Forecast data start after the configured simulation_start, so DA-only "
+                    "resampling would create leading missing values"
+                )
             full_index = pd.date_range(
-                start=forecasts.index.min(),
-                end=forecasts.index.max(),
+                start=start,
+                end=end,
                 freq=f"{target_minutes}min",
             )
             return forecasts.reindex(full_index).ffill()

@@ -300,7 +300,6 @@ def _operational_indicators(dispatch: pd.DataFrame) -> dict[str, float]:
         "max_etes_soc_MWh": max_soc,
         "hours_storage_full": float((soc >= full_threshold).sum() * timestep_hours),
         "hours_storage_empty": float((soc <= empty_threshold).sum() * timestep_hours),
-        "total_unmet_heat_MWh": _sum(dispatch, "unmet_heat_MWh"),
     }
 
 
@@ -396,7 +395,6 @@ def _economic_indicators(
         "total_electricity_cost_EUR": total_electricity_cost,
         "total_gas_cost_EUR": _sum(dispatch, "gas_cost_EUR"),
         "total_co2_cost_EUR": _sum(dispatch, "co2_cost_EUR"),
-        "total_unmet_heat_penalty_EUR": _sum(dispatch, "unmet_heat_penalty_EUR"),
         "IDC_buy_cost_EUR": idc_buy_cost,
         "IDC_sell_revenue_EUR": idc_sell_revenue,
         "IDC_net_cashflow_EUR": idc_sell_revenue - idc_buy_cost,
