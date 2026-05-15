@@ -109,6 +109,10 @@ class HybridETESGasStrategy(BaseStrategy):
         sell_allowed = (
             idc_price > (electricity_benchmark + IDC_MARGIN_EUR_PER_MWH)
         ) & ~missing_price
+        if not idc_market.buy_enabled:
+            buy_allowed = pd.Series(False, index=forecasts.index)
+        if not idc_market.sell_enabled:
+            sell_allowed = pd.Series(False, index=forecasts.index)
 
         timestep_hours = self.config.timestep_minutes / 60.0
         max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours

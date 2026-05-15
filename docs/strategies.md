@@ -250,6 +250,18 @@ otherwise:
     no IDC action
 ```
 
+The configured IDC action switch is applied after these price rules:
+
+```text
+markets -> intraday_continuous -> allowed_actions -> buy
+markets -> intraday_continuous -> allowed_actions -> sell
+```
+
+If `buy` is false, IDC buy bounds are zero even when the IDC price is cheap. If
+`sell` is false, IDC sell/reduction bounds are zero even when the IDC price is
+expensive. Setting both to false is an observe-only mode: IDC prices are loaded
+and reported, but no intraday trade is created.
+
 The strategy creates upper bounds. Pyomo decides the feasible volume:
 
 ```text

@@ -48,6 +48,9 @@ markets:
     product_resolution: "15min"
     gate_close:
       relative_to_delivery_start_minutes: -5
+    allowed_actions:
+      buy: true
+      sell: true
     signals:
       price: "DE_ID3_price"
       volume: "DE_ID3_volume"

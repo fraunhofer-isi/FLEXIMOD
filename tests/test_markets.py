@@ -58,6 +58,54 @@ def test_intraday_market_prepares_price_availability() -> None:
     assert data["IDC_price_available"].tolist() == [True, False]
 
 
+def test_intraday_allowed_actions_default_to_buy_and_sell() -> None:
+    market = IntradayContinuousMarket(
+        name="intraday_continuous",
+        config={
+            "enabled": True,
+            "product_resolution": "15min",
+            "signals": {"price": "DE_ID3_price"},
+        },
+    )
+
+    market.validate_config(timestep_minutes=15)
+
+    assert market.buy_enabled is True
+    assert market.sell_enabled is True
+
+
+def test_intraday_allowed_actions_can_disable_each_direction() -> None:
+    market = IntradayContinuousMarket(
+        name="intraday_continuous",
+        config={
+            "enabled": True,
+            "product_resolution": "15min",
+            "allowed_actions": {"buy": False, "sell": True},
+            "signals": {"price": "DE_ID3_price"},
+        },
+    )
+
+    market.validate_config(timestep_minutes=15)
+
+    assert market.buy_enabled is False
+    assert market.sell_enabled is True
+
+
+def test_intraday_allowed_actions_reject_non_boolean_values() -> None:
+    market = IntradayContinuousMarket(
+        name="intraday_continuous",
+        config={
+            "enabled": True,
+            "product_resolution": "15min",
+            "allowed_actions": {"buy": "yes", "sell": True},
+            "signals": {"price": "DE_ID3_price"},
+        },
+    )
+
+    with pytest.raises(MarketConfigError, match="allowed_actions.buy"):
+        market.validate_config(timestep_minutes=15)
+
+
 def test_afrr_down_market_prepares_cleaned_activation_data() -> None:
     forecasts = _forecast_frame(
         {

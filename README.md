@@ -136,7 +136,12 @@ The current config keeps only case and model assumptions:
 - market sequence;
 - market enable flags, product rules, timing metadata and signal column mappings.
 
-The gas-based benchmark and later IDC/aFRR bidding rules are embedded in `HybridETESGasStrategy`, so the config stays compact and close to the market setup.
+Intraday continuous can also define `allowed_actions.buy` and
+`allowed_actions.sell`. This lets a modeller run buy-only, sell-only, both
+directions, or observe-only IDC studies without changing the strategy code. The
+gas-based benchmark and later IDC/aFRR bidding rules are embedded in
+`HybridETESGasStrategy`, so the config stays compact and close to the market
+setup.
 
 ## Sequential Simulation
 

@@ -140,6 +140,48 @@ def test_cheap_idc_creates_incremental_buy(idc_case: Path, tmp_path: Path) -> No
     _assert_heat_is_feasible(results["dispatch"])
 
 
+def test_buy_only_idc_allows_cheap_buy(idc_case: Path, tmp_path: Path) -> None:
+    _write_config(
+        idc_case / "config.yaml",
+        idc_enabled=True,
+        idc_buy_enabled=True,
+        idc_sell_enabled=False,
+    )
+    _write_forecasts(
+        idc_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[20.0] * 8,
+    )
+
+    results = _run_case(idc_case, tmp_path)
+    market = results["market"]
+
+    assert market["intraday_buy_MWh_el"].sum() > 0.0
+    assert market["intraday_sell_MWh_el"].sum() == pytest.approx(0.0)
+    _assert_final_planned_balance(market)
+
+
+def test_buy_only_idc_blocks_expensive_sell(idc_case: Path, tmp_path: Path) -> None:
+    _write_config(
+        idc_case / "config.yaml",
+        idc_enabled=True,
+        idc_buy_enabled=True,
+        idc_sell_enabled=False,
+    )
+    _write_forecasts(
+        idc_case / "forecasts_df.csv",
+        da_prices=[10.0] * 8,
+        idc_prices=[120.0] * 8,
+    )
+
+    results = _run_case(idc_case, tmp_path)
+    market = results["market"]
+
+    assert market["intraday_buy_MWh_el"].sum() == pytest.approx(0.0)
+    assert market["intraday_sell_MWh_el"].sum() == pytest.approx(0.0)
+    _assert_final_planned_balance(market)
+
+
 def test_expensive_idc_creates_sell_without_exceeding_da(
     idc_case: Path,
     tmp_path: Path,
@@ -158,6 +200,53 @@ def test_expensive_idc_creates_sell_without_exceeding_da(
     assert (market["intraday_sell_MWh_el"] <= market["day_ahead_position_MWh_el"] + 1e-8).all()
     _assert_final_planned_balance(market)
     _assert_heat_is_feasible(results["dispatch"])
+
+
+def test_sell_only_idc_allows_sell_and_blocks_buy(idc_case: Path, tmp_path: Path) -> None:
+    _write_config(
+        idc_case / "config.yaml",
+        idc_enabled=True,
+        idc_buy_enabled=False,
+        idc_sell_enabled=True,
+    )
+    _write_forecasts(
+        idc_case / "forecasts_df.csv",
+        da_prices=[10.0] * 4 + [120.0] * 4,
+        idc_prices=[120.0] * 4 + [20.0] * 4,
+    )
+
+    results = _run_case(idc_case, tmp_path)
+    market = results["market"]
+
+    assert market["intraday_sell_MWh_el"].sum() > 0.0
+    assert market["intraday_buy_MWh_el"].sum() == pytest.approx(0.0)
+    assert (market["intraday_sell_MWh_el"] <= market["day_ahead_position_MWh_el"] + 1e-8).all()
+    _assert_final_planned_balance(market)
+
+
+def test_observe_only_idc_records_price_without_trading(
+    idc_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_config(
+        idc_case / "config.yaml",
+        idc_enabled=True,
+        idc_buy_enabled=False,
+        idc_sell_enabled=False,
+    )
+    _write_forecasts(
+        idc_case / "forecasts_df.csv",
+        da_prices=[10.0] * 4 + [120.0] * 4,
+        idc_prices=[120.0] * 4 + [20.0] * 4,
+    )
+
+    results = _run_case(idc_case, tmp_path)
+    market = results["market"]
+
+    assert market["intraday_price_EUR_per_MWh_el"].notna().all()
+    assert market["intraday_buy_MWh_el"].sum() == pytest.approx(0.0)
+    assert market["intraday_sell_MWh_el"].sum() == pytest.approx(0.0)
+    _assert_final_planned_balance(market)
 
 
 def test_neutral_idc_creates_no_adjustment(idc_case: Path, tmp_path: Path) -> None:
@@ -432,7 +521,13 @@ def _assert_actual_electricity_with_afrr(market: pd.DataFrame) -> None:
     )
 
 
-def _write_config(path: Path, idc_enabled: bool = False, afrr_enabled: bool = False) -> None:
+def _write_config(
+    path: Path,
+    idc_enabled: bool = False,
+    afrr_enabled: bool = False,
+    idc_buy_enabled: bool = True,
+    idc_sell_enabled: bool = True,
+) -> None:
     path.write_text(
         f"""
 case:
@@ -479,6 +574,9 @@ markets:
     product_resolution: "15min"
     gate_close:
       relative_to_delivery_start_minutes: -5
+    allowed_actions:
+      buy: {str(idc_buy_enabled).lower()}
+      sell: {str(idc_sell_enabled).lower()}
     signals:
       price: "DE_ID3_price"
       volume: "DE_ID3_volume"
