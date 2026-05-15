@@ -13,17 +13,17 @@ def test_market_ledger_initialises_and_updates_da(tmp_path: Path) -> None:
     datetimes = pd.date_range("2025-01-01", periods=2, freq="15min")
     ledger = MarketLedger()
     ledger.initialise(datetimes, ["plant_1"])
-    ledger.add_or_update_da_positions(
+    ledger.record_day_ahead_positions(
         plant_name="plant_1",
         datetimes=datetimes,
-        da_position_mwh=[1.0, 2.0],
-        da_price=[50.0, 55.0],
+        day_ahead_position_mwh_el=[1.0, 2.0],
+        day_ahead_price_eur_per_mwh_el=[50.0, 55.0],
     )
 
     frame = ledger.to_dataframe()
-    assert frame["DA_position_MWh"].tolist() == [1.0, 2.0]
-    assert frame["DA_price"].tolist() == [50.0, 55.0]
-    assert "final_planned_electricity_MWh" in frame.columns
+    assert frame["day_ahead_position_MWh_el"].tolist() == [1.0, 2.0]
+    assert frame["day_ahead_price_EUR_per_MWh_el"].tolist() == [50.0, 55.0]
+    assert "scheduled_electricity_procurement_MWh_el" in frame.columns
 
     path = ledger.save(tmp_path / "market_ledger.csv")
     assert path.exists()
@@ -47,4 +47,33 @@ def test_market_ledger_schema_excludes_internal_afrr_diagnostics() -> None:
         "afrr_data_" + "quality_flag",
     }
     assert removed_columns.isdisjoint(frame.columns)
-    assert "afrr_system_activation_MWh" in frame.columns
+    assert "afrr_system_activation_MWh_el" in frame.columns
+
+
+def test_market_ledger_schema_uses_energy_economics_terms() -> None:
+    ledger = MarketLedger()
+    ledger.initialise(pd.date_range("2025-01-01", periods=1, freq="15min"), ["plant_1"])
+
+    frame = ledger.to_dataframe()
+
+    expected_columns = {
+        "datetime",
+        "plant_name",
+        "day_ahead_position_MWh_el",
+        "day_ahead_price_EUR_per_MWh_el",
+        "intraday_buy_MWh_el",
+        "intraday_sell_MWh_el",
+        "intraday_price_EUR_per_MWh_el",
+        "scheduled_electricity_procurement_MWh_el",
+        "afrr_energy_bid_MW_el",
+        "afrr_energy_bid_MWh_el",
+        "afrr_energy_activated_MWh_el",
+        "afrr_energy_price_EUR_per_MWh_el",
+        "afrr_system_activation_MWh_el",
+        "actual_electricity_consumption_MWh_el",
+        "gas_heat_output_MWh_th",
+        "etes_charge_MWh_el",
+        "etes_discharge_MWh_th",
+        "etes_thermal_inventory_MWh_th",
+    }
+    assert set(frame.columns) == expected_columns

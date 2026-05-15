@@ -136,7 +136,12 @@ def select_sample_day(
 
     price_column = _first_existing(
         dispatch,
-        ["day_ahead_price_EUR_per_MWh", "DA_price", "IDC_price", "afrr_energy_price"],
+        [
+            "day_ahead_price_EUR_per_MWh",
+            "day_ahead_price_EUR_per_MWh_el",
+            "intraday_price_EUR_per_MWh_el",
+            "afrr_energy_price_EUR_per_MWh_el",
+        ],
     )
     if price_column:
         daily_spread = (
@@ -300,19 +305,23 @@ def _operational_indicators(dispatch: pd.DataFrame) -> dict[str, float]:
 
 
 def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str, float]:
-    da = _sum(market, "DA_position_MWh", fallback=_sum(dispatch, "electricity_consumption_MWh"))
-    idc_buy = _sum(market, "IDC_buy_MWh")
-    idc_sell = _sum(market, "IDC_sell_MWh")
-    afrr = _sum(market, "afrr_energy_activated_MWh")
-    afrr_bid = _sum(market, "afrr_energy_bid_MWh")
+    da = _sum(
+        market,
+        "day_ahead_position_MWh_el",
+        fallback=_sum(dispatch, "electricity_consumption_MWh"),
+    )
+    idc_buy = _sum(market, "intraday_buy_MWh_el")
+    idc_sell = _sum(market, "intraday_sell_MWh_el")
+    afrr = _sum(market, "afrr_energy_activated_MWh_el")
+    afrr_bid = _sum(market, "afrr_energy_bid_MWh_el")
     final_planned = _sum(
         market,
-        "final_planned_electricity_MWh",
+        "scheduled_electricity_procurement_MWh_el",
         fallback=da + idc_buy - idc_sell,
     )
     actual = _sum(
         market,
-        "actual_electricity_consumption_MWh",
+        "actual_electricity_consumption_MWh_el",
         fallback=_sum(dispatch, "electricity_consumption_MWh"),
     )
     denominator = actual if abs(actual) > 1e-12 else 1.0
@@ -323,10 +332,16 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
         "total_final_planned_electricity_MWh": final_planned,
         "total_afrr_energy_bid_MWh": afrr_bid,
         "total_afrr_energy_activated_MWh": afrr,
+        "total_actual_electricity_consumption_MWh": actual,
+        "total_intraday_buy_MWh_el": idc_buy,
+        "total_intraday_sell_MWh_el": idc_sell,
+        "total_scheduled_electricity_procurement_MWh_el": final_planned,
+        "total_afrr_energy_bid_MWh_el": afrr_bid,
+        "total_afrr_energy_activated_MWh_el": afrr,
         "total_IDC_buy_electricity_MWh": idc_buy,
         "total_IDC_sell_electricity_MWh": idc_sell,
         "total_afrr_activated_electricity_MWh": afrr,
-        "total_actual_electricity_consumption_MWh": actual,
+        "total_actual_electricity_consumption_MWh_el": actual,
         "share_DA_electricity": da / denominator,
         "share_IDC_net_electricity": (idc_buy - idc_sell) / denominator,
         "share_afrr_activated_electricity": afrr / denominator,
@@ -343,21 +358,29 @@ def _economic_indicators(
     total_electricity_cost = _sum(dispatch, "electricity_cost_EUR")
     idc_buy_cost, idc_sell_revenue = _trading_cashflows(
         market,
-        buy_col="IDC_buy_MWh",
-        sell_col="IDC_sell_MWh",
-        price_col="IDC_price",
+        buy_col="intraday_buy_MWh_el",
+        sell_col="intraday_sell_MWh_el",
+        price_col="intraday_price_EUR_per_MWh_el",
     )
     idc_value = _trading_value(
         market,
-        buy_col="IDC_buy_MWh",
-        sell_col="IDC_sell_MWh",
-        price_col="IDC_price",
+        buy_col="intraday_buy_MWh_el",
+        sell_col="intraday_sell_MWh_el",
+        price_col="intraday_price_EUR_per_MWh_el",
     )
-    afrr_energy_value = _energy_value(market, "afrr_energy_activated_MWh", "afrr_energy_price")
+    afrr_energy_value = _energy_value(
+        market,
+        "afrr_energy_activated_MWh_el",
+        "afrr_energy_price_EUR_per_MWh_el",
+    )
     afrr_energy_cost = _sum(
         dispatch,
         "afrr_energy_cost_EUR",
-        fallback=_energy_value(market, "afrr_energy_activated_MWh", "afrr_energy_price"),
+        fallback=_energy_value(
+            market,
+            "afrr_energy_activated_MWh_el",
+            "afrr_energy_price_EUR_per_MWh_el",
+        ),
     )
     afrr_savings = _sum(dispatch, "afrr_energy_savings_vs_benchmark_EUR")
     afrr_capacity_revenue = 0.0

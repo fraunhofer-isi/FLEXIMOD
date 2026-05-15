@@ -223,8 +223,10 @@ plots/
 
 `dispatch_results.csv` contains physical plant operation and costs.
 
-`market_ledger.csv` contains market positions and electricity consumption by
-market stage.
+`market_ledger.csv` contains market-facing electricity positions with explicit
+energy-economics units: day-ahead procurement, intraday buy/sell adjustments,
+scheduled electricity procurement, aFRR energy bid and activation, actual
+electricity consumption, and the main thermal operation values.
 
 `storage_cost_ledger.csv` treats ETES as a thermal inventory. It records the
 procurement market, electricity price, electricity procured, charged heat,

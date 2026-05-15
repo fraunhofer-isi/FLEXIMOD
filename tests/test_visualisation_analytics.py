@@ -33,8 +33,8 @@ def test_analytics_calculates_da_only_summary() -> None:
         {
             "datetime": datetimes,
             "plant_name": ["plant_1", "plant_1"],
-            "DA_position_MWh": [0.6, 0.0],
-            "actual_electricity_consumption_MWh": [0.6, 0.0],
+            "day_ahead_position_MWh_el": [0.6, 0.0],
+            "actual_electricity_consumption_MWh_el": [0.6, 0.0],
         }
     )
 

@@ -224,15 +224,20 @@ def plot_market_prices_and_benchmark(
 
     fig, ax = plt.subplots()
     plotted = False
-    if "DA_price" in dispatch.columns:
-        ax.plot(dispatch.index, dispatch["DA_price"], label="Day-ahead price", color="tab:blue")
+    if "day_ahead_price_EUR_per_MWh_el" in dispatch.columns:
+        ax.plot(
+            dispatch.index,
+            dispatch["day_ahead_price_EUR_per_MWh_el"],
+            label="Day-ahead price",
+            color="tab:blue",
+        )
         plotted = True
     else:
-        warn_missing("DA_price", "market prices plot")
+        warn_missing("day_ahead_price_EUR_per_MWh_el", "market prices plot")
 
     for column, label, color in [
-        ("IDC_price", "IDC price", "tab:orange"),
-        ("afrr_energy_price", "aFRR energy price", "tab:purple"),
+        ("intraday_price_EUR_per_MWh_el", "IDC price", "tab:orange"),
+        ("afrr_energy_price_EUR_per_MWh_el", "aFRR energy price", "tab:purple"),
     ]:
         if column in dispatch.columns and dispatch[column].notna().any():
             ax.plot(dispatch.index, dispatch[column], label=label, color=color, alpha=0.9)
@@ -279,9 +284,9 @@ def plot_electricity_procurement_by_market(
     fig, ax = plt.subplots()
     width = _bar_width(market.index)
     positive_columns = [
-        ("DA_position_MWh", "Day-ahead"),
-        ("IDC_buy_MWh", "IDC buy"),
-        ("afrr_energy_activated_MWh", "aFRR activated"),
+        ("day_ahead_position_MWh_el", "Day-ahead"),
+        ("intraday_buy_MWh_el", "IDC buy"),
+        ("afrr_energy_activated_MWh_el", "aFRR activated"),
     ]
     bottom = pd.Series(0.0, index=market.index)
     plotted = False
@@ -294,29 +299,29 @@ def plot_electricity_procurement_by_market(
         else:
             warn_missing(column, "electricity procurement plot")
 
-    if "IDC_sell_MWh" in market.columns:
+    if "intraday_sell_MWh_el" in market.columns:
         ax.bar(
             market.index,
-            -market["IDC_sell_MWh"].fillna(0.0).astype(float),
+            -market["intraday_sell_MWh_el"].fillna(0.0).astype(float),
             width=width,
             label="IDC sell/reduction",
             color="tab:red",
             alpha=0.62,
         )
     else:
-        warn_missing("IDC_sell_MWh", "electricity procurement plot")
+        warn_missing("intraday_sell_MWh_el", "electricity procurement plot")
 
-    if "actual_electricity_consumption_MWh" in market.columns:
+    if "actual_electricity_consumption_MWh_el" in market.columns:
         ax.plot(
             market.index,
-            market["actual_electricity_consumption_MWh"],
+            market["actual_electricity_consumption_MWh_el"],
             color="black",
             linewidth=1.4,
             label="Actual consumption",
         )
         plotted = True
     else:
-        warn_missing("actual_electricity_consumption_MWh", "electricity procurement plot")
+        warn_missing("actual_electricity_consumption_MWh_el", "electricity procurement plot")
 
     if not plotted:
         plt.close(fig)
@@ -498,15 +503,15 @@ def plot_electricity_market_share(
         return []
 
     components = [
-        ("DA_position_MWh", "Day-ahead"),
-        ("IDC_buy_MWh", "IDC buy"),
-        ("IDC_sell_MWh", "IDC sell/reduction"),
-        ("afrr_energy_activated_MWh", "aFRR activated"),
+        ("day_ahead_position_MWh_el", "Day-ahead"),
+        ("intraday_buy_MWh_el", "IDC buy"),
+        ("intraday_sell_MWh_el", "IDC sell/reduction"),
+        ("afrr_energy_activated_MWh_el", "aFRR activated"),
     ]
     values = []
     for column, label in components:
         if column in market.columns:
-            sign = -1.0 if column == "IDC_sell_MWh" else 1.0
+            sign = -1.0 if column == "intraday_sell_MWh_el" else 1.0
             values.append((label, sign * _sum_column(market, column)))
         else:
             warn_missing(column, "electricity market share plot")
@@ -514,7 +519,7 @@ def plot_electricity_market_share(
     if not values:
         return []
 
-    actual = _sum_column(market, "actual_electricity_consumption_MWh")
+    actual = _sum_column(market, "actual_electricity_consumption_MWh_el")
     fig, ax = plt.subplots(figsize=(10, 3.8))
     left = 0.0
     for label, value in values:
@@ -535,7 +540,10 @@ def plot_price_response_storage_charging(
     show: bool = False,
 ) -> list[Path]:
     dispatch = _aggregate_by_datetime(dispatch_results)
-    price_col = _first_existing(dispatch, ["day_ahead_price_EUR_per_MWh", "DA_price"])
+    price_col = _first_existing(
+        dispatch,
+        ["day_ahead_price_EUR_per_MWh", "day_ahead_price_EUR_per_MWh_el"],
+    )
     if price_col is None:
         warn_missing("day_ahead_price_EUR_per_MWh", "price response plot")
         return []
@@ -577,11 +585,16 @@ def _sample_day_prices_panel(
     full_dispatch: pd.DataFrame,
 ) -> None:
     price_frame = _price_frame(dispatch, market)
-    if "DA_price" in price_frame.columns:
-        ax.plot(price_frame.index, price_frame["DA_price"], label="DA price", color="tab:blue")
+    if "day_ahead_price_EUR_per_MWh_el" in price_frame.columns:
+        ax.plot(
+            price_frame.index,
+            price_frame["day_ahead_price_EUR_per_MWh_el"],
+            label="DA price",
+            color="tab:blue",
+        )
     for column, label, color in [
-        ("IDC_price", "IDC price", "tab:orange"),
-        ("afrr_energy_price", "aFRR energy price", "tab:purple"),
+        ("intraday_price_EUR_per_MWh_el", "IDC price", "tab:orange"),
+        ("afrr_energy_price_EUR_per_MWh_el", "aFRR energy price", "tab:purple"),
     ]:
         if column in price_frame.columns and price_frame[column].notna().any():
             ax.plot(price_frame.index, price_frame[column], label=label, color=color)
@@ -600,26 +613,26 @@ def _sample_day_procurement_panel(ax: plt.Axes, market: pd.DataFrame) -> None:
     width = _bar_width(market.index)
     bottom = pd.Series(0.0, index=market.index)
     for column, label in [
-        ("DA_position_MWh", "DA"),
-        ("IDC_buy_MWh", "IDC buy"),
-        ("afrr_energy_activated_MWh", "aFRR activated"),
+        ("day_ahead_position_MWh_el", "DA"),
+        ("intraday_buy_MWh_el", "IDC buy"),
+        ("afrr_energy_activated_MWh_el", "aFRR activated"),
     ]:
         if column in market.columns:
             values = market[column].fillna(0.0).astype(float)
             ax.bar(market.index, values, width=width, bottom=bottom, label=label, alpha=0.7)
             bottom += values
-    if "IDC_sell_MWh" in market.columns:
+    if "intraday_sell_MWh_el" in market.columns:
         ax.bar(
             market.index,
-            -market["IDC_sell_MWh"].fillna(0.0).astype(float),
+            -market["intraday_sell_MWh_el"].fillna(0.0).astype(float),
             width=width,
             label="IDC sell",
             alpha=0.55,
         )
-    if "actual_electricity_consumption_MWh" in market.columns:
+    if "actual_electricity_consumption_MWh_el" in market.columns:
         ax.plot(
             market.index,
-            market["actual_electricity_consumption_MWh"],
+            market["actual_electricity_consumption_MWh_el"],
             color="black",
             label="Actual consumption",
         )
@@ -752,7 +765,13 @@ def _market_frame(market_ledger: pd.DataFrame, dispatch_results: pd.DataFrame) -
     if not market.empty:
         numeric = market.select_dtypes(include="number").copy()
         grouped = numeric.groupby(numeric.index).sum()
-        for column in ["DA_price", "IDC_price", "afrr_energy_price", "afrr_capacity_price"]:
+        price_columns = [
+            "day_ahead_price_EUR_per_MWh_el",
+            "intraday_price_EUR_per_MWh_el",
+            "afrr_energy_price_EUR_per_MWh_el",
+            "afrr_capacity_price",
+        ]
+        for column in price_columns:
             if column in market.columns:
                 grouped[column] = market.groupby(market.index)[column].mean()
         return grouped
@@ -762,10 +781,10 @@ def _market_frame(market_ledger: pd.DataFrame, dispatch_results: pd.DataFrame) -
         return pd.DataFrame()
     fallback = pd.DataFrame(index=dispatch.index)
     if "electricity_consumption_MWh" in dispatch.columns:
-        fallback["DA_position_MWh"] = dispatch["electricity_consumption_MWh"]
-        fallback["actual_electricity_consumption_MWh"] = dispatch["electricity_consumption_MWh"]
+        fallback["day_ahead_position_MWh_el"] = dispatch["electricity_consumption_MWh"]
+        fallback["actual_electricity_consumption_MWh_el"] = dispatch["electricity_consumption_MWh"]
     if "day_ahead_price_EUR_per_MWh" in dispatch.columns:
-        fallback["DA_price"] = dispatch["day_ahead_price_EUR_per_MWh"]
+        fallback["day_ahead_price_EUR_per_MWh_el"] = dispatch["day_ahead_price_EUR_per_MWh"]
     return fallback
 
 
@@ -774,10 +793,10 @@ def _price_frame(dispatch_results: pd.DataFrame, market_ledger: pd.DataFrame) ->
     market = _market_frame(market_ledger, dispatch_results)
     price = pd.DataFrame(index=dispatch.index if not dispatch.empty else market.index)
     if "day_ahead_price_EUR_per_MWh" in dispatch.columns:
-        price["DA_price"] = dispatch["day_ahead_price_EUR_per_MWh"]
-    elif "DA_price" in market.columns:
-        price["DA_price"] = market["DA_price"]
-    for column in ["IDC_price", "afrr_energy_price"]:
+        price["day_ahead_price_EUR_per_MWh_el"] = dispatch["day_ahead_price_EUR_per_MWh"]
+    elif "day_ahead_price_EUR_per_MWh_el" in market.columns:
+        price["day_ahead_price_EUR_per_MWh_el"] = market["day_ahead_price_EUR_per_MWh_el"]
+    for column in ["intraday_price_EUR_per_MWh_el", "afrr_energy_price_EUR_per_MWh_el"]:
         if column in market.columns:
             price[column] = market[column]
     return price

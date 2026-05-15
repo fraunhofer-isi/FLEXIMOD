@@ -96,17 +96,17 @@ def test_day_ahead_only_strategy_matches_expected_plant_behaviour(
     assert dispatch["unmet_heat_MWh"].sum() == pytest.approx(0.0)
 
     # In the DA-only MVP, the market position is exactly the optimized ETES electricity use.
-    assert market["DA_position_MWh"].sum() == pytest.approx(
+    assert market["day_ahead_position_MWh_el"].sum() == pytest.approx(
         dispatch["electricity_consumption_MWh"].sum()
     )
-    assert market["actual_electricity_consumption_MWh"].sum() == pytest.approx(
-        market["DA_position_MWh"].sum()
+    assert market["actual_electricity_consumption_MWh_el"].sum() == pytest.approx(
+        market["day_ahead_position_MWh_el"].sum()
     )
 
     # Stored heat is attributed to the day-ahead market and CO2 is inactive for this MVP.
     assert storage["thermal_inventory_day_ahead_MWh_th"].max() > 0
     assert summary["total_DA_electricity_MWh"].iloc[0] == pytest.approx(
-        market["DA_position_MWh"].sum()
+        market["day_ahead_position_MWh_el"].sum()
     )
     assert summary["total_unmet_heat_MWh"].iloc[0] == pytest.approx(0.0)
     assert summary["total_co2_cost_EUR"].iloc[0] == pytest.approx(0.0)
@@ -117,10 +117,10 @@ def test_idc_disabled_keeps_day_ahead_position(
 ) -> None:
     market = day_ahead_only_results["market"]
 
-    assert market["IDC_buy_MWh"].sum() == pytest.approx(0.0)
-    assert market["IDC_sell_MWh"].sum() == pytest.approx(0.0)
-    assert market["final_planned_electricity_MWh"].sum() == pytest.approx(
-        market["DA_position_MWh"].sum()
+    assert market["intraday_buy_MWh_el"].sum() == pytest.approx(0.0)
+    assert market["intraday_sell_MWh_el"].sum() == pytest.approx(0.0)
+    assert market["scheduled_electricity_procurement_MWh_el"].sum() == pytest.approx(
+        market["day_ahead_position_MWh_el"].sum()
     )
 
 
@@ -134,8 +134,8 @@ def test_cheap_idc_creates_incremental_buy(idc_case: Path, tmp_path: Path) -> No
     results = _run_case(idc_case, tmp_path)
     market = results["market"]
 
-    assert market["IDC_buy_MWh"].sum() > 0.0
-    assert market["IDC_sell_MWh"].sum() == pytest.approx(0.0)
+    assert market["intraday_buy_MWh_el"].sum() > 0.0
+    assert market["intraday_sell_MWh_el"].sum() == pytest.approx(0.0)
     _assert_final_planned_balance(market)
     _assert_heat_is_feasible(results["dispatch"])
 
@@ -153,9 +153,9 @@ def test_expensive_idc_creates_sell_without_exceeding_da(
     results = _run_case(idc_case, tmp_path)
     market = results["market"]
 
-    assert market["IDC_sell_MWh"].sum() > 0.0
-    assert market["IDC_buy_MWh"].sum() == pytest.approx(0.0)
-    assert (market["IDC_sell_MWh"] <= market["DA_position_MWh"] + 1e-8).all()
+    assert market["intraday_sell_MWh_el"].sum() > 0.0
+    assert market["intraday_buy_MWh_el"].sum() == pytest.approx(0.0)
+    assert (market["intraday_sell_MWh_el"] <= market["day_ahead_position_MWh_el"] + 1e-8).all()
     _assert_final_planned_balance(market)
     _assert_heat_is_feasible(results["dispatch"])
 
@@ -170,8 +170,8 @@ def test_neutral_idc_creates_no_adjustment(idc_case: Path, tmp_path: Path) -> No
     results = _run_case(idc_case, tmp_path)
     market = results["market"]
 
-    assert market["IDC_buy_MWh"].sum() == pytest.approx(0.0)
-    assert market["IDC_sell_MWh"].sum() == pytest.approx(0.0)
+    assert market["intraday_buy_MWh_el"].sum() == pytest.approx(0.0)
+    assert market["intraday_sell_MWh_el"].sum() == pytest.approx(0.0)
     _assert_final_planned_balance(market)
 
 
@@ -188,10 +188,10 @@ def test_missing_idc_values_create_no_action_timestep(
     with pytest.warns(UserWarning, match="IDC price contains missing values"):
         results = _run_case(idc_case, tmp_path)
     market = results["market"].sort_values("datetime")
-    missing_price_row = market[market["IDC_price"].isna()].iloc[0]
+    missing_price_row = market[market["intraday_price_EUR_per_MWh_el"].isna()].iloc[0]
 
-    assert missing_price_row["IDC_buy_MWh"] == pytest.approx(0.0)
-    assert missing_price_row["IDC_sell_MWh"] == pytest.approx(0.0)
+    assert missing_price_row["intraday_buy_MWh_el"] == pytest.approx(0.0)
+    assert missing_price_row["intraday_sell_MWh_el"] == pytest.approx(0.0)
 
 
 def test_missing_idc_price_column_raises_clear_error(
@@ -224,10 +224,10 @@ def test_afrr_disabled_keeps_final_planned_electricity(
     results = _run_case(idc_case, tmp_path)
     market = results["market"]
 
-    assert market["afrr_energy_bid_MWh"].sum() == pytest.approx(0.0)
-    assert market["afrr_energy_activated_MWh"].sum() == pytest.approx(0.0)
-    assert market["actual_electricity_consumption_MWh"].to_numpy() == pytest.approx(
-        market["final_planned_electricity_MWh"].to_numpy()
+    assert market["afrr_energy_bid_MWh_el"].sum() == pytest.approx(0.0)
+    assert market["afrr_energy_activated_MWh_el"].sum() == pytest.approx(0.0)
+    assert market["actual_electricity_consumption_MWh_el"].to_numpy() == pytest.approx(
+        market["scheduled_electricity_procurement_MWh_el"].to_numpy()
     )
 
 
@@ -248,11 +248,11 @@ def test_cheap_afrr_down_creates_proxy_activation(
     market = results["market"]
     dispatch = results["dispatch"]
 
-    assert market["afrr_energy_bid_MWh"].sum() > 0.0
-    assert market["afrr_energy_activated_MWh"].sum() > 0.0
-    assert (market["afrr_energy_activated_MWh"] <= market["afrr_energy_bid_MWh"] + 1e-8).all()
+    assert market["afrr_energy_bid_MWh_el"].sum() > 0.0
+    assert market["afrr_energy_activated_MWh_el"].sum() > 0.0
+    assert (market["afrr_energy_activated_MWh_el"] <= market["afrr_energy_bid_MWh_el"] + 1e-8).all()
     assert (
-        market["afrr_energy_activated_MWh"] <= market["afrr_system_activation_MWh"] + 1e-8
+        market["afrr_energy_activated_MWh_el"] <= market["afrr_system_activation_MWh_el"] + 1e-8
     ).all()
     _assert_actual_electricity_with_afrr(market)
     assert dispatch["etes_charge_MWh"].to_numpy() == pytest.approx(
@@ -276,8 +276,8 @@ def test_expensive_afrr_down_creates_no_bid_or_activation(
     results = _run_case(afrr_case, tmp_path)
     market = results["market"]
 
-    assert market["afrr_energy_bid_MWh"].sum() == pytest.approx(0.0)
-    assert market["afrr_energy_activated_MWh"].sum() == pytest.approx(0.0)
+    assert market["afrr_energy_bid_MWh_el"].sum() == pytest.approx(0.0)
+    assert market["afrr_energy_activated_MWh_el"].sum() == pytest.approx(0.0)
     _assert_actual_electricity_with_afrr(market)
 
 
@@ -297,9 +297,9 @@ def test_afrr_missing_price_blocks_bid_even_with_activation(
         results = _run_case(afrr_case, tmp_path)
     first = results["market"].sort_values("datetime").iloc[0]
 
-    assert first["afrr_energy_bid_MWh"] == pytest.approx(0.0)
-    assert first["afrr_energy_activated_MWh"] == pytest.approx(0.0)
-    assert first["afrr_energy_price"] == pytest.approx(0.0)
+    assert first["afrr_energy_bid_MWh_el"] == pytest.approx(0.0)
+    assert first["afrr_energy_activated_MWh_el"] == pytest.approx(0.0)
+    assert first["afrr_energy_price_EUR_per_MWh_el"] == pytest.approx(0.0)
     assert results["afrr_quality"]["aFRR_down_activation_without_price_rows"].iloc[0] == 1
 
 
@@ -320,8 +320,8 @@ def test_afrr_minimum_bid_rule_uses_mw_headroom(
     results = _run_case(afrr_case, tmp_path)
     first = results["market"].sort_values("datetime").iloc[0]
 
-    assert first["afrr_energy_bid_MWh"] == pytest.approx(0.0)
-    assert first["afrr_energy_activated_MWh"] == pytest.approx(0.0)
+    assert first["afrr_energy_bid_MWh_el"] == pytest.approx(0.0)
+    assert first["afrr_energy_activated_MWh_el"] == pytest.approx(0.0)
 
 
 def test_afrr_bid_uses_storage_capacity_headroom(
@@ -342,7 +342,7 @@ def test_afrr_bid_uses_storage_capacity_headroom(
     market = results["market"].sort_values("datetime")
     first = market.iloc[0]
 
-    assert first["afrr_energy_bid_MWh"] <= (4.0 - 3.6) / 0.92 + 1e-8
+    assert first["afrr_energy_bid_MWh_el"] <= (4.0 - 3.6) / 0.92 + 1e-8
     _assert_actual_electricity_with_afrr(market)
 
 
@@ -404,10 +404,16 @@ def _run_case(case_dir: Path, tmp_path: Path) -> dict[str, pd.DataFrame]:
 
 
 def _assert_final_planned_balance(market: pd.DataFrame) -> None:
-    expected = market["DA_position_MWh"] + market["IDC_buy_MWh"] - market["IDC_sell_MWh"]
-    assert market["final_planned_electricity_MWh"].to_numpy() == pytest.approx(expected.to_numpy())
-    assert market["actual_electricity_consumption_MWh"].to_numpy() == pytest.approx(
-        market["final_planned_electricity_MWh"].to_numpy()
+    expected = (
+        market["day_ahead_position_MWh_el"]
+        + market["intraday_buy_MWh_el"]
+        - market["intraday_sell_MWh_el"]
+    )
+    assert market["scheduled_electricity_procurement_MWh_el"].to_numpy() == pytest.approx(
+        expected.to_numpy()
+    )
+    assert market["actual_electricity_consumption_MWh_el"].to_numpy() == pytest.approx(
+        market["scheduled_electricity_procurement_MWh_el"].to_numpy()
     )
 
 
@@ -418,8 +424,10 @@ def _assert_heat_is_feasible(dispatch: pd.DataFrame) -> None:
 
 
 def _assert_actual_electricity_with_afrr(market: pd.DataFrame) -> None:
-    expected = market["final_planned_electricity_MWh"] + market["afrr_energy_activated_MWh"]
-    assert market["actual_electricity_consumption_MWh"].to_numpy() == pytest.approx(
+    expected = (
+        market["scheduled_electricity_procurement_MWh_el"] + market["afrr_energy_activated_MWh_el"]
+    )
+    assert market["actual_electricity_consumption_MWh_el"].to_numpy() == pytest.approx(
         expected.to_numpy()
     )
 
@@ -464,7 +472,7 @@ markets:
       day_relation: "D-1"
       time: "12:00"
     signals:
-      price: "DE_DA_price"
+      price: "DE_day_ahead_price_EUR_per_MWh_el"
 
   intraday_continuous:
     enabled: {str(idc_enabled).lower()}
@@ -566,7 +574,7 @@ def _write_forecasts(
         {
             "datetime": datetimes,
             "plant_1_heat_demand": heat_demand or [2.0] * 8,
-            "DE_DA_price": da_prices,
+            "DE_day_ahead_price_EUR_per_MWh_el": da_prices,
             "natural_gas_price": [80.0] * 8,
         }
     )

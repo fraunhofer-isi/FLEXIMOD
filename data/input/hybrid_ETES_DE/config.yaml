@@ -8,7 +8,7 @@ case:
   description: "Hybrid ETES + gas boiler case for Germany"
   timestep_minutes: 15
   simulation_start: "2025-01-01 00:00"
-  simulation_end: "2025-01-14 23:45"
+  simulation_end: "2025-01-21 23:45"
   timezone: "Europe/Berlin"
 
 strategy:
