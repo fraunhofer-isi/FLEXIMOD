@@ -12,7 +12,7 @@ build/
 dist/
 *.egg-info/
 
-data/input/aFRR activate volume
+data/input/aFRR_data/
 data/output/
 data/processed/
 *.xlsx
