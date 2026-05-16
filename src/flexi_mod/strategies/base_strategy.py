@@ -41,5 +41,5 @@ class BaseStrategy:
     def decide_afrr_capacity(
         self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
     ) -> pd.DataFrame:
-        # TODO: Reserve headroom before DA/IDC once aFRR capacity is activated.
+        # Optional pre-DA reserve-capacity stage for strategies that support it.
         return pd.DataFrame(index=forecasts.index)

@@ -132,6 +132,9 @@ def create_case_plots(
             )
         )
         created.extend(plot_stagewise_gas_replacement(dispatch, plot_dir, file_format, show))
+        created.extend(plot_afrr_capacity_price_and_reserve(market, plot_dir, file_format, show))
+        created.extend(plot_procurement_and_capacity_headroom(market, plot_dir, file_format, show))
+        created.extend(plot_afrr_capacity_and_energy(market, plot_dir, file_format, show))
         return created
 
 
@@ -998,6 +1001,133 @@ def plot_stagewise_gas_replacement(
     )
 
 
+def plot_afrr_capacity_price_and_reserve(
+    market_ledger: pd.DataFrame,
+    plot_dir: Path,
+    file_format: str = "png",
+    show: bool = False,
+) -> list[Path]:
+    market = _market_frame(market_ledger, pd.DataFrame())
+    if market.empty or "afrr_capacity_reserved_MW" not in market.columns:
+        return []
+    if market["afrr_capacity_reserved_MW"].fillna(0.0).abs().sum() <= 1e-12:
+        return []
+
+    fig, ax = plt.subplots()
+    reserve = market["afrr_capacity_reserved_MW"].fillna(0.0)
+    ax.step(market.index, reserve, where="post", label="Reserved aFRR down capacity")
+    ax.set_ylabel("Reserved capacity [MW]")
+    ax.set_title("aFRR down capacity price and reservation")
+    ax2 = ax.twinx()
+    if "afrr_capacity_down_price_EUR_per_MW_h" in market.columns:
+        ax2.plot(
+            market.index,
+            market["afrr_capacity_down_price_EUR_per_MW_h"],
+            color="tab:orange",
+            label="Capacity price",
+        )
+    ax2.set_ylabel("Capacity price [EUR/MW/h]")
+    _combined_legend(ax, ax2)
+    _format_datetime_axis(ax)
+    return _save_figure(fig, plot_dir, "14_afrr_capacity_price_and_reserve", file_format, show)
+
+
+def plot_procurement_and_capacity_headroom(
+    market_ledger: pd.DataFrame,
+    plot_dir: Path,
+    file_format: str = "png",
+    show: bool = False,
+) -> list[Path]:
+    market = _market_frame(market_ledger, pd.DataFrame())
+    if market.empty or "afrr_capacity_reserved_MWh" not in market.columns:
+        return []
+    if market["afrr_capacity_reserved_MWh"].fillna(0.0).abs().sum() <= 1e-12:
+        return []
+
+    fig, ax = plt.subplots()
+    scheduled = _column_or_zero(market, "scheduled_electricity_procurement_MWh_el")
+    reserve = _column_or_zero(market, "afrr_capacity_reserved_MWh")
+    actual = _column_or_zero(market, "actual_electricity_consumption_MWh_el")
+    _fill_between_series(
+        ax,
+        market.index,
+        scheduled,
+        color="tab:blue",
+        alpha=0.2,
+        label="Scheduled DA+IDC",
+    )
+    _fill_between_series(
+        ax,
+        market.index,
+        scheduled + reserve,
+        lower=scheduled,
+        color="tab:purple",
+        alpha=0.28,
+        label="Reserved aFRR capacity headroom",
+    )
+    ax.step(market.index, actual, where="post", color="black", label="Actual electricity")
+    ax.set_title("Electricity procurement and reserved aFRR headroom")
+    ax.set_ylabel("Electricity per time step [MWh_el]")
+    ax.set_xlabel("Time")
+    _legend_if_present(ax)
+    _format_datetime_axis(ax)
+    return _save_figure(
+        fig,
+        plot_dir,
+        "15_electricity_procurement_and_capacity_headroom",
+        file_format,
+        show,
+    )
+
+
+def plot_afrr_capacity_and_energy(
+    market_ledger: pd.DataFrame,
+    plot_dir: Path,
+    file_format: str = "png",
+    show: bool = False,
+) -> list[Path]:
+    market = _market_frame(market_ledger, pd.DataFrame())
+    if market.empty or "afrr_capacity_reserved_MW" not in market.columns:
+        return []
+    if market["afrr_capacity_reserved_MW"].fillna(0.0).abs().sum() <= 1e-12:
+        return []
+
+    fig, ax = plt.subplots()
+    reserve = _column_or_zero(market, "afrr_capacity_reserved_MW")
+    activation_mw = _column_or_zero(market, "afrr_energy_activated_MWh_el") / _plot_timestep_hours(
+        market.index
+    )
+    system_mw = _column_or_zero(market, "afrr_system_activation_MWh_el") / _plot_timestep_hours(
+        market.index
+    )
+    ax.step(market.index, reserve, where="post", label="Reserved capacity", color="tab:purple")
+    ax.step(market.index, activation_mw, where="post", label="Plant activation", color="tab:green")
+    ax.step(
+        market.index,
+        system_mw,
+        where="post",
+        label="System activation proxy",
+        color="tab:gray",
+        alpha=0.8,
+    )
+    ax.set_title("aFRR down capacity and energy activation")
+    ax.set_ylabel("Power [MW]")
+    ax.set_xlabel("Time")
+    ax2 = ax.twinx()
+    if "afrr_energy_price_EUR_per_MWh_el" in market.columns:
+        ax2.plot(
+            market.index,
+            market["afrr_energy_price_EUR_per_MWh_el"],
+            color="tab:orange",
+            alpha=0.8,
+            label="aFRR energy price",
+        )
+    ax2.set_ylabel("Energy price [EUR/MWh]")
+    _combined_legend(ax, ax2)
+    _format_datetime_axis(ax)
+    return _save_figure(fig, plot_dir, "16_afrr_capacity_and_energy", file_format, show)
+
+
 def _sample_day_prices_panel(
     ax: plt.Axes,
     dispatch: pd.DataFrame,
@@ -1247,7 +1377,7 @@ def _market_frame(market_ledger: pd.DataFrame, dispatch_results: pd.DataFrame) -
             "day_ahead_price_EUR_per_MWh_el",
             "intraday_price_EUR_per_MWh_el",
             "afrr_energy_price_EUR_per_MWh_el",
-            "afrr_capacity_price",
+            "afrr_capacity_down_price_EUR_per_MW_h",
         ]
         for column in price_columns:
             if column in market.columns:
@@ -1378,6 +1508,15 @@ def _bar_width(index: pd.Index) -> float:
     if diffs.empty:
         return 0.02
     return float(diffs.median() * 0.8)
+
+
+def _plot_timestep_hours(index: pd.Index) -> float:
+    if not isinstance(index, pd.DatetimeIndex) or len(index) < 2:
+        return 1.0
+    diffs = index.to_series().diff().dropna().dt.total_seconds().div(3600)
+    if diffs.empty:
+        return 1.0
+    return float(diffs.mode().iloc[0])
 
 
 def _combined_legend(ax1: plt.Axes, ax2: plt.Axes) -> None:

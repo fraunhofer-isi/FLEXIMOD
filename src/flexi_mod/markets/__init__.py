@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-from flexi_mod.markets.afrr_capacity import AFRRCapacityMarket
+from flexi_mod.markets.afrr_capacity import AFRRCapacityData, AFRRCapacityMarket
 from flexi_mod.markets.afrr_energy import (
     AFRRDownEnergyData,
     AFRRDownEnergyMarket,
@@ -15,6 +15,7 @@ from flexi_mod.markets.intraday_continuous import IntradayContinuousMarket
 
 __all__ = [
     "AFRRCapacityMarket",
+    "AFRRCapacityData",
     "AFRRDownEnergyData",
     "AFRRDownEnergyMarket",
     "AFRRUpEnergyMarket",

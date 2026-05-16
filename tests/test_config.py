@@ -15,6 +15,12 @@ def test_config_can_be_loaded() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
     assert config.case_name == "hybrid_ETES_DE"
     assert config.timestep_minutes == 15
+    assert config.market_sequence == [
+        "afrr_capacity",
+        "day_ahead",
+        "intraday_continuous",
+        "afrr_energy",
+    ]
 
 
 def test_required_sections_exist() -> None:
@@ -34,6 +40,15 @@ def test_enabled_markets_have_required_signals() -> None:
     assert config.market_signal("intraday_continuous", "price") == "DE_ID3_price"
     assert config.market_signal("afrr_energy", "price") == "aFRR_energy_down_price"
     assert config.market_signal("afrr_energy", "system_activation") == "aFRR_energy_down_quantity"
+    assert config.market_signal("afrr_capacity", "price") == "aFRR_capacity_down_price"
+    assert config.market("afrr_capacity")["gate_open"] == {
+        "day_relation": "D-7",
+        "time": "10:00",
+    }
+    assert config.market("afrr_capacity")["gate_close"] == {
+        "day_relation": "D-1",
+        "time": "09:00",
+    }
 
 
 def test_afrr_validity_period_must_match_timestep(tmp_path: Path) -> None:
@@ -76,4 +91,46 @@ markets:
     )
 
     with pytest.raises(ConfigError, match="validity_period_minutes"):
+        CaseConfig.from_case_dir(case_dir)
+
+
+def test_enabled_afrr_capacity_must_be_before_day_ahead(tmp_path: Path) -> None:
+    case_dir = tmp_path / "bad_capacity_order"
+    case_dir.mkdir()
+    (case_dir / "config.yaml").write_text(
+        """
+case:
+  name: bad_capacity_order
+  country: DE
+  timestep_minutes: 15
+  simulation_start: "2025-01-01 00:00"
+  simulation_end: "2025-01-01 00:45"
+strategy:
+  name: hybrid_etes_gas
+  dispatch:
+    dispatch_method: pyomo
+solver:
+  name: highs
+  fallback_solvers: []
+  tee: false
+market_sequence:
+  - day_ahead
+  - afrr_capacity
+markets:
+  day_ahead:
+    enabled: true
+    signals:
+      price: DE_DA_price
+  afrr_capacity:
+    enabled: true
+    direction: down
+    product_length: "4h"
+    price_unit: "EUR_per_MW_per_h"
+    signals:
+      price: aFRR_capacity_down_price
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="before day_ahead"):
         CaseConfig.from_case_dir(case_dir)

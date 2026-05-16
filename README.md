@@ -117,12 +117,13 @@ Additional documentation is available in:
 ## Market Layer
 
 Market classes live in `src/flexi_mod/markets/`. They describe market design:
-the traded product, product resolution, gate-close metadata, configured signal
-columns and product-rule parameters. They prepare market data for the strategy,
-but they do not decide the industrial operator's buy, sell or bid behaviour.
+the traded product, product resolution, gate-open/gate-close metadata,
+configured signal columns and product-rule parameters. They prepare market data
+for the strategy, but they do not decide the industrial operator's buy, sell or
+bid behaviour.
 
-The current market classes cover day-ahead energy, intraday continuous energy
-adjustments, aFRR down energy, and a disabled aFRR capacity placeholder.
+The current market classes cover aFRR down capacity, day-ahead energy,
+intraday continuous energy adjustments, and aFRR down energy.
 
 ## Configuration Philosophy
 
@@ -145,7 +146,22 @@ setup.
 
 ## Sequential Simulation
 
-Markets are evaluated in the order given by `market_sequence`. Day-ahead creates a fixed electricity baseline. Intraday continuous can adjust that baseline through buy/sell volumes. aFRR down energy adds proxy activated electricity consumption on top of the final planned position. aFRR capacity remains a disabled placeholder.
+Markets are evaluated in the order given by `market_sequence`. The intended
+industrial sequence is:
+
+```text
+aFRR down capacity reservation
+-> day-ahead electricity procurement
+-> intraday continuous adjustment
+-> aFRR down energy activation
+-> final physical dispatch/accounting
+```
+
+aFRR down capacity, when enabled, reserves ETES charging headroom before the
+day-ahead stage. Day-ahead then creates a fixed electricity baseline. Intraday
+continuous can adjust that baseline through buy/sell volumes. aFRR down energy
+adds proxy activated electricity consumption on top of the final planned
+position.
 
 The aFRR down activation signal is system-level/proxy activation, not plant-specific activation. Results should be interpreted as a scenario based on the available system activation proxy unless plant-specific bid acceptance and activation data are available.
 

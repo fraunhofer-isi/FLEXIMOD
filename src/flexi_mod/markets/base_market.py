@@ -40,6 +40,10 @@ class BaseMarket:
         return str(value) if value is not None else None
 
     @property
+    def gate_open(self) -> dict[str, Any]:
+        return dict(self.config.get("gate_open", {}))
+
+    @property
     def gate_close(self) -> dict[str, Any]:
         return dict(self.config.get("gate_close", {}))
 

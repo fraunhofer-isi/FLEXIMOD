@@ -9,6 +9,7 @@ import warnings
 import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.markets.afrr_capacity import AFRRCapacityMarket
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
 from flexi_mod.markets.day_ahead import DayAheadMarket
 from flexi_mod.markets.intraday_continuous import IntradayContinuousMarket
@@ -26,6 +27,7 @@ ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH = 0.0
 # or sensitivity analyses are implemented.
 IDC_MARGIN_EUR_PER_MWH = 5.0
 AFRR_ENERGY_MARGIN_EUR_PER_MWH = 5.0
+AFRR_CAPACITY_MARGIN_EUR_PER_MW_H = 0.0
 
 
 class HybridETESGasStrategy(BaseStrategy):
@@ -39,6 +41,7 @@ class HybridETESGasStrategy(BaseStrategy):
     def __init__(self, config: CaseConfig):
         self.config = config
         self.afrr_energy_data_quality_summary = pd.DataFrame()
+        self.afrr_capacity_block_summary = pd.DataFrame()
 
     def required_forecast_columns(self) -> set[str]:
         required = {GAS_PRICE_SIGNAL}
@@ -50,7 +53,10 @@ class HybridETESGasStrategy(BaseStrategy):
         return required
 
     def decide_day_ahead(
-        self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
+        self,
+        plant: SteamGenerationPlant,
+        forecasts: pd.DataFrame,
+        capacity_reservation: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         market = DayAheadMarket("day_ahead", self.config.market("day_ahead"))
         market_data = market.prepare_market_data(forecasts)
@@ -68,6 +74,7 @@ class HybridETESGasStrategy(BaseStrategy):
             gas_price_col=GAS_PRICE_SIGNAL,
             gas_benchmark_eur_per_mwh_th=benchmark,
             charge_allowed=charge_allowed,
+            **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
         return plant.solve_rolling(self.config, forecasts, signals)
 
@@ -76,6 +83,7 @@ class HybridETESGasStrategy(BaseStrategy):
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
+        capacity_reservation: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         idc_market = IntradayContinuousMarket(
             "intraday_continuous",
@@ -130,6 +138,7 @@ class HybridETESGasStrategy(BaseStrategy):
             idc_sell_upper_bound_mwh=idc_sell_upper_bound,
             gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
+            **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
         return plant.solve_intraday_adjustment_rolling(self.config, forecasts, signals)
 
@@ -138,6 +147,7 @@ class HybridETESGasStrategy(BaseStrategy):
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
+        capacity_reservation: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         da_price_col = self.config.market_signal("day_ahead", "price")
         idc_price_col = self.config.market_signal("intraday_continuous", "price")
@@ -186,7 +196,12 @@ class HybridETESGasStrategy(BaseStrategy):
         )
 
         max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours
-        charge_power_headroom = (max_charge_mwh - final_planned).clip(lower=0.0)
+        reserved_capacity = _capacity_column(
+            capacity_reservation,
+            forecasts.index,
+            "afrr_capacity_reserved_MWh",
+        )
+        charge_power_headroom = (max_charge_mwh - final_planned - reserved_capacity).clip(lower=0.0)
         baseline_storage_soc = self._series_from_fixed_positions(
             fixed_positions,
             "etes_soc_MWh",
@@ -219,18 +234,35 @@ class HybridETESGasStrategy(BaseStrategy):
         # TODO: Enforce strict bid increments using integer or discretised variables
         # if exact market-compliant bid granularity is required later.
 
-        bid_upper_bound, activated = self._strict_afrr_down_offer_and_activation(
-            plant=plant,
-            forecasts=forecasts,
-            final_planned=final_planned,
-            price_allowed=price_allowed,
-            system_activation_mwh=clean_afrr["afrr_system_activation_MWh"],
-            baseline_bid_upper_bound=bid_upper_bound,
-            baseline_storage_soc=baseline_storage_soc,
-            baseline_gas_heat=baseline_gas_heat,
-            min_bid_mw=min_bid_mw,
-            timestep_hours=timestep_hours,
-        )
+        if capacity_reservation is not None and not capacity_reservation.empty:
+            capacity_backed_bid = reserved_capacity.clip(lower=0.0)
+            # TODO: If aFRR capacity is awarded, the plant must submit energy bids
+            # at least equal to the awarded capacity volume. Later, allow optional
+            # extra aFRR energy bids above this mandatory capacity-backed volume
+            # when additional ETES headroom and attractive energy prices are available.
+            bid_upper_bound = capacity_backed_bid
+            activated = self._strict_capacity_backed_afrr_activation(
+                plant=plant,
+                forecasts=forecasts,
+                final_planned=final_planned,
+                capacity_backed_bid=capacity_backed_bid,
+                system_activation_mwh=clean_afrr["afrr_system_activation_MWh"],
+                baseline_storage_soc=baseline_storage_soc,
+                baseline_gas_heat=baseline_gas_heat,
+            )
+        else:
+            bid_upper_bound, activated = self._strict_afrr_down_offer_and_activation(
+                plant=plant,
+                forecasts=forecasts,
+                final_planned=final_planned,
+                price_allowed=price_allowed,
+                system_activation_mwh=clean_afrr["afrr_system_activation_MWh"],
+                baseline_bid_upper_bound=bid_upper_bound,
+                baseline_storage_soc=baseline_storage_soc,
+                baseline_gas_heat=baseline_gas_heat,
+                min_bid_mw=min_bid_mw,
+                timestep_hours=timestep_hours,
+            )
 
         signals = AFRRDownSignals(
             da_price_col=da_price_col,
@@ -246,6 +278,7 @@ class HybridETESGasStrategy(BaseStrategy):
             afrr_energy_activated_mwh=activated,
             gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
+            **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
         return plant.solve_afrr_down_rolling(self.config, forecasts, signals)
 
@@ -304,11 +337,142 @@ class HybridETESGasStrategy(BaseStrategy):
             pd.Series(activated_values, index=forecasts.index, name="afrr_energy_activated_MWh"),
         )
 
+    def _strict_capacity_backed_afrr_activation(
+        self,
+        plant: SteamGenerationPlant,
+        forecasts: pd.DataFrame,
+        final_planned: pd.Series,
+        capacity_backed_bid: pd.Series,
+        system_activation_mwh: pd.Series,
+        baseline_storage_soc: pd.Series,
+        baseline_gas_heat: pd.Series,
+    ) -> pd.Series:
+        """Assign capacity-backed proxy activation only when useful heat remains feasible.
+
+        Capacity reservation reports the plant's availability. The system activation signal is
+        still a proxy, so the modelled plant receives only the activation volume that can be
+        absorbed by ETES and later represented as useful heat without introducing heat dumping.
+        """
+
+        timestep_hours = self.config.timestep_minutes / 60.0
+        max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours
+        activated_values: list[float] = []
+
+        for timestamp in forecasts.index:
+            planned_charge = max(0.0, float(final_planned.loc[timestamp]))
+            baseline_soc = max(0.0, float(baseline_storage_soc.loc[timestamp]))
+            useful_extra_heat_outlet = max(0.0, float(baseline_gas_heat.loc[timestamp]))
+            power_headroom = max(0.0, max_charge_mwh - planned_charge)
+            storage_headroom_el = max(0.0, plant.etes.max_capacity_mwh - baseline_soc) / (
+                plant.etes.efficiency_charge
+            )
+            useful_heat_replacement_el = useful_extra_heat_outlet / (
+                plant.etes.efficiency_charge * plant.etes.efficiency_discharge
+            )
+            feasible_activation = min(
+                max(0.0, float(capacity_backed_bid.loc[timestamp])),
+                max(0.0, float(system_activation_mwh.loc[timestamp])),
+                power_headroom,
+                storage_headroom_el,
+                useful_heat_replacement_el,
+            )
+            activated_values.append(max(0.0, feasible_activation))
+
+        return pd.Series(
+            activated_values,
+            index=forecasts.index,
+            name="afrr_energy_activated_MWh",
+        )
+
     def decide_afrr_capacity(
         self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
     ) -> pd.DataFrame:
-        # TODO: Add reserve capacity awards and pre-DA headroom reservation.
-        return super().decide_afrr_capacity(plant, forecasts)
+        capacity_market = AFRRCapacityMarket(
+            "afrr_capacity",
+            self.config.market("afrr_capacity"),
+        )
+        timestep_hours = self.config.timestep_minutes / 60.0
+        capacity_data = capacity_market.prepare_market_data(
+            forecasts,
+            timestep_hours=timestep_hours,
+        )
+        capacity_frame = capacity_data.frame.copy()
+        block_summary = capacity_data.block_summary.copy()
+
+        da_price_col = self.config.market_signal("day_ahead", "price")
+        gas_heat_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
+        electricity_benchmark = self.calculate_electricity_trading_benchmark(
+            plant,
+            gas_heat_benchmark,
+        )
+        reference_price = forecasts[da_price_col].astype(float)
+        opportunity_cost = (electricity_benchmark - reference_price).clip(lower=0.0)
+
+        max_charge_power_mw = plant.etes.max_power_charge_mw
+        min_bid_mw = float(capacity_market.product_rules.get("min_bid_mw", 0.0))
+        expected_soc = plant.etes.initial_soc_mwh
+        records = []
+        for _, block in block_summary.iterrows():
+            block_id = str(block["block_id"])
+            mask = capacity_frame["afrr_capacity_block_id"] == block_id
+            block_duration_h = float(block["block_duration_h"])
+            opportunity_cost_block = float(
+                (opportunity_cost.loc[mask] * timestep_hours).sum() / block_duration_h
+            )
+            storage_capacity_mw = max(
+                0.0,
+                (plant.etes.max_capacity_mwh - expected_soc)
+                / (plant.etes.efficiency_charge * block_duration_h),
+            )
+            feasible_capacity = min(max_charge_power_mw, storage_capacity_mw)
+            economic_allowed = (
+                not bool(block["missing_capacity_price_flag"])
+                and float(block["capacity_price_EUR_per_MW_h"])
+                >= opportunity_cost_block + AFRR_CAPACITY_MARGIN_EUR_PER_MW_H
+            )
+            if feasible_capacity < min_bid_mw or not economic_allowed:
+                reserved_mw = 0.0
+            else:
+                reserved_mw = feasible_capacity
+            revenue = reserved_mw * float(block["capacity_price_EUR_per_MW_h"]) * block_duration_h
+            records.append(
+                {
+                    **block.to_dict(),
+                    "opportunity_cost_EUR_per_MW_h": opportunity_cost_block,
+                    "economic_bid_allowed": bool(economic_allowed),
+                    "feasible_capacity_potential_MW": feasible_capacity,
+                    "reserved_capacity_MW": reserved_mw,
+                    "capacity_revenue_EUR": revenue,
+                    "min_final_planned_headroom_MW": reserved_mw,
+                    "min_storage_headroom_MW": storage_capacity_mw,
+                    "total_afrr_energy_activated_MWh_in_block": 0.0,
+                    "total_afrr_energy_cost_EUR_in_block": 0.0,
+                }
+            )
+
+        self.afrr_capacity_block_summary = pd.DataFrame(records)
+        enriched = capacity_frame.join(
+            self.afrr_capacity_block_summary.set_index("block_id")[
+                [
+                    "opportunity_cost_EUR_per_MW_h",
+                    "economic_bid_allowed",
+                    "feasible_capacity_potential_MW",
+                    "reserved_capacity_MW",
+                    "capacity_revenue_EUR",
+                ]
+            ],
+            on="afrr_capacity_block_id",
+        )
+        enriched["afrr_capacity_reserved_MW"] = enriched["reserved_capacity_MW"].fillna(0.0)
+        enriched["afrr_capacity_reserved_MWh"] = (
+            enriched["afrr_capacity_reserved_MW"] * timestep_hours
+        )
+        enriched["afrr_capacity_revenue_EUR"] = (
+            enriched["afrr_capacity_reserved_MW"]
+            * enriched["capacity_price_EUR_per_MW_h"]
+            * timestep_hours
+        )
+        return enriched
 
     def calculate_gas_based_heat_cost(
         self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
@@ -397,3 +561,55 @@ class HybridETESGasStrategy(BaseStrategy):
         if series.isna().any():
             raise ValueError(f"Fixed position column '{column}' is not aligned with forecasts")
         return series
+
+
+def _capacity_signal_kwargs(
+    capacity_reservation: pd.DataFrame | None,
+    index: pd.DatetimeIndex,
+) -> dict[str, pd.Series]:
+    if capacity_reservation is None or capacity_reservation.empty:
+        return {}
+
+    frame = capacity_reservation.reindex(index)
+    return {
+        "reserved_capacity_mwh": _capacity_column(frame, index, "afrr_capacity_reserved_MWh"),
+        "afrr_capacity_block_id": _capacity_object_column(
+            frame,
+            index,
+            "afrr_capacity_block_id",
+            "",
+        ),
+        "afrr_capacity_block_duration_h": _capacity_column(frame, index, "block_duration_h"),
+        "afrr_capacity_price_eur_per_mw_h": _capacity_column(
+            frame,
+            index,
+            "capacity_price_EUR_per_MW_h",
+        ),
+        "afrr_capacity_reserved_mw": _capacity_column(frame, index, "afrr_capacity_reserved_MW"),
+        "afrr_capacity_revenue_eur": _capacity_column(frame, index, "afrr_capacity_revenue_EUR"),
+    }
+
+
+def _capacity_column(
+    capacity_reservation: pd.DataFrame | None,
+    index: pd.DatetimeIndex,
+    column: str,
+) -> pd.Series:
+    if (
+        capacity_reservation is None
+        or capacity_reservation.empty
+        or column not in capacity_reservation
+    ):
+        return pd.Series(0.0, index=index)
+    return capacity_reservation[column].astype(float).reindex(index).fillna(0.0)
+
+
+def _capacity_object_column(
+    capacity_reservation: pd.DataFrame,
+    index: pd.DatetimeIndex,
+    column: str,
+    default: object,
+) -> pd.Series:
+    if column not in capacity_reservation:
+        return pd.Series(default, index=index)
+    return capacity_reservation[column].reindex(index).fillna(default)

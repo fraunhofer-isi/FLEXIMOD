@@ -12,7 +12,10 @@ import pytest
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.visualisation.analytics import calculate_summary_indicators
 from flexi_mod.visualisation.plots import (
+    plot_afrr_capacity_and_energy,
+    plot_afrr_capacity_price_and_reserve,
     plot_idc_sell_source_and_compensation,
+    plot_procurement_and_capacity_headroom,
     plot_sequential_market_position_evolution,
     plot_stagewise_gas_replacement,
 )
@@ -166,3 +169,37 @@ def test_stagewise_gas_replacement_plot_saves(tmp_path: Path) -> None:
 
     assert created == [tmp_path / "13_stagewise_gas_replacement.png"]
     assert created[0].exists()
+
+
+def test_afrr_capacity_plots_save_when_capacity_is_present(tmp_path: Path) -> None:
+    datetimes = pd.date_range("2025-01-01", periods=4, freq="15min")
+    market = pd.DataFrame(
+        {
+            "datetime": datetimes,
+            "plant_name": ["plant_1"] * 4,
+            "day_ahead_position_MWh_el": [0.5, 0.5, 0.0, 0.0],
+            "intraday_buy_MWh_el": [0.0, 0.0, 0.0, 0.0],
+            "intraday_sell_MWh_el": [0.0, 0.0, 0.0, 0.0],
+            "scheduled_electricity_procurement_MWh_el": [0.5, 0.5, 0.0, 0.0],
+            "afrr_capacity_down_price_EUR_per_MW_h": [80.0] * 4,
+            "afrr_capacity_reserved_MW": [2.0] * 4,
+            "afrr_capacity_reserved_MWh": [0.5] * 4,
+            "available_charge_headroom_after_schedule_MWh": [1.25, 1.25, 1.75, 1.75],
+            "afrr_system_activation_MWh": [0.2, 0.0, 0.3, 0.1],
+            "afrr_energy_activated_MWh_el": [0.2, 0.0, 0.3, 0.1],
+            "afrr_energy_down_price_EUR_per_MWh": [5.0] * 4,
+            "actual_electricity_consumption_MWh_el": [0.7, 0.5, 0.3, 0.1],
+        }
+    )
+
+    created = []
+    created.extend(plot_afrr_capacity_price_and_reserve(market, tmp_path))
+    created.extend(plot_procurement_and_capacity_headroom(market, tmp_path))
+    created.extend(plot_afrr_capacity_and_energy(market, tmp_path))
+
+    assert created == [
+        tmp_path / "14_afrr_capacity_price_and_reserve.png",
+        tmp_path / "15_electricity_procurement_and_capacity_headroom.png",
+        tmp_path / "16_afrr_capacity_and_energy.png",
+    ]
+    assert all(path.exists() for path in created)

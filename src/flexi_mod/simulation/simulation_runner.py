@@ -100,6 +100,11 @@ class SimulationRunner:
             storage_cost_ledger=storage_ledger.to_dataframe(),
             afrr_energy_data_quality_summary=strategy.afrr_energy_data_quality_summary,
         )
+        if not strategy.afrr_capacity_block_summary.empty:
+            strategy.afrr_capacity_block_summary = _update_capacity_block_summary(
+                strategy.afrr_capacity_block_summary,
+                dispatch_results,
+            )
         if self.output_options.save_summary_indicators:
             path = output_dir / "summary_indicators.csv"
             summary.to_csv(path, index=False)
@@ -112,6 +117,14 @@ class SimulationRunner:
             path = output_dir / "afrr_energy_data_quality_summary.csv"
             strategy.afrr_energy_data_quality_summary.to_csv(path, index=False)
             output_paths["afrr_energy_data_quality_summary"] = path
+
+        if (
+            AFRR_CAPACITY in self.config.enabled_markets
+            and not strategy.afrr_capacity_block_summary.empty
+        ):
+            path = output_dir / "afrr_capacity_block_summary.csv"
+            strategy.afrr_capacity_block_summary.to_csv(path, index=False)
+            output_paths["afrr_capacity_block_summary"] = path
 
         if self.output_options.create_plots:
             output_paths["plots"] = create_case_plots(
@@ -137,14 +150,21 @@ class SimulationRunner:
 
         for plant in plants:
             fixed_positions = pd.DataFrame(index=forecasts.index)
+            capacity_reservation = pd.DataFrame(index=forecasts.index)
             stage_outputs: dict[str, pd.DataFrame] = {}
+            if AFRR_CAPACITY in self.config.enabled_markets:
+                capacity_reservation = strategy.decide_afrr_capacity(plant, forecasts)
+                stage_outputs[AFRR_CAPACITY] = capacity_reservation.copy()
             for market in enabled_markets:
+                if market.name == AFRR_CAPACITY:
+                    continue
                 fixed_positions = self._run_configured_market(
                     market,
                     plant,
                     forecasts,
                     fixed_positions,
                     strategy,
+                    capacity_reservation,
                 )
                 stage_outputs[market.name] = fixed_positions.copy()
 
@@ -168,21 +188,30 @@ class SimulationRunner:
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
         strategy: HybridETESGasStrategy,
+        capacity_reservation: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         if market.name == DAY_AHEAD:
-            return strategy.decide_day_ahead(plant, forecasts)
+            return strategy.decide_day_ahead(plant, forecasts, capacity_reservation)
         if market.name == INTRADAY_CONTINUOUS:
             if fixed_positions.empty:
                 raise NotImplementedError("IDC requires fixed day-ahead positions")
-            return strategy.decide_intraday_continuous(plant, forecasts, fixed_positions)
+            return strategy.decide_intraday_continuous(
+                plant,
+                forecasts,
+                fixed_positions,
+                capacity_reservation,
+            )
         if market.name == AFRR_ENERGY:
             if fixed_positions.empty:
                 raise NotImplementedError("aFRR energy requires fixed DA or IDC positions")
-            return strategy.decide_afrr_energy(plant, forecasts, fixed_positions)
-        if market.name == AFRR_CAPACITY:
-            raise NotImplementedError(
-                "aFRR capacity is present as a market placeholder but is disabled in the MVP"
+            return strategy.decide_afrr_energy(
+                plant,
+                forecasts,
+                fixed_positions,
+                capacity_reservation,
             )
+        if market.name == AFRR_CAPACITY:
+            return capacity_reservation if capacity_reservation is not None else fixed_positions
         raise NotImplementedError(f"Market '{market.name}' is not implemented")
 
     @staticmethod
@@ -229,3 +258,27 @@ def _add_stage_dispatch_columns(
         if "etes_discharge_MWh" in stage.columns:
             dispatch[f"etes_discharge_after_{label}_MWh"] = stage["etes_discharge_MWh"]
     return dispatch
+
+
+def _update_capacity_block_summary(
+    block_summary: pd.DataFrame,
+    dispatch_results: pd.DataFrame,
+) -> pd.DataFrame:
+    if "afrr_capacity_block_id" not in dispatch_results.columns:
+        return block_summary
+    summary = block_summary.copy()
+    grouped = dispatch_results.groupby("afrr_capacity_block_id", dropna=False)
+    activated = grouped["afrr_energy_activated_MWh"].sum()
+    energy_cost = grouped["afrr_energy_cost_EUR"].sum()
+    min_charge_headroom = grouped["available_charge_headroom_after_schedule_MWh"].min()
+    min_storage_headroom = grouped["available_storage_headroom_after_schedule_MWh"].min()
+    summary = summary.set_index("block_id")
+    summary["total_afrr_energy_activated_MWh_in_block"] = activated.reindex(summary.index).fillna(
+        0.0
+    )
+    summary["total_afrr_energy_cost_EUR_in_block"] = energy_cost.reindex(summary.index).fillna(0.0)
+    summary["min_final_planned_headroom_MW"] = min_charge_headroom.reindex(summary.index).fillna(
+        0.0
+    )
+    summary["min_storage_headroom_MW"] = min_storage_headroom.reindex(summary.index).fillna(0.0)
+    return summary.reset_index()

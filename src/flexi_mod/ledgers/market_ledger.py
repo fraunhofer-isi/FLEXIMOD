@@ -31,6 +31,15 @@ MARKET_LEDGER_COLUMNS = [
     "afrr_energy_activated_MWh_el",
     "afrr_energy_price_EUR_per_MWh_el",
     "afrr_system_activation_MWh_el",
+    "afrr_capacity_block_id",
+    "afrr_capacity_block_duration_h",
+    "afrr_capacity_down_price_EUR_per_MW_h",
+    "afrr_capacity_reserved_MW",
+    "afrr_capacity_reserved_MWh",
+    "afrr_capacity_revenue_EUR",
+    "reserved_capacity_headroom_MWh",
+    "available_charge_headroom_after_schedule_MWh",
+    "available_storage_headroom_after_schedule_MWh",
     "actual_electricity_consumption_MWh_el",
     "gas_heat_output_MWh_th",
     "etes_charge_MWh_el",
@@ -47,6 +56,14 @@ ZERO_COLUMNS = [
     "afrr_energy_bid_MWh_el",
     "afrr_energy_activated_MWh_el",
     "afrr_system_activation_MWh_el",
+    "afrr_capacity_block_duration_h",
+    "afrr_capacity_down_price_EUR_per_MW_h",
+    "afrr_capacity_reserved_MW",
+    "afrr_capacity_reserved_MWh",
+    "afrr_capacity_revenue_EUR",
+    "reserved_capacity_headroom_MWh",
+    "available_charge_headroom_after_schedule_MWh",
+    "available_storage_headroom_after_schedule_MWh",
     "actual_electricity_consumption_MWh_el",
     "gas_heat_output_MWh_th",
     "etes_charge_MWh_el",
@@ -107,7 +124,7 @@ class MarketLedger:
         if frame.empty:
             return frame
         for column in MARKET_LEDGER_COLUMNS:
-            if column not in {"datetime", "plant_name"}:
+            if column not in {"datetime", "plant_name", "afrr_capacity_block_id"}:
                 frame[column] = pd.to_numeric(frame[column], errors="coerce")
         return frame.sort_values(["plant_name", "datetime"]).reset_index(drop=True)
 
@@ -158,6 +175,23 @@ def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[s
             pd.NA,
         ),
         "afrr_system_activation_MWh_el": _value(row, "afrr_system_activation_MWh", 0.0),
+        "afrr_capacity_block_id": str(
+            row["afrr_capacity_block_id"] if "afrr_capacity_block_id" in row.index else ""
+        ),
+        "afrr_capacity_block_duration_h": _value(row, "afrr_capacity_block_duration_h", 0.0),
+        "afrr_capacity_down_price_EUR_per_MW_h": _value(
+            row, "afrr_capacity_down_price_EUR_per_MW_h", 0.0
+        ),
+        "afrr_capacity_reserved_MW": _value(row, "afrr_capacity_reserved_MW", 0.0),
+        "afrr_capacity_reserved_MWh": _value(row, "afrr_capacity_reserved_MWh", 0.0),
+        "afrr_capacity_revenue_EUR": _value(row, "afrr_capacity_revenue_EUR", 0.0),
+        "reserved_capacity_headroom_MWh": _value(row, "reserved_capacity_headroom_MWh", 0.0),
+        "available_charge_headroom_after_schedule_MWh": _value(
+            row, "available_charge_headroom_after_schedule_MWh", 0.0
+        ),
+        "available_storage_headroom_after_schedule_MWh": _value(
+            row, "available_storage_headroom_after_schedule_MWh", 0.0
+        ),
         "actual_electricity_consumption_MWh_el": actual_electricity,
         "gas_heat_output_MWh_th": _value(row, "gas_heat_MWh", 0.0),
         "etes_charge_MWh_el": _value(row, "etes_charge_MWh", 0.0),

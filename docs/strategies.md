@@ -39,9 +39,10 @@ decide_afrr_energy(...)
 decide_afrr_capacity(...)
 ```
 
-`decide_day_ahead`, `decide_intraday_continuous`, and the first aFRR down energy
-implementation are available. aFRR capacity remains a placeholder and should
-later respect fixed decisions from earlier markets.
+`decide_afrr_capacity`, `decide_day_ahead`, `decide_intraday_continuous`, and
+the first aFRR down energy implementation are available. aFRR down capacity is
+evaluated before day-ahead and reserves charging headroom that later market
+stages must respect.
 
 ## First Implemented Strategy
 
@@ -397,7 +398,8 @@ For example:
 - IDC may sell or reduce a day-ahead position only if heat can still be supplied;
 - negative aFRR energy may increase electricity consumption only if charging
   headroom remains;
-- aFRR capacity should reserve headroom before day-ahead and intraday dispatch.
+- aFRR capacity reserves headroom before day-ahead and intraday dispatch when it
+  is enabled.
 
 ## Strategy Design Principles
 

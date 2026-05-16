@@ -87,7 +87,7 @@ markets:
     config = CaseConfig.from_case_dir(case_dir)
     loader = DataLoader(config, input_dir=case_dir)
 
-    with pytest.raises(DataValidationError, match="Intraday continuous or aFRR energy is enabled"):
+    with pytest.raises(DataValidationError, match="Intraday continuous, aFRR energy"):
         loader.load_forecasts(required_columns={"DE_ID3_price"})
 
 

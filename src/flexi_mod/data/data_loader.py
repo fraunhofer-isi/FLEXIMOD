@@ -139,14 +139,14 @@ class DataLoader:
         if observed_minutes == target_minutes:
             return forecasts
 
-        no_resample_markets = {"intraday_continuous", "afrr_energy"}
+        no_resample_markets = {"intraday_continuous", "afrr_energy", "afrr_capacity"}
         active_no_resample = no_resample_markets.intersection(self.config.enabled_markets)
         if active_no_resample:
             raise DataValidationError(
-                "Intraday continuous or aFRR energy is enabled, so forecasts_df.csv "
-                "must already use "
+                "Intraday continuous, aFRR energy, or aFRR capacity is enabled, so "
+                "forecasts_df.csv must already use "
                 f"the configured {target_minutes}-minute timestep. Observed "
-                f"{observed_minutes}-minute data. IDC and aFRR energy signals are not "
+                f"{observed_minutes}-minute data. IDC and aFRR signals are not "
                 "resampled or forward-filled in this implementation."
             )
 
@@ -173,7 +173,7 @@ class DataLoader:
         )
 
     def _requires_native_resolution(self) -> bool:
-        native_resolution_markets = {"intraday_continuous", "afrr_energy"}
+        native_resolution_markets = {"intraday_continuous", "afrr_energy", "afrr_capacity"}
         return bool(native_resolution_markets.intersection(self.config.enabled_markets))
 
     @staticmethod

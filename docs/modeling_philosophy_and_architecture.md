@@ -42,22 +42,23 @@ hard-code market rules. The runner coordinates the order in which both are used.
 ## Sequential Market Logic
 
 Markets are evaluated in the order defined by `market_sequence` in `config.yaml`.
-For the first MVP only day-ahead is enabled:
+The intended market sequence is:
 
 ```text
-day_ahead -> intraday_continuous -> afrr_energy -> afrr_capacity
+afrr_capacity -> day_ahead -> intraday_continuous -> afrr_energy
 ```
 
-The later markets are present as placeholders and should be activated one by one.
-The intended rule is that earlier market decisions become fixed when later markets
-are evaluated.
+After these market stages, the model performs final physical dispatch/accounting.
+The intended rule is that earlier market decisions become fixed when later
+markets are evaluated.
 
 Examples:
 
+- aFRR down capacity reserves charging headroom before day-ahead and intraday
+  decisions;
 - intraday continuous may adjust a day-ahead position, but should not overwrite it;
-- aFRR energy must use only the remaining ETES charging headroom after earlier
-  markets;
-- aFRR capacity should reserve headroom before day-ahead and intraday decisions.
+- aFRR energy must use only the remaining ETES charging headroom, or the reserved
+  capacity headroom when capacity is enabled.
 
 ## Rolling-Horizon Plant Dispatch
 
@@ -132,8 +133,8 @@ The current market classes are:
   system-level proxy activation;
 - `AFRRUpEnergyMarket`, a documented placeholder for later upward balancing
   energy modelling;
-- `AFRRCapacityMarket`, a documented placeholder for later reserve-capacity
-  modelling.
+- `AFRRCapacityMarket`, a down-reserve capacity product that generates internal
+  4-hour blocks and prepares block prices for pre-DA headroom reservation.
 
 Market classes do not decide whether the plant operator buys, sells or bids.
 Those decisions stay in the strategy layer.

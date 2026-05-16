@@ -16,6 +16,7 @@ RESULT_FILES = {
     "storage_cost_ledger": "storage_cost_ledger.csv",
     "summary_indicators": "summary_indicators.csv",
     "afrr_energy_data_quality_summary": "afrr_energy_data_quality_summary.csv",
+    "afrr_capacity_block_summary": "afrr_capacity_block_summary.csv",
 }
 
 
@@ -29,6 +30,7 @@ class CaseResults:
     storage_cost_ledger: pd.DataFrame
     summary_indicators: pd.DataFrame
     afrr_energy_data_quality_summary: pd.DataFrame
+    afrr_capacity_block_summary: pd.DataFrame
 
 
 def load_results(output_dir: str | Path) -> CaseResults:
@@ -48,6 +50,11 @@ def load_results(output_dir: str | Path) -> CaseResults:
         required=False,
         datetime_index=False,
     )
+    afrr_capacity = _load_csv(
+        output_dir / RESULT_FILES["afrr_capacity_block_summary"],
+        required=False,
+        datetime_index=False,
+    )
     return CaseResults(
         output_dir=output_dir,
         dispatch_results=dispatch,
@@ -55,6 +62,7 @@ def load_results(output_dir: str | Path) -> CaseResults:
         storage_cost_ledger=storage,
         summary_indicators=summary,
         afrr_energy_data_quality_summary=afrr_quality,
+        afrr_capacity_block_summary=afrr_capacity,
     )
 
 
@@ -313,6 +321,8 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
     idc_sell = _sum(market, "intraday_sell_MWh_el")
     afrr = _sum(market, "afrr_energy_activated_MWh_el")
     afrr_bid = _sum(market, "afrr_energy_bid_MWh_el")
+    reserved_mw_h = _sum(market, "afrr_capacity_reserved_MWh")
+    reserved_mw = _average_nonzero(market, "afrr_capacity_reserved_MW")
     final_planned = _sum(
         market,
         "scheduled_electricity_procurement_MWh_el",
@@ -331,6 +341,11 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
         "total_final_planned_electricity_MWh": final_planned,
         "total_afrr_energy_bid_MWh": afrr_bid,
         "total_afrr_energy_activated_MWh": afrr,
+        "total_afrr_capacity_reserved_MW_h": reserved_mw_h,
+        "average_afrr_capacity_reserved_MW": reserved_mw,
+        "max_afrr_capacity_reserved_MW": _max(market, "afrr_capacity_reserved_MW"),
+        "number_of_capacity_blocks": _nunique(market, "afrr_capacity_block_id"),
+        "number_of_capacity_blocks_with_bid": _capacity_blocks_with_bid(market),
         "total_actual_electricity_consumption_MWh": actual,
         "total_intraday_buy_MWh_el": idc_buy,
         "total_intraday_sell_MWh_el": idc_sell,
@@ -382,13 +397,20 @@ def _economic_indicators(
         ),
     )
     afrr_savings = _sum(dispatch, "afrr_energy_savings_vs_benchmark_EUR")
-    afrr_capacity_revenue = 0.0
+    afrr_capacity_revenue = _sum(
+        market,
+        "afrr_capacity_revenue_EUR",
+        fallback=_sum(dispatch, "afrr_capacity_revenue_EUR"),
+    )
     average_stored_heat_cost = _last_existing_non_missing(
         storage,
         ["weighted_average_inventory_cost_EUR_per_MWh_th"],
     )
-    total_net_operating_cost = (
-        total_operating_cost - idc_value - afrr_energy_value - afrr_capacity_revenue
+    gross_operating_cost = _sum(dispatch, "gross_operating_cost_EUR", fallback=total_operating_cost)
+    total_net_operating_cost = _sum(
+        dispatch,
+        "net_operating_cost_EUR",
+        fallback=gross_operating_cost - afrr_capacity_revenue,
     )
     return {
         "total_electricity_procurement_cost_EUR": total_electricity_cost,
@@ -403,8 +425,13 @@ def _economic_indicators(
         "total_IDC_trading_value_EUR": idc_value,
         "total_afrr_energy_value_EUR": afrr_energy_value,
         "total_afrr_capacity_revenue_EUR": afrr_capacity_revenue,
+        "gross_operating_cost_EUR": gross_operating_cost,
         "total_operating_cost_EUR": total_operating_cost,
         "total_net_operating_cost_EUR": total_net_operating_cost,
+        "net_operating_cost_EUR": total_net_operating_cost,
+        "capacity_revenue_share_of_gross_cost": afrr_capacity_revenue / gross_operating_cost
+        if gross_operating_cost > 1e-12
+        else 0.0,
         "average_cost_of_heat_EUR_per_MWh": total_operating_cost / heat_demand
         if heat_demand > 1e-12
         else 0.0,
@@ -484,6 +511,38 @@ def _sum(frame: pd.DataFrame, column: str, fallback: float = 0.0) -> float:
     if frame.empty or column not in frame.columns:
         return float(fallback)
     return float(frame[column].fillna(0.0).astype(float).sum())
+
+
+def _max(frame: pd.DataFrame, column: str) -> float:
+    if frame.empty or column not in frame.columns:
+        return 0.0
+    return float(frame[column].fillna(0.0).astype(float).max())
+
+
+def _average_nonzero(frame: pd.DataFrame, column: str) -> float:
+    if frame.empty or column not in frame.columns:
+        return 0.0
+    values = frame[column].fillna(0.0).astype(float)
+    return float(values.mean()) if not values.empty else 0.0
+
+
+def _nunique(frame: pd.DataFrame, column: str) -> float:
+    if frame.empty or column not in frame.columns:
+        return 0.0
+    values = frame[column].dropna().astype(str)
+    values = values[values != ""]
+    return float(values.nunique())
+
+
+def _capacity_blocks_with_bid(frame: pd.DataFrame) -> float:
+    if (
+        frame.empty
+        or "afrr_capacity_block_id" not in frame
+        or "afrr_capacity_reserved_MW" not in frame
+    ):
+        return 0.0
+    grouped = frame.groupby("afrr_capacity_block_id")["afrr_capacity_reserved_MW"].max()
+    return float((grouped > 1e-12).sum())
 
 
 def _trading_value(

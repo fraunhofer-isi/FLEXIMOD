@@ -47,6 +47,20 @@ def afrr_case(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def afrr_capacity_case(tmp_path: Path) -> Path:
+    case_dir = tmp_path / "afrr_capacity_case"
+    case_dir.mkdir()
+    _write_config(
+        case_dir / "config.yaml",
+        idc_enabled=True,
+        afrr_enabled=True,
+        afrr_capacity_enabled=True,
+    )
+    _write_plants(case_dir / "plants.csv", storage_capacity=24.0)
+    return case_dir
+
+
+@pytest.fixture
 def day_ahead_only_results(
     day_ahead_only_case: Path,
     tmp_path: Path,
@@ -499,6 +513,35 @@ def test_missing_afrr_down_activation_column_raises_clear_error(
         _run_case(afrr_case, tmp_path)
 
 
+def test_afrr_capacity_reserves_headroom_and_caps_activation(
+    afrr_capacity_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        afrr_capacity_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[2.0] * 8,
+        afrr_capacity_prices=[100.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+
+    results = _run_case(afrr_capacity_case, tmp_path)
+    market = results["market"]
+
+    assert results["afrr_capacity_blocks"]["reserved_capacity_MW"].sum() > 0.0
+    assert market["afrr_capacity_reserved_MW"].nunique() == 1
+    assert (
+        market["scheduled_electricity_procurement_MWh_el"] + market["afrr_capacity_reserved_MWh"]
+        <= 7.0 * 0.25 + 1e-8
+    ).all()
+    assert (
+        market["afrr_energy_activated_MWh_el"] <= market["afrr_capacity_reserved_MWh"] + 1e-8
+    ).all()
+    assert market["afrr_capacity_revenue_EUR"].sum() > 0.0
+
+
 def _run_case(case_dir: Path, tmp_path: Path) -> dict[str, pd.DataFrame]:
     runner = SimulationRunner(
         case_dir=case_dir,
@@ -515,6 +558,8 @@ def _run_case(case_dir: Path, tmp_path: Path) -> dict[str, pd.DataFrame]:
     }
     if "afrr_energy_data_quality_summary" in outputs:
         results["afrr_quality"] = pd.read_csv(outputs["afrr_energy_data_quality_summary"])
+    if "afrr_capacity_block_summary" in outputs:
+        results["afrr_capacity_blocks"] = pd.read_csv(outputs["afrr_capacity_block_summary"])
     return results
 
 
@@ -554,6 +599,7 @@ def _write_config(
     afrr_enabled: bool = False,
     idc_buy_enabled: bool = True,
     idc_sell_enabled: bool = True,
+    afrr_capacity_enabled: bool = False,
 ) -> None:
     path.write_text(
         f"""
@@ -581,10 +627,10 @@ solver:
   tee: false
 
 market_sequence:
+  - afrr_capacity
   - day_ahead
   - intraday_continuous
   - afrr_energy
-  - afrr_capacity
 
 markets:
   day_ahead:
@@ -625,22 +671,32 @@ markets:
       activation_unit: "MW"
 
   afrr_capacity:
-    enabled: false
-    direction: "negative"
+    enabled: {str(afrr_capacity_enabled).lower()}
+    direction: "down"
     product_length: "4h"
-    min_bid_mw: 1.0
-    bid_increment_mw: 1.0
+    price_unit: "EUR_per_MW_per_h"
+    gate_open:
+      day_relation: "D-7"
+      time: "10:00"
     gate_close:
       day_relation: "D-1"
       time: "09:00"
+    product_rules:
+      min_bid_mw: 1.0
+      bid_increment_mw: 1.0
+      divisible: true
     signals:
-      capacity_price: "DE_afrr_capacity_neg_price"
+      price: "aFRR_capacity_down_price"
 """.strip(),
         encoding="utf-8",
     )
 
 
-def _write_plants(path: Path, storage_initial_soc: float = 0.0) -> None:
+def _write_plants(
+    path: Path,
+    storage_initial_soc: float = 0.0,
+    storage_capacity: float = 4.0,
+) -> None:
     plants = pd.DataFrame(
         [
             {
@@ -657,7 +713,7 @@ def _write_plants(path: Path, storage_initial_soc: float = 0.0) -> None:
                 "min_operating_time": 0.0,
                 "min_down_time": 0.0,
                 "efficiency": 0.95,
-                "max_capacity": 4.0,
+                "max_capacity": storage_capacity,
                 "min_capacity": 0.0,
                 "max_power_charge": 7.0,
                 "max_power_discharge": 7.0,
@@ -691,6 +747,7 @@ def _write_forecasts(
     idc_prices: list[float | None] | None = None,
     afrr_prices: list[float | None] | None = None,
     afrr_quantities: list[float | None] | None = None,
+    afrr_capacity_prices: list[float | None] | None = None,
     heat_demand: list[float] | None = None,
 ) -> None:
     datetimes = pd.date_range("2025-01-01 00:00", periods=8, freq="15min")
@@ -709,6 +766,8 @@ def _write_forecasts(
         forecasts["aFRR_energy_down_price"] = afrr_prices
     if afrr_quantities is not None:
         forecasts["aFRR_energy_down_quantity"] = afrr_quantities
+    if afrr_capacity_prices is not None:
+        forecasts["aFRR_capacity_down_price"] = afrr_capacity_prices
     forecasts.to_csv(path, index=False)
 
 

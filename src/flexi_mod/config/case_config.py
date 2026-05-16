@@ -158,6 +158,29 @@ class CaseConfig:
                         "afrr_energy.product_rules.validity_period_minutes must match "
                         "case.timestep_minutes"
                     )
+            if market_name == "afrr_capacity":
+                signals = market["signals"]
+                if "price" not in signals:
+                    raise ConfigError("Enabled afrr_capacity market must define signals.price")
+                if str(market.get("price_unit", "EUR_per_MW_per_h")) != "EUR_per_MW_per_h":
+                    raise ConfigError("afrr_capacity.price_unit must be 'EUR_per_MW_per_h'")
+        self._validate_market_order()
+
+    def _validate_market_order(self) -> None:
+        markets = self.raw["markets"]
+        if not bool(markets.get("afrr_capacity", {}).get("enabled", False)):
+            return
+        if not bool(markets.get("day_ahead", {}).get("enabled", False)):
+            return
+        try:
+            capacity_index = self.market_sequence.index("afrr_capacity")
+            day_ahead_index = self.market_sequence.index("day_ahead")
+        except ValueError:
+            return
+        if capacity_index > day_ahead_index:
+            raise ConfigError(
+                "Enabled afrr_capacity must appear before day_ahead in market_sequence"
+            )
 
 
 def _find_project_root(config_path: Path) -> Path:

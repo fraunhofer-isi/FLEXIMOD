@@ -32,6 +32,12 @@ class DispatchSignals:
     gas_price_col: str
     gas_benchmark_eur_per_mwh_th: pd.Series
     charge_allowed: pd.Series
+    reserved_capacity_mwh: pd.Series | None = None
+    afrr_capacity_block_id: pd.Series | None = None
+    afrr_capacity_block_duration_h: pd.Series | None = None
+    afrr_capacity_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_reserved_mw: pd.Series | None = None
+    afrr_capacity_revenue_eur: pd.Series | None = None
     co2_price_col: str | None = None
     co2_emission_factor_t_per_mwh_fuel: float = DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL
 
@@ -46,6 +52,12 @@ class IDCAdjustmentSignals:
     idc_sell_upper_bound_mwh: pd.Series
     gas_benchmark_eur_per_mwh_th: pd.Series
     electricity_trading_benchmark_eur_per_mwh_el: pd.Series
+    reserved_capacity_mwh: pd.Series | None = None
+    afrr_capacity_block_id: pd.Series | None = None
+    afrr_capacity_block_duration_h: pd.Series | None = None
+    afrr_capacity_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_reserved_mw: pd.Series | None = None
+    afrr_capacity_revenue_eur: pd.Series | None = None
     co2_price_col: str | None = None
     co2_emission_factor_t_per_mwh_fuel: float = DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL
 
@@ -65,6 +77,12 @@ class AFRRDownSignals:
     afrr_energy_activated_mwh: pd.Series
     gas_benchmark_eur_per_mwh_th: pd.Series
     electricity_trading_benchmark_eur_per_mwh_el: pd.Series
+    reserved_capacity_mwh: pd.Series | None = None
+    afrr_capacity_block_id: pd.Series | None = None
+    afrr_capacity_block_duration_h: pd.Series | None = None
+    afrr_capacity_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_reserved_mw: pd.Series | None = None
+    afrr_capacity_revenue_eur: pd.Series | None = None
     co2_price_col: str | None = None
     co2_emission_factor_t_per_mwh_fuel: float = DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL
 
@@ -154,6 +172,20 @@ class SteamGenerationPlant(BasePlant):
                     horizon.index
                 ],
                 charge_allowed=signals.charge_allowed.loc[horizon.index],
+                reserved_capacity_mwh=_optional_loc(signals.reserved_capacity_mwh, horizon.index),
+                afrr_capacity_block_id=_optional_loc(signals.afrr_capacity_block_id, horizon.index),
+                afrr_capacity_block_duration_h=_optional_loc(
+                    signals.afrr_capacity_block_duration_h, horizon.index
+                ),
+                afrr_capacity_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_price_eur_per_mw_h, horizon.index
+                ),
+                afrr_capacity_reserved_mw=_optional_loc(
+                    signals.afrr_capacity_reserved_mw, horizon.index
+                ),
+                afrr_capacity_revenue_eur=_optional_loc(
+                    signals.afrr_capacity_revenue_eur, horizon.index
+                ),
                 co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
             )
             horizon_result = self.solve_horizon(
@@ -202,6 +234,20 @@ class SteamGenerationPlant(BasePlant):
                 ],
                 electricity_trading_benchmark_eur_per_mwh_el=(
                     signals.electricity_trading_benchmark_eur_per_mwh_el.loc[horizon.index]
+                ),
+                reserved_capacity_mwh=_optional_loc(signals.reserved_capacity_mwh, horizon.index),
+                afrr_capacity_block_id=_optional_loc(signals.afrr_capacity_block_id, horizon.index),
+                afrr_capacity_block_duration_h=_optional_loc(
+                    signals.afrr_capacity_block_duration_h, horizon.index
+                ),
+                afrr_capacity_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_price_eur_per_mw_h, horizon.index
+                ),
+                afrr_capacity_reserved_mw=_optional_loc(
+                    signals.afrr_capacity_reserved_mw, horizon.index
+                ),
+                afrr_capacity_revenue_eur=_optional_loc(
+                    signals.afrr_capacity_revenue_eur, horizon.index
                 ),
                 co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
             )
@@ -258,6 +304,20 @@ class SteamGenerationPlant(BasePlant):
                 ],
                 electricity_trading_benchmark_eur_per_mwh_el=(
                     signals.electricity_trading_benchmark_eur_per_mwh_el.loc[horizon.index]
+                ),
+                reserved_capacity_mwh=_optional_loc(signals.reserved_capacity_mwh, horizon.index),
+                afrr_capacity_block_id=_optional_loc(signals.afrr_capacity_block_id, horizon.index),
+                afrr_capacity_block_duration_h=_optional_loc(
+                    signals.afrr_capacity_block_duration_h, horizon.index
+                ),
+                afrr_capacity_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_price_eur_per_mw_h, horizon.index
+                ),
+                afrr_capacity_reserved_mw=_optional_loc(
+                    signals.afrr_capacity_reserved_mw, horizon.index
+                ),
+                afrr_capacity_revenue_eur=_optional_loc(
+                    signals.afrr_capacity_revenue_eur, horizon.index
                 ),
                 co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
             )
@@ -450,6 +510,7 @@ class SteamGenerationPlant(BasePlant):
         else:
             co2_price = [0.0 for _ in steps]
         charge_allowed = signals.charge_allowed.astype(bool).reindex(forecasts.index).fillna(False)
+        reserved_capacity_mwh = _series_or_zero(signals.reserved_capacity_mwh, forecasts.index)
 
         m.heat_demand = pyo.Param(m.T, initialize={t: heat_demand_mwh[t] for t in steps})
         m.electricity_price = pyo.Param(m.T, initialize={t: electricity_price[t] for t in steps})
@@ -459,6 +520,9 @@ class SteamGenerationPlant(BasePlant):
             m.T,
             within=pyo.Binary,
             initialize={t: int(bool(charge_allowed.iloc[t])) for t in steps},
+        )
+        m.reserved_capacity_mwh = pyo.Param(
+            m.T, initialize={t: float(reserved_capacity_mwh.iloc[t]) for t in steps}
         )
         m.co2_emission_factor = pyo.Param(
             initialize=float(signals.co2_emission_factor_t_per_mwh_fuel)
@@ -484,6 +548,23 @@ class SteamGenerationPlant(BasePlant):
         def electricity_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
             storage = mm.technology_blocks["thermal_storage"]
             return mm.electricity_consumption[t] == storage.electricity_consumption[t]
+
+        @m.Constraint(m.T)
+        def reserve_charge_power_headroom(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            storage = mm.technology_blocks["thermal_storage"]
+            max_charge_mwh = storage.max_power_charge_mw * dt_hours
+            return (
+                storage.electric_charge_to_storage[t] + mm.reserved_capacity_mwh[t]
+                <= max_charge_mwh
+            )
+
+        @m.Constraint(m.T)
+        def reserve_storage_headroom(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            storage = mm.technology_blocks["thermal_storage"]
+            return (
+                storage.soc[t] + mm.reserved_capacity_mwh[t] * storage.efficiency_charge
+                <= storage.max_capacity_mwh
+            )
 
         @m.Expression(m.T)
         def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
@@ -545,6 +626,7 @@ class SteamGenerationPlant(BasePlant):
             .clip(lower=0.0)
             .to_numpy()
         )
+        reserved_capacity_mwh = _series_or_zero(signals.reserved_capacity_mwh, forecasts.index)
 
         m.heat_demand = pyo.Param(m.T, initialize={t: heat_demand_mwh[t] for t in steps})
         m.da_price = pyo.Param(m.T, initialize={t: da_price[t] for t in steps})
@@ -560,6 +642,9 @@ class SteamGenerationPlant(BasePlant):
         m.idc_sell_upper_bound_mwh = pyo.Param(
             m.T,
             initialize={t: idc_sell_upper_bound[t] for t in steps},
+        )
+        m.reserved_capacity_mwh = pyo.Param(
+            m.T, initialize={t: float(reserved_capacity_mwh.iloc[t]) for t in steps}
         )
         m.co2_emission_factor = pyo.Param(
             initialize=float(signals.co2_emission_factor_t_per_mwh_fuel)
@@ -606,6 +691,14 @@ class SteamGenerationPlant(BasePlant):
             return storage.electric_charge_to_storage[t] == mm.final_planned_electricity_mwh[t]
 
         @m.Constraint(m.T)
+        def reserve_charge_power_headroom(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            storage = mm.technology_blocks["thermal_storage"]
+            max_charge_mwh = storage.max_power_charge_mw * dt_hours
+            return (
+                mm.final_planned_electricity_mwh[t] + mm.reserved_capacity_mwh[t] <= max_charge_mwh
+            )
+
+        @m.Constraint(m.T)
         def heat_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
             storage = mm.technology_blocks["thermal_storage"]
             boiler = mm.technology_blocks["boiler"]
@@ -615,6 +708,14 @@ class SteamGenerationPlant(BasePlant):
         def electricity_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
             storage = mm.technology_blocks["thermal_storage"]
             return mm.electricity_consumption[t] == storage.electricity_consumption[t]
+
+        @m.Constraint(m.T)
+        def reserve_storage_headroom(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            storage = mm.technology_blocks["thermal_storage"]
+            return (
+                storage.soc[t] + mm.reserved_capacity_mwh[t] * storage.efficiency_charge
+                <= storage.max_capacity_mwh
+            )
 
         @m.Expression(m.T)
         def da_electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
@@ -683,6 +784,7 @@ class SteamGenerationPlant(BasePlant):
             signals.afrr_energy_activated_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
         )
         actual_electricity = final_planned + afrr_activation
+        reserved_capacity_mwh = _series_or_zero(signals.reserved_capacity_mwh, forecasts.index)
 
         m.heat_demand = pyo.Param(m.T, initialize={t: heat_demand_mwh[t] for t in steps})
         m.da_price = pyo.Param(m.T, initialize={t: da_price[t] for t in steps})
@@ -711,6 +813,9 @@ class SteamGenerationPlant(BasePlant):
         )
         m.actual_electricity_consumption_mwh = pyo.Param(
             m.T, initialize={t: float(actual_electricity.iloc[t]) for t in steps}
+        )
+        m.reserved_capacity_mwh = pyo.Param(
+            m.T, initialize={t: float(reserved_capacity_mwh.iloc[t]) for t in steps}
         )
         m.co2_emission_factor = pyo.Param(
             initialize=float(signals.co2_emission_factor_t_per_mwh_fuel)
@@ -854,6 +959,21 @@ class SteamGenerationPlant(BasePlant):
                 "charge_allowed_by_strategy": bool(signals.charge_allowed.iloc[t]),
                 "solver": solver_name,
             }
+            row.update(
+                _capacity_result_fields(
+                    signals=signals,
+                    timestamp=timestamp,
+                    position=t,
+                    timestep_hours=dt_hours,
+                    final_planned_mwh=row["final_planned_electricity_MWh"],
+                    soc_mwh=row["etes_soc_MWh"],
+                    etes=self.etes,
+                )
+            )
+            row["gross_operating_cost_EUR"] = row["operating_cost_EUR"]
+            row["net_operating_cost_EUR"] = (
+                row["gross_operating_cost_EUR"] - row["afrr_capacity_revenue_EUR"]
+            )
             rows.append(row)
 
         frame = pd.DataFrame(rows).set_index("datetime")
@@ -942,6 +1062,21 @@ class SteamGenerationPlant(BasePlant):
                 ),
                 "solver": solver_name,
             }
+            row.update(
+                _capacity_result_fields(
+                    signals=signals,
+                    timestamp=timestamp,
+                    position=t,
+                    timestep_hours=dt_hours,
+                    final_planned_mwh=final_planned,
+                    soc_mwh=row["etes_soc_MWh"],
+                    etes=self.etes,
+                )
+            )
+            row["gross_operating_cost_EUR"] = row["operating_cost_EUR"]
+            row["net_operating_cost_EUR"] = (
+                row["gross_operating_cost_EUR"] - row["afrr_capacity_revenue_EUR"]
+            )
             rows.append(row)
 
         frame = pd.DataFrame(rows).set_index("datetime")
@@ -1027,6 +1162,21 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_energy_bid_allowed_by_strategy": bool(afrr_bid > 1e-12),
                 "solver": solver_name,
             }
+            row.update(
+                _capacity_result_fields(
+                    signals=signals,
+                    timestamp=timestamp,
+                    position=t,
+                    timestep_hours=dt_hours,
+                    final_planned_mwh=final_planned,
+                    soc_mwh=row["etes_soc_MWh"],
+                    etes=self.etes,
+                )
+            )
+            row["gross_operating_cost_EUR"] = row["operating_cost_EUR"]
+            row["net_operating_cost_EUR"] = (
+                row["gross_operating_cost_EUR"] - row["afrr_capacity_revenue_EUR"]
+            )
             rows.append(row)
 
         frame = pd.DataFrame(rows).set_index("datetime")
@@ -1073,6 +1223,62 @@ def _solver_precheck(candidate: str) -> bool:
     if candidate == "cbc":
         return shutil.which("cbc") is not None
     return True
+
+
+def _optional_loc(series: pd.Series | None, index: pd.Index) -> pd.Series | None:
+    return None if series is None else series.loc[index]
+
+
+def _series_or_zero(series: pd.Series | None, index: pd.Index) -> pd.Series:
+    if series is None:
+        return pd.Series(0.0, index=index)
+    return series.astype(float).reindex(index).fillna(0.0)
+
+
+def _series_value(series: pd.Series | None, timestamp: pd.Timestamp, default: object) -> object:
+    if series is None:
+        return default
+    try:
+        value = series.loc[timestamp]
+    except KeyError:
+        return default
+    if pd.isna(value):
+        return default
+    return value
+
+
+def _capacity_result_fields(
+    signals: DispatchSignals | IDCAdjustmentSignals | AFRRDownSignals,
+    timestamp: pd.Timestamp,
+    position: int,
+    timestep_hours: float,
+    final_planned_mwh: float,
+    soc_mwh: float,
+    etes: ThermalStorage,
+) -> dict[str, object]:
+    reserved_mwh = float(_series_value(signals.reserved_capacity_mwh, timestamp, 0.0))
+    if signals.afrr_capacity_reserved_mw is not None:
+        reserved_mw = float(_series_value(signals.afrr_capacity_reserved_mw, timestamp, 0.0))
+    else:
+        reserved_mw = reserved_mwh / timestep_hours if timestep_hours > 0 else 0.0
+    block_id = str(_series_value(signals.afrr_capacity_block_id, timestamp, ""))
+    block_duration = float(_series_value(signals.afrr_capacity_block_duration_h, timestamp, 0.0))
+    price = float(_series_value(signals.afrr_capacity_price_eur_per_mw_h, timestamp, 0.0))
+    revenue = float(_series_value(signals.afrr_capacity_revenue_eur, timestamp, 0.0))
+    max_charge_mwh = etes.max_power_charge_mw * timestep_hours
+    charge_headroom = max(0.0, max_charge_mwh - float(final_planned_mwh))
+    storage_headroom = max(0.0, etes.max_capacity_mwh - float(soc_mwh)) / etes.efficiency_charge
+    return {
+        "afrr_capacity_block_id": block_id,
+        "afrr_capacity_block_duration_h": block_duration,
+        "afrr_capacity_down_price_EUR_per_MW_h": price,
+        "afrr_capacity_reserved_MW": reserved_mw,
+        "afrr_capacity_reserved_MWh": reserved_mwh,
+        "afrr_capacity_revenue_EUR": revenue,
+        "reserved_capacity_headroom_MWh": reserved_mwh,
+        "available_charge_headroom_after_schedule_MWh": charge_headroom,
+        "available_storage_headroom_after_schedule_MWh": storage_headroom,
+    }
 
 
 def _is_infeasible_termination(termination: TerminationCondition) -> bool:
