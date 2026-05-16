@@ -10,6 +10,7 @@ from pathlib import Path
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
+import seaborn as sns
 
 from flexi_mod.visualisation.analytics import (
     calculate_summary_indicators,
@@ -33,7 +34,22 @@ REPORT_STYLE = {
     "legend.fontsize": 9,
     "xtick.labelsize": 9,
     "ytick.labelsize": 9,
+    "axes.edgecolor": "#3A3A3A",
+    "axes.linewidth": 0.8,
+    "figure.facecolor": "white",
+    "axes.facecolor": "white",
 }
+
+_MUTED = sns.color_palette("muted", 10)
+COLOR_GAS = _MUTED[3]
+COLOR_DA = _MUTED[0]
+COLOR_IDC = _MUTED[1]
+COLOR_AFRR = _MUTED[4]
+COLOR_STORAGE = _MUTED[2]
+COLOR_BENCHMARK = _MUTED[3]
+COLOR_CAPACITY = _MUTED[6]
+COLOR_NEUTRAL = "#4A4A4A"
+COLOR_LIGHT_NEUTRAL = "#8A8A8A"
 
 
 def create_all_plots_from_output(
@@ -78,7 +94,11 @@ def create_case_plots(
 ) -> list[Path]:
     """Create the standard FlexIMOD plotting suite."""
 
-    with plt.rc_context(REPORT_STYLE):
+    with (
+        sns.axes_style("whitegrid"),
+        sns.plotting_context("notebook"),
+        plt.rc_context(REPORT_STYLE),
+    ):
         output_dir = Path(output_dir)
         plot_dir = create_output_dir(output_dir)
         dispatch = ensure_datetime_index(dispatch_results)
@@ -160,7 +180,7 @@ def plot_operation_and_storage_dynamics(
         sharex=True,
         gridspec_kw={"height_ratios": [2.0, 1.25]},
     )
-    ax.plot(dispatch.index, dispatch["heat_demand_MWh"], color="black", label="Heat demand")
+    ax.plot(dispatch.index, dispatch["heat_demand_MWh"], color=COLOR_NEUTRAL, label="Heat demand")
     gas_heat = dispatch["gas_heat_MWh"].fillna(0.0)
     storage_discharge = dispatch["etes_discharge_MWh"].fillna(0.0)
 
@@ -171,6 +191,7 @@ def plot_operation_and_storage_dynamics(
         dispatch.index,
         *stack_values,
         labels=labels,
+        colors=[COLOR_GAS, COLOR_STORAGE],
         alpha=0.78,
     )
     ax.set_title("Plant operation and storage dynamics")
@@ -207,7 +228,7 @@ def plot_storage_operation_soc(
         dispatch["etes_charge_MWh"],
         width=width,
         label="ETES charge",
-        color="tab:blue",
+        color=COLOR_DA,
         alpha=0.65,
     )
     ax.bar(
@@ -215,16 +236,16 @@ def plot_storage_operation_soc(
         -dispatch["etes_discharge_MWh"],
         width=width,
         label="ETES discharge",
-        color="tab:orange",
+        color=COLOR_STORAGE,
         alpha=0.65,
     )
-    ax.axhline(0, color="black", linewidth=0.8)
+    ax.axhline(0, color=COLOR_NEUTRAL, linewidth=0.8)
     ax.set_title("Storage operation and state of charge")
     ax.set_ylabel("Charge/discharge per time step [MWh]")
     ax.set_xlabel("Time")
 
     ax2 = ax.twinx()
-    ax2.plot(dispatch.index, dispatch["etes_soc_MWh"], color="tab:green", label="ETES SoC")
+    ax2.plot(dispatch.index, dispatch["etes_soc_MWh"], color=COLOR_STORAGE, label="ETES SoC")
     ax2.set_ylabel("State of charge [MWh_th]")
     _combined_legend(ax, ax2)
     _format_datetime_axis(ax)
@@ -249,15 +270,15 @@ def plot_market_prices_and_benchmark(
             dispatch.index,
             dispatch["day_ahead_price_EUR_per_MWh_el"],
             label="Day-ahead price",
-            color="tab:blue",
+            color=COLOR_DA,
         )
         plotted = True
     else:
         warn_missing("day_ahead_price_EUR_per_MWh_el", "market prices plot")
 
     for column, label, color in [
-        ("intraday_price_EUR_per_MWh_el", "IDC price", "tab:orange"),
-        ("afrr_energy_price_EUR_per_MWh_el", "aFRR energy price", "tab:purple"),
+        ("intraday_price_EUR_per_MWh_el", "IDC price", COLOR_IDC),
+        ("afrr_energy_price_EUR_per_MWh_el", "aFRR energy price", COLOR_AFRR),
     ]:
         if column in dispatch.columns and dispatch[column].notna().any():
             ax.plot(dispatch.index, dispatch[column], label=label, color=color, alpha=0.9)
@@ -271,7 +292,7 @@ def plot_market_prices_and_benchmark(
             benchmark.index,
             benchmark,
             label="Gas-based heat benchmark",
-            color="tab:red",
+            color=COLOR_BENCHMARK,
             linewidth=1.8,
         )
         plotted = True
@@ -302,31 +323,39 @@ def plot_electricity_procurement_by_market(
         return []
 
     fig, ax = plt.subplots()
-    width = _bar_width(market.index)
     positive_columns = [
-        ("day_ahead_position_MWh_el", "Day-ahead"),
-        ("intraday_buy_MWh_el", "IDC buy"),
-        ("afrr_energy_activated_MWh_el", "aFRR activated"),
+        ("day_ahead_position_MWh_el", "Day-ahead", COLOR_DA),
+        ("intraday_buy_MWh_el", "IDC buy", COLOR_IDC),
+        ("afrr_energy_activated_MWh_el", "aFRR activated", COLOR_AFRR),
     ]
     bottom = pd.Series(0.0, index=market.index)
     plotted = False
-    for column, label in positive_columns:
+    for column, label, color in positive_columns:
         if column in market.columns:
             values = market[column].fillna(0.0).astype(float)
-            ax.bar(market.index, values, width=width, bottom=bottom, label=label, alpha=0.72)
+            _fill_between_series(
+                ax,
+                market.index,
+                bottom + values,
+                lower=bottom,
+                color=color,
+                alpha=0.62,
+                label=label,
+            )
             bottom += values
             plotted = True
         else:
             warn_missing(column, "electricity procurement plot")
 
     if "intraday_sell_MWh_el" in market.columns:
-        ax.bar(
+        idc_sell = market["intraday_sell_MWh_el"].fillna(0.0).astype(float)
+        _fill_between_series(
+            ax,
             market.index,
-            -market["intraday_sell_MWh_el"].fillna(0.0).astype(float),
-            width=width,
+            -idc_sell,
+            color=COLOR_GAS,
+            alpha=0.58,
             label="IDC sell/reduction",
-            color="tab:red",
-            alpha=0.62,
         )
     else:
         warn_missing("intraday_sell_MWh_el", "electricity procurement plot")
@@ -335,7 +364,7 @@ def plot_electricity_procurement_by_market(
         plt.close(fig)
         return []
 
-    ax.axhline(0, color="black", linewidth=0.8)
+    ax.axhline(0, color=COLOR_NEUTRAL, linewidth=0.8)
     ax.set_title("Electricity procurement by market over time")
     ax.set_ylabel("Electricity per time step [MWh_el]")
     ax.set_xlabel("Time")
@@ -371,10 +400,17 @@ def plot_storage_content_by_market_source(
             content.index,
             *[content[column].fillna(0.0) for column in content.columns],
             labels=list(content.columns),
+            colors=sns.color_palette("muted", len(content.columns)),
             alpha=0.82,
         )
     if total_soc is not None:
-        ax.plot(total_soc.index, total_soc, color="black", linewidth=1.2, label="Total ETES SoC")
+        ax.plot(
+            total_soc.index,
+            total_soc,
+            color=COLOR_NEUTRAL,
+            linewidth=1.2,
+            label="Total ETES SoC",
+        )
 
     ax.set_title("Storage content by source market")
     ax.set_ylabel("Stored heat [MWh_th]")
@@ -461,7 +497,7 @@ def plot_cost_breakdown(
         return []
 
     fig, ax = plt.subplots(figsize=(11, 5.5))
-    colors = ["tab:blue" if value >= 0 else "tab:green" for value in values]
+    colors = [COLOR_DA if value >= 0 else COLOR_STORAGE for value in values]
     ax.bar(labels, values, color=colors, alpha=0.8)
     ax.set_title("Cost and value breakdown")
     ax.set_ylabel("EUR")
@@ -490,7 +526,8 @@ def plot_heat_supply_share(
     fig, ax = plt.subplots(figsize=(10, 3.5))
     left = 0.0
     for label, value in values:
-        ax.barh(["Heat supply"], [value], left=left, label=label, alpha=0.8)
+        color = COLOR_GAS if "Gas" in label else COLOR_STORAGE
+        ax.barh(["Heat supply"], [value], left=left, label=label, color=color, alpha=0.8)
         left += value
     ax.set_title("Heat supply share")
     ax.set_xlabel("Heat supplied [MWh_th]")
@@ -530,10 +567,16 @@ def plot_electricity_market_share(
     fig, ax = plt.subplots(figsize=(10, 3.8))
     left = 0.0
     for label, value in values:
-        ax.barh(["Market procurement"], [value], left=left, label=label, alpha=0.8)
+        color = {
+            "Day-ahead": COLOR_DA,
+            "IDC buy": COLOR_IDC,
+            "IDC sell/reduction": COLOR_GAS,
+            "aFRR activated": COLOR_AFRR,
+        }.get(label, COLOR_LIGHT_NEUTRAL)
+        ax.barh(["Market procurement"], [value], left=left, label=label, color=color, alpha=0.8)
         left += value
     if actual:
-        ax.axvline(actual, color="black", linewidth=1.5, label="Actual consumption")
+        ax.axvline(actual, color=COLOR_NEUTRAL, linewidth=1.5, label="Actual consumption")
     ax.set_title("Electricity market share")
     ax.set_xlabel("Electricity [MWh_el]")
     ax.legend(loc="best")
@@ -564,14 +607,14 @@ def plot_price_response_storage_charging(
         dispatch["etes_charge_MWh"],
         s=18,
         alpha=0.65,
-        color="tab:blue",
+        color=COLOR_DA,
         label="ETES charging",
     )
     benchmark = derive_gas_benchmark(dispatch_results)
     if benchmark is not None:
         ax.axvline(
             float(benchmark.mean()),
-            color="tab:red",
+            color=COLOR_BENCHMARK,
             linestyle="--",
             label="Average gas benchmark",
         )
@@ -632,7 +675,7 @@ def plot_sequential_market_position_evolution(
         axes[0],
         market.index,
         day_ahead,
-        color="tab:blue",
+        color=COLOR_DA,
         alpha=0.22,
         label="Day-ahead position",
     )
@@ -640,19 +683,19 @@ def plot_sequential_market_position_evolution(
         market.index,
         day_ahead,
         where="post",
-        color="tab:blue",
+        color=COLOR_DA,
         linewidth=1.3,
         label="DA position",
     )
     axes[0].set_title("Day-ahead position")
     axes[0].set_ylabel("MWh_el")
-    axes[0].axhline(0, color="black", linewidth=0.8)
+    axes[0].axhline(0, color=COLOR_NEUTRAL, linewidth=0.8)
 
     _fill_between_series(
         axes[1],
         market.index,
         day_ahead,
-        color="tab:blue",
+        color=COLOR_DA,
         alpha=0.18,
         label="DA baseline",
     )
@@ -661,7 +704,7 @@ def plot_sequential_market_position_evolution(
         market.index,
         day_ahead + intraday_buy,
         lower=day_ahead,
-        color="tab:orange",
+        color=COLOR_IDC,
         alpha=0.34,
         label="IDC buy addition",
     )
@@ -669,7 +712,7 @@ def plot_sequential_market_position_evolution(
         axes[1],
         market.index,
         -intraday_sell,
-        color="tab:red",
+        color=COLOR_GAS,
         alpha=0.28,
         label="IDC sell/reduction",
     )
@@ -677,7 +720,7 @@ def plot_sequential_market_position_evolution(
         market.index,
         day_ahead,
         where="post",
-        color="tab:blue",
+        color=COLOR_DA,
         linewidth=1.0,
         alpha=0.65,
         label="DA baseline line",
@@ -686,11 +729,11 @@ def plot_sequential_market_position_evolution(
         market.index,
         scheduled,
         where="post",
-        color="black",
+        color=COLOR_NEUTRAL,
         linewidth=1.3,
         label="Scheduled DA+IDC",
     )
-    axes[1].axhline(0, color="black", linewidth=0.8)
+    axes[1].axhline(0, color=COLOR_NEUTRAL, linewidth=0.8)
     axes[1].set_title("After intraday adjustment")
     axes[1].set_ylabel("MWh_el")
 
@@ -698,7 +741,7 @@ def plot_sequential_market_position_evolution(
         axes[2],
         market.index,
         scheduled,
-        color="tab:blue",
+        color=COLOR_DA,
         alpha=0.18,
         label="Scheduled DA+IDC",
     )
@@ -707,7 +750,7 @@ def plot_sequential_market_position_evolution(
         market.index,
         actual,
         lower=scheduled,
-        color="tab:purple",
+        color=COLOR_AFRR,
         alpha=0.32,
         label="aFRR down activation",
     )
@@ -715,7 +758,7 @@ def plot_sequential_market_position_evolution(
         market.index,
         scheduled,
         where="post",
-        color="tab:blue",
+        color=COLOR_DA,
         linewidth=1.0,
         alpha=0.7,
         label="Scheduled DA+IDC line",
@@ -724,11 +767,11 @@ def plot_sequential_market_position_evolution(
         market.index,
         actual,
         where="post",
-        color="black",
+        color=COLOR_NEUTRAL,
         linewidth=1.3,
         label="Actual consumption",
     )
-    axes[2].axhline(0, color="black", linewidth=0.8)
+    axes[2].axhline(0, color=COLOR_NEUTRAL, linewidth=0.8)
     axes[2].set_title("After aFRR down energy activation")
     axes[2].set_ylabel("MWh_el")
     axes[2].set_xlabel("Time")
@@ -741,7 +784,7 @@ def plot_sequential_market_position_evolution(
             axes[3],
             gas_heat.index,
             gas_heat,
-            color="tab:red",
+            color=COLOR_GAS,
             alpha=0.2,
             label="Gas boiler heat",
         )
@@ -749,7 +792,7 @@ def plot_sequential_market_position_evolution(
             gas_heat.index,
             gas_heat,
             where="post",
-            color="tab:red",
+            color=COLOR_GAS,
             linestyle="--",
             linewidth=1.1,
             label="Gas boiler heat line",
@@ -823,7 +866,7 @@ def plot_idc_sell_source_and_compensation(
         axes[0],
         market.index,
         _only_when(da_position, sell_mask),
-        color="tab:blue",
+        color=COLOR_DA,
         alpha=0.16,
         label="Available DA position during IDC sell",
     )
@@ -831,7 +874,7 @@ def plot_idc_sell_source_and_compensation(
         axes[0],
         market.index,
         _only_when(da_sold_in_idc, sell_mask),
-        color="tab:red",
+        color=COLOR_GAS,
         alpha=0.38,
         label="DA electricity sold/reduced in IDC",
     )
@@ -839,7 +882,7 @@ def plot_idc_sell_source_and_compensation(
         market.index,
         _only_when(da_sold_in_idc, sell_mask),
         where="post",
-        color="tab:red",
+        color=COLOR_GAS,
         linewidth=1.2,
         label="IDC sell volume",
     )
@@ -850,7 +893,7 @@ def plot_idc_sell_source_and_compensation(
         axes[1],
         market.index,
         _only_when(remaining_da, sell_mask),
-        color="tab:blue",
+        color=COLOR_DA,
         alpha=0.18,
         label="Remaining DA electricity",
     )
@@ -859,7 +902,7 @@ def plot_idc_sell_source_and_compensation(
         market.index,
         _only_when(remaining_da + idc_buy, sell_mask),
         lower=_only_when(remaining_da, sell_mask),
-        color="tab:orange",
+        color=COLOR_IDC,
         alpha=0.28,
         label="IDC buy electricity",
     )
@@ -868,7 +911,7 @@ def plot_idc_sell_source_and_compensation(
         market.index,
         _only_when(remaining_da + idc_buy + afrr_activated, sell_mask),
         lower=_only_when(remaining_da + idc_buy, sell_mask),
-        color="tab:green",
+        color=COLOR_AFRR,
         alpha=0.3,
         label="aFRR activated electricity",
     )
@@ -879,7 +922,7 @@ def plot_idc_sell_source_and_compensation(
         axes[2],
         market.index,
         _only_when(gas_heat, sell_mask),
-        color="tab:red",
+        color=COLOR_GAS,
         alpha=0.25,
         label="Gas boiler heat",
     )
@@ -888,7 +931,7 @@ def plot_idc_sell_source_and_compensation(
         market.index,
         _only_when(gas_heat + storage_discharge, sell_mask),
         lower=_only_when(gas_heat, sell_mask),
-        color="tab:green",
+        color=COLOR_STORAGE,
         alpha=0.22,
         label="Storage discharge heat",
     )
@@ -897,7 +940,7 @@ def plot_idc_sell_source_and_compensation(
     axes[2].set_xlabel("Time")
 
     for ax in axes:
-        ax.axhline(0, color="black", linewidth=0.8)
+        ax.axhline(0, color=COLOR_NEUTRAL, linewidth=0.8)
         _legend_if_present(ax)
     _format_datetime_axis(axes[-1])
     fig.tight_layout(rect=(0, 0, 1, 0.96))
@@ -958,7 +1001,7 @@ def plot_stagewise_gas_replacement(
         baseline_label="Gas-only reference heat demand",
         stage_label="Gas after day-ahead",
         replacement_label="Gas replaced by DA electricity/storage",
-        replacement_color="tab:blue",
+        replacement_color=COLOR_DA,
         title="Day-ahead stage",
     )
     _draw_gas_replacement_panel(
@@ -969,7 +1012,7 @@ def plot_stagewise_gas_replacement(
         baseline_label="Gas after day-ahead",
         stage_label="Gas after intraday",
         replacement_label="Additional gas replaced by IDC",
-        replacement_color="tab:orange",
+        replacement_color=COLOR_IDC,
         title="Intraday adjustment stage",
         increase_label="Gas restored by IDC sell/reduction",
     )
@@ -981,14 +1024,14 @@ def plot_stagewise_gas_replacement(
         baseline_label="Gas after DA+IDC",
         stage_label="Final gas after aFRR down",
         replacement_label="Additional gas replaced by aFRR down",
-        replacement_color="tab:purple",
+        replacement_color=COLOR_AFRR,
         title="aFRR down energy stage",
     )
     axes[2].set_xlabel("Time")
 
     for ax in axes:
         ax.set_ylabel("Heat per time step [MWh_th]")
-        ax.axhline(0, color="black", linewidth=0.8)
+        ax.axhline(0, color=COLOR_NEUTRAL, linewidth=0.8)
         _legend_if_present(ax)
     _format_datetime_axis(axes[-1])
     fig.tight_layout(rect=(0, 0, 1, 0.96))
@@ -1015,7 +1058,13 @@ def plot_afrr_capacity_price_and_reserve(
 
     fig, ax = plt.subplots()
     reserve = market["afrr_capacity_reserved_MW"].fillna(0.0)
-    ax.step(market.index, reserve, where="post", label="Reserved aFRR down capacity")
+    ax.step(
+        market.index,
+        reserve,
+        where="post",
+        label="Reserved aFRR down capacity",
+        color=COLOR_CAPACITY,
+    )
     ax.set_ylabel("Reserved capacity [MW]")
     ax.set_title("aFRR down capacity price and reservation")
     ax2 = ax.twinx()
@@ -1023,7 +1072,7 @@ def plot_afrr_capacity_price_and_reserve(
         ax2.plot(
             market.index,
             market["afrr_capacity_down_price_EUR_per_MW_h"],
-            color="tab:orange",
+            color=COLOR_IDC,
             label="Capacity price",
         )
     ax2.set_ylabel("Capacity price [EUR/MW/h]")
@@ -1052,7 +1101,7 @@ def plot_procurement_and_capacity_headroom(
         ax,
         market.index,
         scheduled,
-        color="tab:blue",
+        color=COLOR_DA,
         alpha=0.2,
         label="Scheduled DA+IDC",
     )
@@ -1061,11 +1110,11 @@ def plot_procurement_and_capacity_headroom(
         market.index,
         scheduled + reserve,
         lower=scheduled,
-        color="tab:purple",
+        color=COLOR_CAPACITY,
         alpha=0.28,
         label="Reserved aFRR capacity headroom",
     )
-    ax.step(market.index, actual, where="post", color="black", label="Actual electricity")
+    ax.step(market.index, actual, where="post", color=COLOR_NEUTRAL, label="Actual electricity")
     ax.set_title("Electricity procurement and reserved aFRR headroom")
     ax.set_ylabel("Electricity per time step [MWh_el]")
     ax.set_xlabel("Time")
@@ -1100,14 +1149,14 @@ def plot_afrr_capacity_and_energy(
     system_mw = _column_or_zero(market, "afrr_system_activation_MWh_el") / _plot_timestep_hours(
         market.index
     )
-    ax.step(market.index, reserve, where="post", label="Reserved capacity", color="tab:purple")
-    ax.step(market.index, activation_mw, where="post", label="Plant activation", color="tab:green")
+    ax.step(market.index, reserve, where="post", label="Reserved capacity", color=COLOR_CAPACITY)
+    ax.step(market.index, activation_mw, where="post", label="Plant activation", color=COLOR_AFRR)
     ax.step(
         market.index,
         system_mw,
         where="post",
         label="System activation proxy",
-        color="tab:gray",
+        color=COLOR_LIGHT_NEUTRAL,
         alpha=0.8,
     )
     ax.set_title("aFRR down capacity and energy activation")
@@ -1118,7 +1167,7 @@ def plot_afrr_capacity_and_energy(
         ax2.plot(
             market.index,
             market["afrr_energy_price_EUR_per_MWh_el"],
-            color="tab:orange",
+            color=COLOR_IDC,
             alpha=0.8,
             label="aFRR energy price",
         )
@@ -1140,18 +1189,18 @@ def _sample_day_prices_panel(
             price_frame.index,
             price_frame["day_ahead_price_EUR_per_MWh_el"],
             label="DA price",
-            color="tab:blue",
+            color=COLOR_DA,
         )
     for column, label, color in [
-        ("intraday_price_EUR_per_MWh_el", "IDC price", "tab:orange"),
-        ("afrr_energy_price_EUR_per_MWh_el", "aFRR energy price", "tab:purple"),
+        ("intraday_price_EUR_per_MWh_el", "IDC price", COLOR_IDC),
+        ("afrr_energy_price_EUR_per_MWh_el", "aFRR energy price", COLOR_AFRR),
     ]:
         if column in price_frame.columns and price_frame[column].notna().any():
             ax.plot(price_frame.index, price_frame[column], label=label, color=color)
     benchmark = derive_gas_benchmark(full_dispatch)
     if benchmark is not None:
         benchmark = benchmark.loc[dispatch.index.min() : dispatch.index.max()]
-        ax.plot(benchmark.index, benchmark, label="Gas benchmark", color="tab:red")
+        ax.plot(benchmark.index, benchmark, label="Gas benchmark", color=COLOR_BENCHMARK)
     ax.set_ylabel("EUR/MWh")
     ax.set_title("Market prices and benchmark")
 
@@ -1169,7 +1218,18 @@ def _sample_day_procurement_panel(ax: plt.Axes, market: pd.DataFrame) -> None:
     ]:
         if column in market.columns:
             values = market[column].fillna(0.0).astype(float)
-            ax.bar(market.index, values, width=width, bottom=bottom, label=label, alpha=0.7)
+            color = {"DA": COLOR_DA, "IDC buy": COLOR_IDC, "aFRR activated": COLOR_AFRR}.get(
+                label, COLOR_LIGHT_NEUTRAL
+            )
+            ax.bar(
+                market.index,
+                values,
+                width=width,
+                bottom=bottom,
+                label=label,
+                color=color,
+                alpha=0.7,
+            )
             bottom += values
     if "intraday_sell_MWh_el" in market.columns:
         ax.bar(
@@ -1177,13 +1237,14 @@ def _sample_day_procurement_panel(ax: plt.Axes, market: pd.DataFrame) -> None:
             -market["intraday_sell_MWh_el"].fillna(0.0).astype(float),
             width=width,
             label="IDC sell",
+            color=COLOR_GAS,
             alpha=0.55,
         )
     if "actual_electricity_consumption_MWh_el" in market.columns:
         ax.plot(
             market.index,
             market["actual_electricity_consumption_MWh_el"],
-            color="black",
+            color=COLOR_NEUTRAL,
             label="Actual consumption",
         )
     ax.set_ylabel("MWh_el")
@@ -1192,7 +1253,12 @@ def _sample_day_procurement_panel(ax: plt.Axes, market: pd.DataFrame) -> None:
 
 def _sample_day_heat_panel(ax: plt.Axes, dispatch: pd.DataFrame) -> None:
     if "heat_demand_MWh" in dispatch.columns:
-        ax.plot(dispatch.index, dispatch["heat_demand_MWh"], color="black", label="Heat demand")
+        ax.plot(
+            dispatch.index,
+            dispatch["heat_demand_MWh"],
+            color=COLOR_NEUTRAL,
+            label="Heat demand",
+        )
     stack_columns = [
         column for column in ["gas_heat_MWh", "etes_discharge_MWh"] if column in dispatch
     ]
@@ -1205,6 +1271,9 @@ def _sample_day_heat_panel(ax: plt.Axes, dispatch: pd.DataFrame) -> None:
             dispatch.index,
             *[dispatch[column].fillna(0.0) for column in stack_columns],
             labels=[labels[column] for column in stack_columns],
+            colors=[
+                COLOR_GAS if column == "gas_heat_MWh" else COLOR_STORAGE for column in stack_columns
+            ],
             alpha=0.78,
         )
     ax.set_ylabel("MWh_th")
@@ -1214,20 +1283,28 @@ def _sample_day_heat_panel(ax: plt.Axes, dispatch: pd.DataFrame) -> None:
 def _sample_day_storage_panel(ax: plt.Axes, dispatch: pd.DataFrame) -> None:
     width = _bar_width(dispatch.index)
     if "etes_charge_MWh" in dispatch.columns:
-        ax.bar(dispatch.index, dispatch["etes_charge_MWh"], width=width, label="Charge", alpha=0.7)
+        ax.bar(
+            dispatch.index,
+            dispatch["etes_charge_MWh"],
+            width=width,
+            label="Charge",
+            color=COLOR_DA,
+            alpha=0.7,
+        )
     if "etes_discharge_MWh" in dispatch.columns:
         ax.bar(
             dispatch.index,
             -dispatch["etes_discharge_MWh"],
             width=width,
             label="Discharge",
+            color=COLOR_STORAGE,
             alpha=0.7,
         )
     ax.set_ylabel("MWh")
     ax.set_title("Storage operation")
     if "etes_soc_MWh" in dispatch.columns:
         ax2 = ax.twinx()
-        ax2.plot(dispatch.index, dispatch["etes_soc_MWh"], color="tab:green", label="SoC")
+        ax2.plot(dispatch.index, dispatch["etes_soc_MWh"], color=COLOR_STORAGE, label="SoC")
         ax2.set_ylabel("SoC [MWh_th]")
         _combined_legend(ax, ax2)
 
@@ -1249,7 +1326,7 @@ def _draw_storage_operation_panel(ax: plt.Axes, dispatch: pd.DataFrame) -> None:
         ax.plot(
             dispatch.index,
             dispatch["etes_discharge_MWh"].fillna(0.0),
-            color="tab:orange",
+            color=COLOR_STORAGE,
             linewidth=1.5,
             label="Storage discharge",
         )
@@ -1260,14 +1337,14 @@ def _draw_storage_operation_panel(ax: plt.Axes, dispatch: pd.DataFrame) -> None:
         ax.plot(
             dispatch.index,
             -dispatch["etes_charge_MWh"].fillna(0.0),
-            color="tab:blue",
+            color=COLOR_DA,
             linewidth=1.5,
             label="Storage charge",
         )
     else:
         warn_missing("etes_charge_MWh", "storage operation panel")
 
-    ax.axhline(0, color="black", linewidth=0.8)
+    ax.axhline(0, color=COLOR_NEUTRAL, linewidth=0.8)
     ax.set_ylabel("Storage flow [MWh]\ncharge below zero")
     ax.set_title("Storage operation")
 
@@ -1278,11 +1355,11 @@ def _draw_storage_operation_panel(ax: plt.Axes, dispatch: pd.DataFrame) -> None:
             dispatch.index,
             0,
             soc,
-            color="tab:green",
+            color=COLOR_STORAGE,
             alpha=0.18,
             label="Storage SoC",
         )
-        ax2.plot(dispatch.index, soc, color="tab:green", linewidth=1.0, alpha=0.75)
+        ax2.plot(dispatch.index, soc, color=COLOR_STORAGE, linewidth=1.0, alpha=0.75)
         ax2.set_ylabel("SoC [MWh_th]")
         _combined_legend(ax, ax2)
     else:
@@ -1326,7 +1403,7 @@ def _draw_gas_replacement_panel(
             index,
             increase_upper,
             lower=increase_lower,
-            color="tab:red",
+            color=COLOR_GAS,
             alpha=0.2,
             label=increase_label,
         )
@@ -1335,7 +1412,7 @@ def _draw_gas_replacement_panel(
         index,
         baseline,
         where="post",
-        color="tab:gray",
+        color=COLOR_LIGHT_NEUTRAL,
         linestyle="--",
         linewidth=1.1,
         label=baseline_label,
@@ -1344,7 +1421,7 @@ def _draw_gas_replacement_panel(
         index,
         stage,
         where="post",
-        color="tab:red",
+        color=COLOR_GAS,
         linewidth=1.3,
         label=stage_label,
     )
