@@ -68,6 +68,8 @@ def test_market_ledger_schema_uses_energy_economics_terms() -> None:
         "afrr_energy_activated_MWh_el",
         "afrr_energy_price_EUR_per_MWh_el",
         "afrr_system_activation_MWh_el",
+        "useful_heat_cap_binding",
+        "curtailed_proxy_activation_due_to_heat_cap_MWh",
         "afrr_capacity_block_id",
         "afrr_capacity_block_duration_h",
         "afrr_capacity_down_price_EUR_per_MW_h",

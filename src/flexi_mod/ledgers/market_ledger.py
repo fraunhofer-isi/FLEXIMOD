@@ -31,6 +31,8 @@ MARKET_LEDGER_COLUMNS = [
     "afrr_energy_activated_MWh_el",
     "afrr_energy_price_EUR_per_MWh_el",
     "afrr_system_activation_MWh_el",
+    "useful_heat_cap_binding",
+    "curtailed_proxy_activation_due_to_heat_cap_MWh",
     "afrr_capacity_block_id",
     "afrr_capacity_block_duration_h",
     "afrr_capacity_down_price_EUR_per_MW_h",
@@ -56,6 +58,8 @@ ZERO_COLUMNS = [
     "afrr_energy_bid_MWh_el",
     "afrr_energy_activated_MWh_el",
     "afrr_system_activation_MWh_el",
+    "useful_heat_cap_binding",
+    "curtailed_proxy_activation_due_to_heat_cap_MWh",
     "afrr_capacity_block_duration_h",
     "afrr_capacity_down_price_EUR_per_MW_h",
     "afrr_capacity_reserved_MW",
@@ -175,6 +179,12 @@ def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[s
             pd.NA,
         ),
         "afrr_system_activation_MWh_el": _value(row, "afrr_system_activation_MWh", 0.0),
+        "useful_heat_cap_binding": _value(row, "useful_heat_cap_binding", 0.0),
+        "curtailed_proxy_activation_due_to_heat_cap_MWh": _value(
+            row,
+            "curtailed_proxy_activation_due_to_heat_cap_MWh",
+            0.0,
+        ),
         "afrr_capacity_block_id": str(
             row["afrr_capacity_block_id"] if "afrr_capacity_block_id" in row.index else ""
         ),

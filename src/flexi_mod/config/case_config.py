@@ -164,6 +164,23 @@ class CaseConfig:
                     raise ConfigError("Enabled afrr_capacity market must define signals.price")
                 if str(market.get("price_unit", "EUR_per_MW_per_h")) != "EUR_per_MW_per_h":
                     raise ConfigError("afrr_capacity.price_unit must be 'EUR_per_MW_per_h'")
+                afrr_energy = markets.get("afrr_energy", {})
+                if "afrr_energy" not in self.market_sequence:
+                    raise ConfigError(
+                        "Enabled afrr_capacity requires afrr_energy in market_sequence"
+                    )
+                if not bool(afrr_energy.get("enabled", False)):
+                    raise ConfigError(
+                        "Enabled afrr_capacity requires afrr_energy.enabled=true so "
+                        "capacity-backed activation can use cleaned aFRR energy data"
+                    )
+                afrr_energy_signals = afrr_energy.get("signals", {})
+                if "price" not in afrr_energy_signals:
+                    raise ConfigError("Enabled afrr_capacity requires afrr_energy.signals.price")
+                if "system_activation" not in afrr_energy_signals:
+                    raise ConfigError(
+                        "Enabled afrr_capacity requires afrr_energy.signals.system_activation"
+                    )
         self._validate_market_order()
 
     def _validate_market_order(self) -> None:

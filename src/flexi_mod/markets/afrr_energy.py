@@ -144,16 +144,17 @@ def prepare_afrr_down_energy_data(
             stacklevel=2,
         )
 
+    activation_without_price = missing_price & nonzero_quantity
     clean = pd.DataFrame(
         {
             "afrr_energy_down_price_EUR_per_MWh": price.fillna(0.0),
             "afrr_price_available": ~missing_price,
             "afrr_system_activation_MWh": clean_activation_mwh.clip(lower=0.0),
+            "afrr_activation_without_price": activation_without_price,
         },
         index=forecasts.index,
     )
 
-    activation_without_price = missing_price & nonzero_quantity
     valid_activation = (~missing_price) & nonzero_quantity
     price_zero_with_activation = price.eq(0.0) & valid_activation
 

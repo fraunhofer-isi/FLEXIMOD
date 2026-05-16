@@ -42,6 +42,7 @@ class HybridETESGasStrategy(BaseStrategy):
         self.config = config
         self.afrr_energy_data_quality_summary = pd.DataFrame()
         self.afrr_capacity_block_summary = pd.DataFrame()
+        self._afrr_down_energy_data_cache = {}
 
     def required_forecast_columns(self) -> set[str]:
         required = {GAS_PRICE_SIGNAL}
@@ -159,8 +160,7 @@ class HybridETESGasStrategy(BaseStrategy):
         product_rules = afrr_market.product_rules
         min_bid_mw = float(product_rules.get("min_bid_mw", 0.0))
 
-        cleaned = afrr_market.prepare_market_data(forecasts, timestep_hours=timestep_hours)
-        self.afrr_energy_data_quality_summary = cleaned.quality_summary
+        cleaned = self._prepare_afrr_down_energy_data(forecasts, timestep_hours)
         clean_afrr = cleaned.frame
 
         da_position = self._series_from_fixed_positions(
@@ -241,14 +241,16 @@ class HybridETESGasStrategy(BaseStrategy):
             # extra aFRR energy bids above this mandatory capacity-backed volume
             # when additional ETES headroom and attractive energy prices are available.
             bid_upper_bound = capacity_backed_bid
-            activated = self._strict_capacity_backed_afrr_activation(
-                plant=plant,
-                forecasts=forecasts,
-                final_planned=final_planned,
-                capacity_backed_bid=capacity_backed_bid,
-                system_activation_mwh=clean_afrr["afrr_system_activation_MWh"],
-                baseline_storage_soc=baseline_storage_soc,
-                baseline_gas_heat=baseline_gas_heat,
+            activated, useful_heat_cap_binding, curtailed_activation = (
+                self._strict_capacity_backed_afrr_activation(
+                    plant=plant,
+                    forecasts=forecasts,
+                    final_planned=final_planned,
+                    capacity_backed_bid=capacity_backed_bid,
+                    system_activation_mwh=clean_afrr["afrr_system_activation_MWh"],
+                    baseline_storage_soc=baseline_storage_soc,
+                    baseline_gas_heat=baseline_gas_heat,
+                )
             )
         else:
             bid_upper_bound, activated = self._strict_afrr_down_offer_and_activation(
@@ -263,6 +265,8 @@ class HybridETESGasStrategy(BaseStrategy):
                 min_bid_mw=min_bid_mw,
                 timestep_hours=timestep_hours,
             )
+            useful_heat_cap_binding = pd.Series(False, index=forecasts.index)
+            curtailed_activation = pd.Series(0.0, index=forecasts.index)
 
         signals = AFRRDownSignals(
             da_price_col=da_price_col,
@@ -276,6 +280,8 @@ class HybridETESGasStrategy(BaseStrategy):
             afrr_system_activation_mwh=clean_afrr["afrr_system_activation_MWh"],
             afrr_energy_bid_mwh=bid_upper_bound,
             afrr_energy_activated_mwh=activated,
+            useful_heat_cap_binding=useful_heat_cap_binding,
+            curtailed_proxy_activation_due_to_heat_cap_mwh=curtailed_activation,
             gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
@@ -346,7 +352,7 @@ class HybridETESGasStrategy(BaseStrategy):
         system_activation_mwh: pd.Series,
         baseline_storage_soc: pd.Series,
         baseline_gas_heat: pd.Series,
-    ) -> pd.Series:
+    ) -> tuple[pd.Series, pd.Series, pd.Series]:
         """Assign capacity-backed proxy activation only when useful heat remains feasible.
 
         Capacity reservation reports the plant's availability. The system activation signal is
@@ -357,6 +363,8 @@ class HybridETESGasStrategy(BaseStrategy):
         timestep_hours = self.config.timestep_minutes / 60.0
         max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours
         activated_values: list[float] = []
+        binding_values: list[bool] = []
+        curtailed_values: list[float] = []
 
         for timestamp in forecasts.index:
             planned_charge = max(0.0, float(final_planned.loc[timestamp]))
@@ -369,19 +377,47 @@ class HybridETESGasStrategy(BaseStrategy):
             useful_heat_replacement_el = useful_extra_heat_outlet / (
                 plant.etes.efficiency_charge * plant.etes.efficiency_discharge
             )
+            capacity_backed_activation = max(0.0, float(capacity_backed_bid.loc[timestamp]))
+            system_activation = max(0.0, float(system_activation_mwh.loc[timestamp]))
+            proxy_activation = min(capacity_backed_activation, system_activation)
+            useful_heat_feasibility_cap = max(
+                0.0,
+                min(
+                    power_headroom,
+                    storage_headroom_el,
+                    useful_heat_replacement_el,
+                ),
+            )
             feasible_activation = min(
-                max(0.0, float(capacity_backed_bid.loc[timestamp])),
-                max(0.0, float(system_activation_mwh.loc[timestamp])),
+                proxy_activation,
                 power_headroom,
                 storage_headroom_el,
                 useful_heat_replacement_el,
             )
-            activated_values.append(max(0.0, feasible_activation))
+            activation = max(0.0, feasible_activation)
+            curtailment = max(0.0, proxy_activation - activation)
+            activated_values.append(activation)
+            binding_values.append(
+                proxy_activation > 1e-12 and useful_heat_feasibility_cap < proxy_activation - 1e-12
+            )
+            curtailed_values.append(curtailment)
 
-        return pd.Series(
-            activated_values,
-            index=forecasts.index,
-            name="afrr_energy_activated_MWh",
+        return (
+            pd.Series(
+                activated_values,
+                index=forecasts.index,
+                name="afrr_energy_activated_MWh",
+            ),
+            pd.Series(
+                binding_values,
+                index=forecasts.index,
+                name="useful_heat_cap_binding",
+            ),
+            pd.Series(
+                curtailed_values,
+                index=forecasts.index,
+                name="curtailed_proxy_activation_due_to_heat_cap_MWh",
+            ),
         )
 
     def decide_afrr_capacity(
@@ -400,6 +436,8 @@ class HybridETESGasStrategy(BaseStrategy):
         block_summary = capacity_data.block_summary.copy()
 
         da_price_col = self.config.market_signal("day_ahead", "price")
+        cleaned_afrr_energy = self._prepare_afrr_down_energy_data(forecasts, timestep_hours)
+        afrr_energy = cleaned_afrr_energy.frame
         gas_heat_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         electricity_benchmark = self.calculate_electricity_trading_benchmark(
             plant,
@@ -407,6 +445,13 @@ class HybridETESGasStrategy(BaseStrategy):
         )
         reference_price = forecasts[da_price_col].astype(float)
         opportunity_cost = (electricity_benchmark - reference_price).clip(lower=0.0)
+        activation_price_threshold = electricity_benchmark - AFRR_ENERGY_MARGIN_EUR_PER_MWH
+        activation_relevant = (afrr_energy["afrr_system_activation_MWh"] > 1e-12) | afrr_energy[
+            "afrr_activation_without_price"
+        ].astype(bool)
+        activation_price_allowed = afrr_energy["afrr_price_available"].astype(bool) & (
+            afrr_energy["afrr_energy_down_price_EUR_per_MWh"] <= activation_price_threshold
+        )
 
         max_charge_power_mw = plant.etes.max_power_charge_mw
         min_bid_mw = float(capacity_market.product_rules.get("min_bid_mw", 0.0))
@@ -419,18 +464,42 @@ class HybridETESGasStrategy(BaseStrategy):
             opportunity_cost_block = float(
                 (opportunity_cost.loc[mask] * timestep_hours).sum() / block_duration_h
             )
+            block_relevant = activation_relevant.loc[mask]
+            block_price_allowed = activation_price_allowed.loc[mask]
+            block_without_price = afrr_energy["afrr_activation_without_price"].loc[mask]
+            relevant_timesteps = int(block_relevant.sum())
+            activation_without_price_timesteps = int(block_without_price.sum())
+            price_failed_timesteps = int((block_relevant & ~block_price_allowed).sum())
+            activation_safety_allowed = price_failed_timesteps == 0
+            relevant_with_price = block_relevant & afrr_energy["afrr_price_available"].loc[mask]
+            if relevant_with_price.any():
+                activation_price_margin = (
+                    activation_price_threshold.loc[mask]
+                    - afrr_energy["afrr_energy_down_price_EUR_per_MWh"].loc[mask]
+                )
+                min_activation_price_margin = float(
+                    activation_price_margin.loc[relevant_with_price].min()
+                )
+            else:
+                min_activation_price_margin = float("nan")
             storage_capacity_mw = max(
                 0.0,
                 (plant.etes.max_capacity_mwh - expected_soc)
                 / (plant.etes.efficiency_charge * block_duration_h),
             )
             feasible_capacity = min(max_charge_power_mw, storage_capacity_mw)
-            economic_allowed = (
+            capacity_profitability_allowed = (
                 not bool(block["missing_capacity_price_flag"])
                 and float(block["capacity_price_EUR_per_MW_h"])
                 >= opportunity_cost_block + AFRR_CAPACITY_MARGIN_EUR_PER_MW_H
             )
-            if feasible_capacity < min_bid_mw or not economic_allowed:
+            physical_feasibility_allowed = feasible_capacity >= min_bid_mw
+            economic_allowed = (
+                capacity_profitability_allowed
+                and activation_safety_allowed
+                and physical_feasibility_allowed
+            )
+            if not economic_allowed:
                 reserved_mw = 0.0
             else:
                 reserved_mw = feasible_capacity
@@ -439,6 +508,13 @@ class HybridETESGasStrategy(BaseStrategy):
                 {
                     **block.to_dict(),
                     "opportunity_cost_EUR_per_MW_h": opportunity_cost_block,
+                    "capacity_profitability_check_passed": bool(capacity_profitability_allowed),
+                    "activation_safety_check_passed": bool(activation_safety_allowed),
+                    "activation_relevant_timesteps": relevant_timesteps,
+                    "activation_price_check_failed_timesteps": price_failed_timesteps,
+                    "activation_without_price_timesteps": activation_without_price_timesteps,
+                    "min_activation_price_margin_EUR_per_MWh": min_activation_price_margin,
+                    "physical_feasibility_check_passed": bool(physical_feasibility_allowed),
                     "economic_bid_allowed": bool(economic_allowed),
                     "feasible_capacity_potential_MW": feasible_capacity,
                     "reserved_capacity_MW": reserved_mw,
@@ -473,6 +549,25 @@ class HybridETESGasStrategy(BaseStrategy):
             * timestep_hours
         )
         return enriched
+
+    def _prepare_afrr_down_energy_data(
+        self,
+        forecasts: pd.DataFrame,
+        timestep_hours: float,
+    ):
+        cache_key = (id(forecasts), timestep_hours)
+        if cache_key not in self._afrr_down_energy_data_cache:
+            afrr_energy_market = AFRRDownEnergyMarket(
+                "afrr_energy",
+                self.config.market("afrr_energy"),
+            )
+            self._afrr_down_energy_data_cache[cache_key] = afrr_energy_market.prepare_market_data(
+                forecasts,
+                timestep_hours=timestep_hours,
+            )
+        cleaned = self._afrr_down_energy_data_cache[cache_key]
+        self.afrr_energy_data_quality_summary = cleaned.quality_summary
+        return cleaned
 
     def calculate_gas_based_heat_cost(
         self, plant: SteamGenerationPlant, forecasts: pd.DataFrame

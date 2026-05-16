@@ -77,6 +77,8 @@ class AFRRDownSignals:
     afrr_energy_activated_mwh: pd.Series
     gas_benchmark_eur_per_mwh_th: pd.Series
     electricity_trading_benchmark_eur_per_mwh_el: pd.Series
+    useful_heat_cap_binding: pd.Series | None = None
+    curtailed_proxy_activation_due_to_heat_cap_mwh: pd.Series | None = None
     reserved_capacity_mwh: pd.Series | None = None
     afrr_capacity_block_id: pd.Series | None = None
     afrr_capacity_block_duration_h: pd.Series | None = None
@@ -304,6 +306,13 @@ class SteamGenerationPlant(BasePlant):
                 ],
                 electricity_trading_benchmark_eur_per_mwh_el=(
                     signals.electricity_trading_benchmark_eur_per_mwh_el.loc[horizon.index]
+                ),
+                useful_heat_cap_binding=_optional_loc(
+                    signals.useful_heat_cap_binding, horizon.index
+                ),
+                curtailed_proxy_activation_due_to_heat_cap_mwh=_optional_loc(
+                    signals.curtailed_proxy_activation_due_to_heat_cap_mwh,
+                    horizon.index,
                 ),
                 reserved_capacity_mwh=_optional_loc(signals.reserved_capacity_mwh, horizon.index),
                 afrr_capacity_block_id=_optional_loc(signals.afrr_capacity_block_id, horizon.index),
@@ -1152,6 +1161,16 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_system_activation_MWh": float(signals.afrr_system_activation_mwh.iloc[t]),
                 "afrr_energy_cost_EUR": _value(model.afrr_energy_cost[t]),
                 "afrr_energy_savings_vs_benchmark_EUR": afrr_savings,
+                "useful_heat_cap_binding": bool(
+                    _series_value(signals.useful_heat_cap_binding, timestamp, False)
+                ),
+                "curtailed_proxy_activation_due_to_heat_cap_MWh": float(
+                    _series_value(
+                        signals.curtailed_proxy_activation_due_to_heat_cap_mwh,
+                        timestamp,
+                        0.0,
+                    )
+                ),
                 "electricity_cost_EUR": electricity_cost,
                 "gas_cost_EUR": gas_cost,
                 "co2_cost_EUR": co2_cost,

@@ -115,12 +115,21 @@ solver:
   tee: false
 market_sequence:
   - day_ahead
+  - afrr_energy
   - afrr_capacity
 markets:
   day_ahead:
     enabled: true
     signals:
       price: DE_DA_price
+  afrr_energy:
+    enabled: true
+    direction: down
+    signals:
+      price: aFRR_energy_down_price
+      system_activation: aFRR_energy_down_quantity
+    product_rules:
+      validity_period_minutes: 15
   afrr_capacity:
     enabled: true
     direction: down
@@ -133,4 +142,53 @@ markets:
     )
 
     with pytest.raises(ConfigError, match="before day_ahead"):
+        CaseConfig.from_case_dir(case_dir)
+
+
+def test_enabled_afrr_capacity_requires_enabled_afrr_energy(tmp_path: Path) -> None:
+    case_dir = tmp_path / "capacity_without_energy"
+    case_dir.mkdir()
+    (case_dir / "config.yaml").write_text(
+        """
+case:
+  name: capacity_without_energy
+  country: DE
+  timestep_minutes: 15
+  simulation_start: "2025-01-01 00:00"
+  simulation_end: "2025-01-01 00:45"
+strategy:
+  name: hybrid_etes_gas
+  dispatch:
+    dispatch_method: pyomo
+solver:
+  name: highs
+  fallback_solvers: []
+  tee: false
+market_sequence:
+  - afrr_capacity
+  - day_ahead
+  - afrr_energy
+markets:
+  afrr_capacity:
+    enabled: true
+    direction: down
+    product_length: "4h"
+    price_unit: "EUR_per_MW_per_h"
+    signals:
+      price: aFRR_capacity_down_price
+  day_ahead:
+    enabled: true
+    signals:
+      price: DE_DA_price
+  afrr_energy:
+    enabled: false
+    direction: down
+    signals:
+      price: aFRR_energy_down_price
+      system_activation: aFRR_energy_down_quantity
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="afrr_energy.enabled=true"):
         CaseConfig.from_case_dir(case_dir)
