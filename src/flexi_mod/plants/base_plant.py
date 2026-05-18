@@ -16,6 +16,7 @@ class BasePlant:
     node: str
     objective: str = "min_variable_cost"
     heat_demand_column: str = ""
+    additional_electricity_charge_eur_per_mwh: float = 0.0
 
     @property
     def plant_type(self) -> str:

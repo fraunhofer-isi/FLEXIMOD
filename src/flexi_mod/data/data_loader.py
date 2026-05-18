@@ -24,11 +24,13 @@ class DataLoader:
         input_dir: str | Path | None = None,
         plants_file: str = "plants.csv",
         forecasts_file: str = "forecasts_df.csv",
+        additional_charges_file: str = "additional_charges.csv",
     ):
         self.config = config
         self.input_dir = Path(input_dir).resolve() if input_dir else config.config_path.parent
         self.plants_file = plants_file
         self.forecasts_file = forecasts_file
+        self.additional_charges_file = additional_charges_file
 
     @property
     def plants_path(self) -> Path:
@@ -37,6 +39,10 @@ class DataLoader:
     @property
     def forecasts_path(self) -> Path:
         return self.input_dir / self.forecasts_file
+
+    @property
+    def additional_charges_path(self) -> Path:
+        return self.input_dir / self.additional_charges_file
 
     def load_plants(self) -> pd.DataFrame:
         path = self.plants_path
@@ -56,6 +62,60 @@ class DataLoader:
         plants["name"] = plants["name"].astype(str).str.strip()
         plants["technology"] = plants["technology"].astype(str).str.strip()
         return plants
+
+    def load_additional_charges(self, plants: pd.DataFrame) -> dict[str, float]:
+        """Load plant-specific electricity consumption charge adders.
+
+        The file is required only when ``case.additional_charges`` is true. Values
+        are summed over all component rows and interpreted as EUR/MWh_el consumed.
+        """
+
+        plant_names = sorted(str(name) for name in plants["name"].dropna().unique())
+        if not self.config.additional_charges_enabled:
+            return dict.fromkeys(plant_names, 0.0)
+
+        path = self.additional_charges_path
+        if not path.exists():
+            raise FileNotFoundError(
+                f"case.additional_charges=true but additional_charges.csv was not found at {path}"
+            )
+
+        charges = pd.read_csv(path, skipinitialspace=True)
+        required = {"component", "unit"}
+        missing = required - set(charges.columns)
+        if missing:
+            raise DataValidationError(
+                "additional_charges.csv is missing required column(s): "
+                + ", ".join(sorted(missing))
+            )
+        if charges.empty:
+            raise DataValidationError("additional_charges.csv contains no charge rows")
+
+        units = charges["unit"].astype(str).str.strip()
+        invalid_units = sorted(set(units[units != "EUR/MWh"]))
+        if invalid_units:
+            raise DataValidationError(
+                "additional_charges.csv supports only unit 'EUR/MWh'; found: "
+                + ", ".join(invalid_units)
+            )
+
+        missing_plants = [name for name in plant_names if name not in charges.columns]
+        if missing_plants:
+            raise DataValidationError(
+                "additional_charges.csv is missing plant column(s): " + ", ".join(missing_plants)
+            )
+
+        result: dict[str, float] = {}
+        for plant_name in plant_names:
+            values = pd.to_numeric(charges[plant_name], errors="coerce")
+            if values.isna().any():
+                bad_components = charges.loc[values.isna(), "component"].astype(str).tolist()
+                raise DataValidationError(
+                    f"additional_charges.csv has non-numeric value(s) for plant "
+                    f"'{plant_name}' in component(s): {', '.join(bad_components)}"
+                )
+            result[plant_name] = float(values.sum())
+        return result
 
     def load_forecasts(self, required_columns: set[str] | None = None) -> pd.DataFrame:
         path = self.forecasts_path

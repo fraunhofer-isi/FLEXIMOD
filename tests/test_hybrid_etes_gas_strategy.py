@@ -128,6 +128,47 @@ def test_day_ahead_only_strategy_matches_expected_plant_behaviour(
     assert summary["total_co2_cost_EUR"].iloc[0] == pytest.approx(0.0)
 
 
+def test_additional_charges_enter_strategy_and_electricity_cost(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "additional_charges_strategy_case"
+    case_dir.mkdir()
+    _write_config(case_dir / "config.yaml", additional_charges=True)
+    _write_plants(case_dir / "plants.csv")
+    _write_forecasts(case_dir / "forecasts_df.csv")
+    (case_dir / "additional_charges.csv").write_text(
+        "\n".join(
+            [
+                "component,unit,plant_1",
+                "Network consumption price,EUR/MWh,100.0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    results = _run_case(case_dir, tmp_path)
+    dispatch = results["dispatch"]
+    market = results["market"]
+    summary = results["summary"]
+
+    assert dispatch["additional_electricity_charge_EUR_per_MWh_el"].eq(100.0).all()
+    assert dispatch["day_ahead_delivered_price_EUR_per_MWh"].to_numpy() == pytest.approx(
+        (dispatch["day_ahead_price_EUR_per_MWh"] + 100.0).to_numpy()
+    )
+    assert not dispatch["charge_allowed_by_strategy"].any()
+    assert dispatch["etes_charge_MWh"].sum() == pytest.approx(0.0)
+    assert dispatch["electricity_cost_EUR"].to_numpy() == pytest.approx(
+        (
+            dispatch["electricity_market_cost_EUR"]
+            + dispatch["additional_electricity_charges_cost_EUR"]
+        ).to_numpy()
+    )
+    assert market["day_ahead_delivered_price_EUR_per_MWh_el"].to_numpy() == pytest.approx(
+        (market["day_ahead_price_EUR_per_MWh_el"] + 100.0).to_numpy()
+    )
+    assert summary["total_additional_electricity_charges_cost_EUR"].iloc[0] == pytest.approx(0.0)
+
+
 def test_idc_disabled_keeps_day_ahead_position(
     day_ahead_only_results: dict[str, pd.DataFrame],
 ) -> None:
@@ -712,6 +753,7 @@ def _write_config(
     idc_buy_enabled: bool = True,
     idc_sell_enabled: bool = True,
     afrr_capacity_enabled: bool = False,
+    additional_charges: bool = False,
 ) -> None:
     path.write_text(
         f"""
@@ -723,6 +765,7 @@ case:
   simulation_start: "2025-01-01 00:00"
   simulation_end: "2025-01-01 01:45"
   timezone: "Europe/Berlin"
+  additional_charges: {str(additional_charges).lower()}
 
 strategy:
   name: hybrid_etes_gas

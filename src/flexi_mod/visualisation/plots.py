@@ -265,11 +265,15 @@ def plot_market_prices_and_benchmark(
 
     fig, ax = plt.subplots()
     plotted = False
-    if "day_ahead_price_EUR_per_MWh_el" in dispatch.columns:
+    day_ahead_column = _first_existing(
+        dispatch,
+        ["day_ahead_delivered_price_EUR_per_MWh_el", "day_ahead_price_EUR_per_MWh_el"],
+    )
+    if day_ahead_column:
         ax.plot(
             dispatch.index,
-            dispatch["day_ahead_price_EUR_per_MWh_el"],
-            label="Day-ahead price",
+            dispatch[day_ahead_column],
+            label=_price_label("Day-ahead", day_ahead_column),
             color=COLOR_DA,
         )
         plotted = True
@@ -277,13 +281,36 @@ def plot_market_prices_and_benchmark(
         warn_missing("day_ahead_price_EUR_per_MWh_el", "market prices plot")
 
     for column, label, color in [
-        ("intraday_price_EUR_per_MWh_el", "IDC price", COLOR_IDC),
-        ("afrr_energy_price_EUR_per_MWh_el", "aFRR energy price", COLOR_AFRR),
+        (
+            _first_existing(
+                dispatch,
+                ["intraday_delivered_price_EUR_per_MWh_el", "intraday_price_EUR_per_MWh_el"],
+            ),
+            "IDC",
+            COLOR_IDC,
+        ),
+        (
+            _first_existing(
+                dispatch,
+                [
+                    "afrr_energy_delivered_price_EUR_per_MWh_el",
+                    "afrr_energy_price_EUR_per_MWh_el",
+                ],
+            ),
+            "aFRR energy",
+            COLOR_AFRR,
+        ),
     ]:
         if column in dispatch.columns and dispatch[column].notna().any():
-            ax.plot(dispatch.index, dispatch[column], label=label, color=color, alpha=0.9)
+            ax.plot(
+                dispatch.index,
+                dispatch[column],
+                label=_price_label(label, column),
+                color=color,
+                alpha=0.9,
+            )
         else:
-            warn_missing(column, "market prices plot")
+            warn_missing(f"{label} price", "market prices plot")
 
     benchmark = derive_gas_benchmark(dispatch_results)
     if benchmark is not None:
@@ -477,7 +504,8 @@ def plot_cost_breakdown(
 
     summary = _aggregate_summary(summary_indicators)
     labels_and_columns = [
-        ("Electricity procurement cost", "total_electricity_procurement_cost_EUR"),
+        ("Electricity market cost", "total_electricity_market_cost_EUR"),
+        ("Additional electricity charges", "total_additional_electricity_charges_cost_EUR"),
         ("Gas cost", "total_gas_cost_EUR"),
         ("CO2 cost", "total_co2_cost_EUR"),
         ("IDC trading value", "total_IDC_trading_value_EUR"),
@@ -592,7 +620,12 @@ def plot_price_response_storage_charging(
     dispatch = _aggregate_by_datetime(dispatch_results)
     price_col = _first_existing(
         dispatch,
-        ["day_ahead_price_EUR_per_MWh", "day_ahead_price_EUR_per_MWh_el"],
+        [
+            "day_ahead_delivered_price_EUR_per_MWh",
+            "day_ahead_delivered_price_EUR_per_MWh_el",
+            "day_ahead_price_EUR_per_MWh",
+            "day_ahead_price_EUR_per_MWh_el",
+        ],
     )
     if price_col is None:
         warn_missing("day_ahead_price_EUR_per_MWh", "price response plot")
@@ -622,7 +655,7 @@ def plot_price_response_storage_charging(
         warn_missing("gas_based_heat_benchmark", "price response plot")
 
     ax.set_title("Price response of storage charging")
-    ax.set_xlabel("Electricity price [EUR/MWh]")
+    ax.set_xlabel("Delivered electricity price [EUR/MWh]")
     ax.set_ylabel("ETES charging per time step [MWh_el]")
     ax.legend(loc="best")
     return _save_figure(fig, plot_dir, "10_price_response_storage_charging", file_format, show)
@@ -1184,19 +1217,45 @@ def _sample_day_prices_panel(
     full_dispatch: pd.DataFrame,
 ) -> None:
     price_frame = _price_frame(dispatch, market)
-    if "day_ahead_price_EUR_per_MWh_el" in price_frame.columns:
+    day_ahead_column = _first_existing(
+        price_frame,
+        ["day_ahead_delivered_price_EUR_per_MWh_el", "day_ahead_price_EUR_per_MWh_el"],
+    )
+    if day_ahead_column:
         ax.plot(
             price_frame.index,
-            price_frame["day_ahead_price_EUR_per_MWh_el"],
-            label="DA price",
+            price_frame[day_ahead_column],
+            label=_price_label("DA", day_ahead_column),
             color=COLOR_DA,
         )
     for column, label, color in [
-        ("intraday_price_EUR_per_MWh_el", "IDC price", COLOR_IDC),
-        ("afrr_energy_price_EUR_per_MWh_el", "aFRR energy price", COLOR_AFRR),
+        (
+            _first_existing(
+                price_frame,
+                ["intraday_delivered_price_EUR_per_MWh_el", "intraday_price_EUR_per_MWh_el"],
+            ),
+            "IDC",
+            COLOR_IDC,
+        ),
+        (
+            _first_existing(
+                price_frame,
+                [
+                    "afrr_energy_delivered_price_EUR_per_MWh_el",
+                    "afrr_energy_price_EUR_per_MWh_el",
+                ],
+            ),
+            "aFRR energy",
+            COLOR_AFRR,
+        ),
     ]:
         if column in price_frame.columns and price_frame[column].notna().any():
-            ax.plot(price_frame.index, price_frame[column], label=label, color=color)
+            ax.plot(
+                price_frame.index,
+                price_frame[column],
+                label=_price_label(label, column),
+                color=color,
+            )
     benchmark = derive_gas_benchmark(full_dispatch)
     if benchmark is not None:
         benchmark = benchmark.loc[dispatch.index.min() : dispatch.index.max()]
@@ -1436,6 +1495,11 @@ def _aggregate_by_datetime(frame: pd.DataFrame) -> pd.DataFrame:
     grouped = numeric.groupby(numeric.index).sum()
     for column in [
         "day_ahead_price_EUR_per_MWh",
+        "day_ahead_delivered_price_EUR_per_MWh",
+        "IDC_price_EUR_per_MWh",
+        "IDC_delivered_price_EUR_per_MWh",
+        "afrr_energy_price_EUR_per_MWh",
+        "afrr_energy_delivered_price_EUR_per_MWh",
         "gas_based_heat_benchmark_EUR_per_MWh_th",
         "gas_price_EUR_per_MWh",
         "co2_price_EUR_per_t",
@@ -1452,8 +1516,11 @@ def _market_frame(market_ledger: pd.DataFrame, dispatch_results: pd.DataFrame) -
         grouped = numeric.groupby(numeric.index).sum()
         price_columns = [
             "day_ahead_price_EUR_per_MWh_el",
+            "day_ahead_delivered_price_EUR_per_MWh_el",
             "intraday_price_EUR_per_MWh_el",
+            "intraday_delivered_price_EUR_per_MWh_el",
             "afrr_energy_price_EUR_per_MWh_el",
+            "afrr_energy_delivered_price_EUR_per_MWh_el",
             "afrr_capacity_down_price_EUR_per_MW_h",
         ]
         for column in price_columns:
@@ -1470,6 +1537,10 @@ def _market_frame(market_ledger: pd.DataFrame, dispatch_results: pd.DataFrame) -
         fallback["actual_electricity_consumption_MWh_el"] = dispatch["electricity_consumption_MWh"]
     if "day_ahead_price_EUR_per_MWh" in dispatch.columns:
         fallback["day_ahead_price_EUR_per_MWh_el"] = dispatch["day_ahead_price_EUR_per_MWh"]
+    if "day_ahead_delivered_price_EUR_per_MWh" in dispatch.columns:
+        fallback["day_ahead_delivered_price_EUR_per_MWh_el"] = dispatch[
+            "day_ahead_delivered_price_EUR_per_MWh"
+        ]
     return fallback
 
 
@@ -1477,14 +1548,74 @@ def _price_frame(dispatch_results: pd.DataFrame, market_ledger: pd.DataFrame) ->
     dispatch = _aggregate_by_datetime(dispatch_results)
     market = _market_frame(market_ledger, dispatch_results)
     price = pd.DataFrame(index=dispatch.index if not dispatch.empty else market.index)
-    if "day_ahead_price_EUR_per_MWh" in dispatch.columns:
-        price["day_ahead_price_EUR_per_MWh_el"] = dispatch["day_ahead_price_EUR_per_MWh"]
-    elif "day_ahead_price_EUR_per_MWh_el" in market.columns:
-        price["day_ahead_price_EUR_per_MWh_el"] = market["day_ahead_price_EUR_per_MWh_el"]
-    for column in ["intraday_price_EUR_per_MWh_el", "afrr_energy_price_EUR_per_MWh_el"]:
-        if column in market.columns:
-            price[column] = market[column]
+    _copy_price_column(
+        price,
+        dispatch,
+        market,
+        target="day_ahead_price_EUR_per_MWh_el",
+        dispatch_column="day_ahead_price_EUR_per_MWh",
+        market_column="day_ahead_price_EUR_per_MWh_el",
+    )
+    _copy_price_column(
+        price,
+        dispatch,
+        market,
+        target="day_ahead_delivered_price_EUR_per_MWh_el",
+        dispatch_column="day_ahead_delivered_price_EUR_per_MWh",
+        market_column="day_ahead_delivered_price_EUR_per_MWh_el",
+    )
+    _copy_price_column(
+        price,
+        dispatch,
+        market,
+        target="intraday_price_EUR_per_MWh_el",
+        dispatch_column="IDC_price_EUR_per_MWh",
+        market_column="intraday_price_EUR_per_MWh_el",
+    )
+    _copy_price_column(
+        price,
+        dispatch,
+        market,
+        target="intraday_delivered_price_EUR_per_MWh_el",
+        dispatch_column="IDC_delivered_price_EUR_per_MWh",
+        market_column="intraday_delivered_price_EUR_per_MWh_el",
+    )
+    _copy_price_column(
+        price,
+        dispatch,
+        market,
+        target="afrr_energy_price_EUR_per_MWh_el",
+        dispatch_column="afrr_energy_price_EUR_per_MWh",
+        market_column="afrr_energy_price_EUR_per_MWh_el",
+    )
+    _copy_price_column(
+        price,
+        dispatch,
+        market,
+        target="afrr_energy_delivered_price_EUR_per_MWh_el",
+        dispatch_column="afrr_energy_delivered_price_EUR_per_MWh",
+        market_column="afrr_energy_delivered_price_EUR_per_MWh_el",
+    )
     return price
+
+
+def _copy_price_column(
+    target_frame: pd.DataFrame,
+    dispatch: pd.DataFrame,
+    market: pd.DataFrame,
+    target: str,
+    dispatch_column: str,
+    market_column: str,
+) -> None:
+    if dispatch_column in dispatch.columns:
+        target_frame[target] = dispatch[dispatch_column]
+    elif market_column in market.columns:
+        target_frame[target] = market[market_column]
+
+
+def _price_label(market_name: str, column: str) -> str:
+    suffix = "delivered price" if "delivered" in column else "market price"
+    return f"{market_name} {suffix}"
 
 
 def _aggregate_summary(summary: pd.DataFrame) -> dict[str, float]:

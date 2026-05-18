@@ -22,14 +22,18 @@ MARKET_LEDGER_COLUMNS = [
     "plant_name",
     "day_ahead_position_MWh_el",
     "day_ahead_price_EUR_per_MWh_el",
+    "additional_electricity_charge_EUR_per_MWh_el",
+    "day_ahead_delivered_price_EUR_per_MWh_el",
     "intraday_buy_MWh_el",
     "intraday_sell_MWh_el",
     "intraday_price_EUR_per_MWh_el",
+    "intraday_delivered_price_EUR_per_MWh_el",
     "scheduled_electricity_procurement_MWh_el",
     "afrr_energy_bid_MW_el",
     "afrr_energy_bid_MWh_el",
     "afrr_energy_activated_MWh_el",
     "afrr_energy_price_EUR_per_MWh_el",
+    "afrr_energy_delivered_price_EUR_per_MWh_el",
     "afrr_system_activation_MWh_el",
     "useful_heat_cap_binding",
     "curtailed_proxy_activation_due_to_heat_cap_MWh",
@@ -51,6 +55,7 @@ MARKET_LEDGER_COLUMNS = [
 
 ZERO_COLUMNS = [
     "day_ahead_position_MWh_el",
+    "additional_electricity_charge_EUR_per_MWh_el",
     "intraday_buy_MWh_el",
     "intraday_sell_MWh_el",
     "scheduled_electricity_procurement_MWh_el",
@@ -157,26 +162,38 @@ def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[s
     _validate_electricity_accounting(scheduled, afrr_activation, actual_electricity)
 
     afrr_bid_mwh = _value(row, "afrr_energy_bid_MWh", 0.0)
+    additional_charge = _value(row, "additional_electricity_charge_EUR_per_MWh_el", 0.0)
+    day_ahead_price = _value(row, "day_ahead_price_EUR_per_MWh", pd.NA)
+    intraday_price = _value(row, "IDC_price_EUR_per_MWh", pd.NA)
+    afrr_energy_price = _value(row, "afrr_energy_price_EUR_per_MWh", pd.NA)
     return {
         "datetime": pd.Timestamp(timestamp),
         "plant_name": str(row["plant_name"]),
         "day_ahead_position_MWh_el": day_ahead_position,
-        "day_ahead_price_EUR_per_MWh_el": _value(
+        "day_ahead_price_EUR_per_MWh_el": day_ahead_price,
+        "additional_electricity_charge_EUR_per_MWh_el": additional_charge,
+        "day_ahead_delivered_price_EUR_per_MWh_el": _value(
             row,
-            "day_ahead_price_EUR_per_MWh",
-            pd.NA,
+            "day_ahead_delivered_price_EUR_per_MWh",
+            day_ahead_price + additional_charge,
         ),
         "intraday_buy_MWh_el": intraday_buy,
         "intraday_sell_MWh_el": intraday_sell,
-        "intraday_price_EUR_per_MWh_el": _value(row, "IDC_price_EUR_per_MWh", pd.NA),
+        "intraday_price_EUR_per_MWh_el": intraday_price,
+        "intraday_delivered_price_EUR_per_MWh_el": _value(
+            row,
+            "IDC_delivered_price_EUR_per_MWh",
+            intraday_price + additional_charge,
+        ),
         "scheduled_electricity_procurement_MWh_el": scheduled,
         "afrr_energy_bid_MW_el": _value(row, "afrr_energy_bid_MW", afrr_bid_mwh),
         "afrr_energy_bid_MWh_el": afrr_bid_mwh,
         "afrr_energy_activated_MWh_el": afrr_activation,
-        "afrr_energy_price_EUR_per_MWh_el": _value(
+        "afrr_energy_price_EUR_per_MWh_el": afrr_energy_price,
+        "afrr_energy_delivered_price_EUR_per_MWh_el": _value(
             row,
-            "afrr_energy_price_EUR_per_MWh",
-            pd.NA,
+            "afrr_energy_delivered_price_EUR_per_MWh",
+            afrr_energy_price + additional_charge,
         ),
         "afrr_system_activation_MWh_el": _value(row, "afrr_system_activation_MWh", 0.0),
         "useful_heat_cap_binding": _value(row, "useful_heat_cap_binding", 0.0),
@@ -219,6 +236,7 @@ def _day_ahead_record(
     record = _empty_record(timestamp, plant_name)
     record["day_ahead_position_MWh_el"] = float(position_mwh_el)
     record["day_ahead_price_EUR_per_MWh_el"] = float(price_eur_per_mwh_el)
+    record["day_ahead_delivered_price_EUR_per_MWh_el"] = float(price_eur_per_mwh_el)
     record["scheduled_electricity_procurement_MWh_el"] = float(position_mwh_el)
     record["actual_electricity_consumption_MWh_el"] = float(position_mwh_el)
     return record

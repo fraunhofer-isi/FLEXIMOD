@@ -27,7 +27,8 @@ The first case is stored in:
 data/input/hybrid_ETES_DE/
 |-- config.yaml
 |-- plants.csv
-`-- forecasts_df.csv
+|-- forecasts_df.csv
+`-- additional_charges.csv  # optional, only used when case.additional_charges is true
 ```
 
 `plants.csv` groups technologies by plant name. For example, two rows with `name=plant_1` define the ETES storage and gas boiler attached to the same industrial plant.
@@ -48,6 +49,35 @@ CO2 cost is currently disabled in the active MVP objective and benchmark, so
 `co2_price` is optional for now.
 
 Heat demand is interpreted as average MW_th over the time step and is converted internally to MWh_th using `case.timestep_minutes`.
+
+### Optional Electricity Consumption Charges
+
+Industrial electricity use may face additional energy charges on top of the
+market energy price, for example network consumption charges, metering and
+operation, concession fees, surcharges, levies, and electricity tax.
+
+Enable them in `config.yaml` with:
+
+```yaml
+case:
+  additional_charges: true
+```
+
+Then provide `additional_charges.csv` in the case input folder:
+
+```text
+component,unit,plant_1
+Network consumption price,EUR/MWh,6.9
+Metering and operation,EUR/MWh,2.0
+```
+
+FLEXIMOD sums the component rows per plant and adds the result to DA, IDC, and
+aFRR energy prices before the strategy compares electricity against the
+gas-based benchmark. The same adder enters the plant dispatch objective and
+storage cost ledger as an electricity consumption charge.
+
+These charges apply only to consumed energy. They do not apply to aFRR capacity
+reservation or capacity revenue.
 
 ## Run The First Case
 
@@ -182,7 +212,16 @@ The plant dispatch is deterministic rolling horizon. In the first case:
 - carry the ETES state of charge into the next solve;
 - repeat until the simulation period ends.
 
-The Pyomo model enforces heat balance, technology limits, storage state of charge, and emergency unmet-demand slack with a high penalty. For the current ETES + gas boiler case, this includes ETES charge/discharge limits and gas boiler heat limits.
+The Pyomo model enforces technology limits, storage state of charge, and strict
+useful heat dispatch. For the current ETES + gas boiler case:
+
+```text
+gas boiler heat + ETES useful discharge = heat demand
+```
+
+There is no artificial unmet-heat or heat-dump variable. If fixed market
+positions cannot be physically absorbed and converted into useful heat, the
+solve is intentionally infeasible so the modeller sees the inconsistency.
 
 The plant model follows a component/plant split similar to the reference ASSUME-style scripts:
 

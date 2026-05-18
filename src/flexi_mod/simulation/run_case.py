@@ -123,6 +123,12 @@ def _default_output_options() -> Any:
 
 
 def main() -> None:
+    from flexi_mod.config.case_config import CaseConfig
+    from flexi_mod.simulation.cli_logging import (
+        CliLogger,
+        output_summary,
+        print_verbose_outputs,
+    )
     from flexi_mod.simulation.simulation_runner import SimulationRunner
 
     parser = argparse.ArgumentParser(description="Run a FLEXIMOD case.")
@@ -147,20 +153,88 @@ def main() -> None:
     parser.add_argument("--skip-market-ledger", action="store_true")
     parser.add_argument("--skip-storage-cost-ledger", action="store_true")
     parser.add_argument("--skip-summary-indicators", action="store_true")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print detailed created file paths.",
+    )
     args = parser.parse_args()
+    logger = CliLogger(verbose=args.verbose)
 
     settings = build_runner_settings(args)
-    runner = SimulationRunner(**settings)
-    outputs = runner.run()
+    config = CaseConfig.from_case_dir(settings["case_dir"])
+    logger.info(f"Case started: {config.case_name}")
+    logger.info(
+        "Simulation: "
+        f"{config.simulation_start} to {config.simulation_end}, "
+        f"{config.timestep_minutes} min"
+    )
+    logger.info(f"Enabled markets: {_enabled_market_summary(config)}")
+    logger.info(f"Solver: {config.solver_name}")
+    logger.info(f"Output folder: {settings['output_dir']}")
 
-    print(f"Input directory: {settings['input_dir']}")
-    print(f"Output directory: {settings['output_dir']}")
-    print("Created outputs:")
-    for name, path in outputs.items():
-        if isinstance(path, list):
-            print(f"  {name}: {len(path)} files")
-        else:
-            print(f"  {name}: {path}")
+    _report_additional_charges(logger, config, settings)
+    _report_intraday_mode(logger, config)
+
+    runner = SimulationRunner(**settings, progress_callback=logger.progress)
+    with logger.capture_warnings():
+        outputs = runner.run()
+
+    logger.success(f"Case completed: {output_summary(outputs)} saved.")
+    print_verbose_outputs(logger, outputs)
+
+
+def _report_additional_charges(
+    logger: Any,
+    config: Any,
+    settings: dict[str, Any],
+) -> None:
+    from flexi_mod.data.data_loader import DataLoader
+    from flexi_mod.simulation.cli_logging import (
+        additional_charges_message,
+        missing_additional_charges_message,
+    )
+
+    loader = DataLoader(
+        config,
+        input_dir=settings["input_dir"],
+        plants_file=settings["plants_file"],
+        forecasts_file=settings["forecasts_file"],
+    )
+    plants = loader.load_plants()
+    try:
+        charges = loader.load_additional_charges(plants)
+    except FileNotFoundError as exc:
+        if config.additional_charges_enabled:
+            logger.error(missing_additional_charges_message(loader.additional_charges_path))
+            raise SystemExit(1) from exc
+        raise
+    logger.info(additional_charges_message(config.additional_charges_enabled, charges))
+
+
+def _report_intraday_mode(logger: Any, config: Any) -> None:
+    if "intraday_continuous" not in config.market_sequence:
+        return
+    market = config.market("intraday_continuous")
+    if not market.get("enabled", False):
+        return
+    allowed = market.get("allowed_actions", {})
+    buy = bool(allowed.get("buy", True))
+    sell = bool(allowed.get("sell", True))
+    if buy and sell:
+        mode = "buy and sell/reduction"
+    elif buy:
+        mode = "buy-only"
+    elif sell:
+        mode = "sell/reduction-only"
+    else:
+        mode = "observe-only"
+    logger.info(f"Intraday mode: {mode}.")
+
+
+def _enabled_market_summary(config: Any) -> str:
+    enabled = [market for market in config.market_sequence if market in config.enabled_markets]
+    return ", ".join(enabled) if enabled else "none"
 
 
 if __name__ == "__main__":

@@ -36,6 +36,10 @@ This gives the project its central modelling principle:
 Rule-based market strategy + Pyomo-based plant dispatch and feasibility
 ```
 
+<p align="center">
+  <img src="assets/rule_pyomo_interaction_9x16.svg" alt="Rule-based strategy and Pyomo dispatch interaction" width="420">
+</p>
+
 The strategy should not hard-code plant physics. The plant model should not
 hard-code market rules. The runner coordinates the order in which both are used.
 
@@ -147,6 +151,7 @@ Each case input folder contains:
 config.yaml
 plants.csv
 forecasts_df.csv
+additional_charges.csv  # optional
 ```
 
 `plants.csv` defines industrial plants and their connected technologies. Rows
@@ -167,6 +172,12 @@ CO2 is currently disabled in the active objective and benchmark. A `co2_price`
 column may still exist in input files for later use, but it is not required for
 the current MVP.
 
+If `case.additional_charges` is true, `additional_charges.csv` is loaded as
+plant-specific electricity consumption charge adders in `EUR/MWh_el`. These
+charges are added to DA, IDC, and aFRR energy prices for strategy decisions,
+dispatch costs, and stored-heat cost accounting. They apply only to consumed
+electricity energy and not to aFRR capacity reservation revenue.
+
 ## Plant And Technology Layer
 
 The plant model follows a reference-style split:
@@ -184,7 +195,7 @@ For the first case, the plant contains:
 The plant-level model connects both technologies through a heat bus:
 
 ```text
-storage discharge + gas boiler heat + unmet heat >= heat demand
+storage useful discharge + gas boiler heat = heat demand
 ```
 
 Electricity consumption is currently equal to ETES electric charging:
@@ -198,17 +209,18 @@ electricity consumption = electric charge to storage
 The current MVP minimizes:
 
 ```text
-electricity procurement cost
+electricity market cost
++ additional electricity consumption charges
 + gas fuel cost
-+ unmet heat penalty
 ```
 
 CO2 cost is kept as a zero-valued output column for compatibility, but it is not
 included in the active objective for now.
 
-Unmet heat is an emergency slack variable with a very high penalty. It exists so
-the model can return a diagnostic result if the configured plant cannot meet heat
-demand.
+There are no artificial unmet-heat, excess-heat, or heat-dumping variables. If
+the plant cannot meet heat demand exactly with connected technologies, or if
+fixed market positions create impossible storage operation, Pyomo reports the
+case as infeasible.
 
 ## Output Layer
 

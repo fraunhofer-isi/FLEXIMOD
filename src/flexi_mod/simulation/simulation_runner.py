@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +46,7 @@ class SimulationRunner:
         plants_file: str = "plants.csv",
         forecasts_file: str = "forecasts_df.csv",
         output_options: OutputOptions | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ):
         self.config = CaseConfig.from_case_dir(case_dir)
         self.input_dir = Path(input_dir).resolve() if input_dir else Path(case_dir).resolve()
@@ -54,6 +56,7 @@ class SimulationRunner:
             else self.config.project_root / "data" / "output" / self.config.case_name
         )
         self.output_options = output_options or OutputOptions()
+        self._progress_callback = progress_callback
         self.markets = build_markets(self.config)
         self.loader = DataLoader(
             self.config,
@@ -63,14 +66,22 @@ class SimulationRunner:
         )
 
     def run(self) -> dict[str, Path | list[Path]]:
+        self._progress("Loading input data")
         plants_df = self.loader.load_plants()
         plants = SteamGenerationPlant.from_plants_dataframe(plants_df)
+        additional_charges = self.loader.load_additional_charges(plants_df)
+        for plant in plants:
+            plant.additional_electricity_charge_eur_per_mwh = additional_charges.get(
+                plant.name,
+                0.0,
+            )
         strategy = HybridETESGasStrategy(self.config)
         required_columns = self.loader.required_forecast_columns(
             plants_df,
             extra_required_columns=strategy.required_forecast_columns(),
         )
         forecasts = self.loader.load_forecasts(required_columns=required_columns)
+        self._progress("Input data loaded")
         dispatch_results = self._run_market_sequence(plants, forecasts, strategy)
 
         output_dir = self.output_dir
@@ -127,6 +138,7 @@ class SimulationRunner:
             output_paths["afrr_capacity_block_summary"] = path
 
         if self.output_options.create_plots:
+            self._progress("Plot creation started")
             output_paths["plots"] = create_case_plots(
                 dispatch_results,
                 summary,
@@ -134,6 +146,9 @@ class SimulationRunner:
                 market_ledger=market_ledger.to_dataframe(),
                 storage_cost_ledger=storage_ledger.to_dataframe(),
             )
+            self._progress("Plots created")
+
+        self._progress("Outputs saved")
 
         return output_paths
 
@@ -147,6 +162,9 @@ class SimulationRunner:
         enabled_markets = [
             market for market in self.markets.values() if market.name in self.config.enabled_markets
         ]
+        for market_name in self.config.market_sequence:
+            if market_name not in self.config.enabled_markets:
+                self._progress(f"{_stage_label(market_name)} stage skipped (disabled)")
 
         for plant in plants:
             fixed_positions = pd.DataFrame(index=forecasts.index)
@@ -155,6 +173,7 @@ class SimulationRunner:
             if AFRR_CAPACITY in self.config.enabled_markets:
                 capacity_reservation = strategy.decide_afrr_capacity(plant, forecasts)
                 stage_outputs[AFRR_CAPACITY] = capacity_reservation.copy()
+                self._progress(f"aFRR capacity stage solved for {plant.name}")
             for market in enabled_markets:
                 if market.name == AFRR_CAPACITY:
                     continue
@@ -167,6 +186,7 @@ class SimulationRunner:
                     capacity_reservation,
                 )
                 stage_outputs[market.name] = fixed_positions.copy()
+                self._progress(f"{_stage_label(market.name)} stage solved for {plant.name}")
 
             if fixed_positions.empty:
                 raise NotImplementedError("The MVP requires the day_ahead market to be enabled")
@@ -180,6 +200,10 @@ class SimulationRunner:
             .set_index("datetime")
         )
         return combined
+
+    def _progress(self, message: str) -> None:
+        if self._progress_callback is not None:
+            self._progress_callback(message)
 
     @staticmethod
     def _run_configured_market(
@@ -282,3 +306,13 @@ def _update_capacity_block_summary(
     )
     summary["min_storage_headroom_MW"] = min_storage_headroom.reindex(summary.index).fillna(0.0)
     return summary.reset_index()
+
+
+def _stage_label(market_name: str) -> str:
+    labels = {
+        AFRR_CAPACITY: "aFRR capacity",
+        DAY_AHEAD: "Day-ahead",
+        INTRADAY_CONTINUOUS: "Intraday continuous",
+        AFRR_ENERGY: "aFRR energy",
+    }
+    return labels.get(market_name, market_name)

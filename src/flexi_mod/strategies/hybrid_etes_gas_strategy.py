@@ -64,9 +64,13 @@ class HybridETESGasStrategy(BaseStrategy):
         price_col = market.signal_column("price")
 
         benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
+        delivered_da_price = self._delivered_electricity_price(
+            plant,
+            market_data["day_ahead_price_EUR_per_MWh"],
+        )
         charge_allowed = self._calculate_charge_gate(
             plant=plant,
-            electricity_price=market_data["day_ahead_price_EUR_per_MWh"],
+            electricity_price=delivered_da_price,
             benchmark=benchmark,
         )
 
@@ -75,6 +79,9 @@ class HybridETESGasStrategy(BaseStrategy):
             gas_price_col=GAS_PRICE_SIGNAL,
             gas_benchmark_eur_per_mwh_th=benchmark,
             charge_allowed=charge_allowed,
+            additional_electricity_charge_eur_per_mwh=(
+                plant.additional_electricity_charge_eur_per_mwh
+            ),
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
         return plant.solve_rolling(self.config, forecasts, signals)
@@ -96,6 +103,7 @@ class HybridETESGasStrategy(BaseStrategy):
 
         da_position = self._fixed_da_position(fixed_positions, forecasts.index)
         idc_price = idc_data["IDC_price_EUR_per_MWh"]
+        delivered_idc_price = self._delivered_electricity_price(plant, idc_price)
         gas_heat_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         electricity_benchmark = self.calculate_electricity_trading_benchmark(
             plant,
@@ -111,10 +119,10 @@ class HybridETESGasStrategy(BaseStrategy):
             )
 
         buy_allowed = (
-            idc_price < (electricity_benchmark - IDC_MARGIN_EUR_PER_MWH)
+            delivered_idc_price < (electricity_benchmark - IDC_MARGIN_EUR_PER_MWH)
         ) & ~missing_price
         sell_allowed = (
-            idc_price > (electricity_benchmark + IDC_MARGIN_EUR_PER_MWH)
+            delivered_idc_price > (electricity_benchmark + IDC_MARGIN_EUR_PER_MWH)
         ) & ~missing_price
         if not idc_market.buy_enabled:
             buy_allowed = pd.Series(False, index=forecasts.index)
@@ -139,6 +147,9 @@ class HybridETESGasStrategy(BaseStrategy):
             idc_sell_upper_bound_mwh=idc_sell_upper_bound,
             gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
+            additional_electricity_charge_eur_per_mwh=(
+                plant.additional_electricity_charge_eur_per_mwh
+            ),
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
         return plant.solve_intraday_adjustment_rolling(self.config, forecasts, signals)
@@ -223,9 +234,12 @@ class HybridETESGasStrategy(BaseStrategy):
         ).min(axis=1)
 
         valid_price = clean_afrr["afrr_price_available"]
+        delivered_afrr_price = self._delivered_electricity_price(
+            plant,
+            clean_afrr["afrr_energy_down_price_EUR_per_MWh"],
+        )
         price_allowed = (
-            clean_afrr["afrr_energy_down_price_EUR_per_MWh"]
-            <= electricity_benchmark - AFRR_ENERGY_MARGIN_EUR_PER_MWH
+            delivered_afrr_price <= electricity_benchmark - AFRR_ENERGY_MARGIN_EUR_PER_MWH
         ) & valid_price
         feasible_bid_potential = feasible_bid_potential.where(price_allowed, 0.0)
         remaining_headroom_mw = feasible_bid_potential / timestep_hours
@@ -284,6 +298,9 @@ class HybridETESGasStrategy(BaseStrategy):
             curtailed_proxy_activation_due_to_heat_cap_mwh=curtailed_activation,
             gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
+            additional_electricity_charge_eur_per_mwh=(
+                plant.additional_electricity_charge_eur_per_mwh
+            ),
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
         return plant.solve_afrr_down_rolling(self.config, forecasts, signals)
@@ -443,14 +460,21 @@ class HybridETESGasStrategy(BaseStrategy):
             plant,
             gas_heat_benchmark,
         )
-        reference_price = forecasts[da_price_col].astype(float)
+        reference_price = self._delivered_electricity_price(
+            plant,
+            forecasts[da_price_col].astype(float),
+        )
         opportunity_cost = (electricity_benchmark - reference_price).clip(lower=0.0)
         activation_price_threshold = electricity_benchmark - AFRR_ENERGY_MARGIN_EUR_PER_MWH
+        delivered_afrr_energy_price = self._delivered_electricity_price(
+            plant,
+            afrr_energy["afrr_energy_down_price_EUR_per_MWh"],
+        )
         activation_relevant = (afrr_energy["afrr_system_activation_MWh"] > 1e-12) | afrr_energy[
             "afrr_activation_without_price"
         ].astype(bool)
         activation_price_allowed = afrr_energy["afrr_price_available"].astype(bool) & (
-            afrr_energy["afrr_energy_down_price_EUR_per_MWh"] <= activation_price_threshold
+            delivered_afrr_energy_price <= activation_price_threshold
         )
 
         max_charge_power_mw = plant.etes.max_power_charge_mw
@@ -474,8 +498,7 @@ class HybridETESGasStrategy(BaseStrategy):
             relevant_with_price = block_relevant & afrr_energy["afrr_price_available"].loc[mask]
             if relevant_with_price.any():
                 activation_price_margin = (
-                    activation_price_threshold.loc[mask]
-                    - afrr_energy["afrr_energy_down_price_EUR_per_MWh"].loc[mask]
+                    activation_price_threshold.loc[mask] - delivered_afrr_energy_price.loc[mask]
                 )
                 min_activation_price_margin = float(
                     activation_price_margin.loc[relevant_with_price].min()
@@ -598,6 +621,15 @@ class HybridETESGasStrategy(BaseStrategy):
         benchmark = gas_heat_benchmark.astype(float) * delivered_heat_per_mwh_electric
         benchmark.name = "electricity_trading_benchmark_EUR_per_MWh_el"
         return benchmark
+
+    @staticmethod
+    def _delivered_electricity_price(
+        plant: SteamGenerationPlant,
+        market_price: pd.Series,
+    ) -> pd.Series:
+        """Return market electricity price plus plant consumption charges."""
+
+        return market_price.astype(float) + float(plant.additional_electricity_charge_eur_per_mwh)
 
     def _calculate_charge_gate(
         self,

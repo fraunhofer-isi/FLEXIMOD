@@ -91,6 +91,37 @@ markets:
         loader.load_forecasts(required_columns={"DE_ID3_price"})
 
 
+def test_additional_charges_are_loaded_only_when_enabled(tmp_path: Path) -> None:
+    case_dir = _write_loader_case(tmp_path)
+    config_path = case_dir / "config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'simulation_end: "2025-01-07 23:45"',
+            'simulation_end: "2025-01-07 23:45"\n  additional_charges: true',
+        ),
+        encoding="utf-8",
+    )
+    (case_dir / "additional_charges.csv").write_text(
+        "\n".join(
+            [
+                "component,unit,plant_1",
+                "Network consumption price,EUR/MWh,6.9",
+                "Metering and operation,EUR/MWh,2.0",
+                "Concession fees,EUR/MWh,1.1",
+                "Surcharges and levies,EUR/MWh,1.6",
+                "Electricity tax,EUR/MWh,0.5",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = CaseConfig.from_case_dir(case_dir)
+    loader = DataLoader(config, input_dir=case_dir)
+    plants = loader.load_plants()
+
+    assert loader.load_additional_charges(plants)["plant_1"] == pytest.approx(12.1)
+
+
 def test_day_ahead_only_ignores_dst_irregularities_outside_case_range(tmp_path: Path) -> None:
     case_dir = _write_day_ahead_only_case(tmp_path)
     index = pd.date_range("2025-01-01 00:00", "2025-04-01 00:00", freq="15min")

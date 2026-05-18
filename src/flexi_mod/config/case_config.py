@@ -65,6 +65,10 @@ class CaseConfig:
         return str(self.raw["case"]["simulation_end"])
 
     @property
+    def additional_charges_enabled(self) -> bool:
+        return bool(self.raw["case"].get("additional_charges", False))
+
+    @property
     def solver_name(self) -> str:
         return str(self.raw.get("solver", {}).get("name", "highs"))
 
@@ -122,6 +126,10 @@ class CaseConfig:
         for field in ["name", "country", "timestep_minutes", "simulation_start", "simulation_end"]:
             if field not in self.raw["case"]:
                 raise ConfigError(f"case.{field} is required")
+        if "additional_charges" in self.raw["case"] and not isinstance(
+            self.raw["case"]["additional_charges"], bool
+        ):
+            raise ConfigError("case.additional_charges must be true or false")
 
         if self.raw["strategy"].get("name") != "hybrid_etes_gas":
             raise ConfigError("Only strategy.name='hybrid_etes_gas' is implemented in the MVP")

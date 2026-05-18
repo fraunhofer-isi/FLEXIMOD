@@ -10,6 +10,7 @@ case:
   simulation_start: "2025-01-01 00:00"
   simulation_end: "2025-01-21 23:45"
   timezone: "Europe/Berlin"
+  additional_charges: true
 
 strategy:
   name: hybrid_etes_gas
@@ -34,7 +35,7 @@ market_sequence:
 
 markets:
   afrr_capacity:
-    enabled: true
+    enabled: false
     direction: "down"
     product_length: "4h"
     price_unit: "EUR_per_MW_per_h"

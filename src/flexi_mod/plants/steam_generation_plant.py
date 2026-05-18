@@ -32,6 +32,7 @@ class DispatchSignals:
     gas_price_col: str
     gas_benchmark_eur_per_mwh_th: pd.Series
     charge_allowed: pd.Series
+    additional_electricity_charge_eur_per_mwh: float = 0.0
     reserved_capacity_mwh: pd.Series | None = None
     afrr_capacity_block_id: pd.Series | None = None
     afrr_capacity_block_duration_h: pd.Series | None = None
@@ -52,6 +53,7 @@ class IDCAdjustmentSignals:
     idc_sell_upper_bound_mwh: pd.Series
     gas_benchmark_eur_per_mwh_th: pd.Series
     electricity_trading_benchmark_eur_per_mwh_el: pd.Series
+    additional_electricity_charge_eur_per_mwh: float = 0.0
     reserved_capacity_mwh: pd.Series | None = None
     afrr_capacity_block_id: pd.Series | None = None
     afrr_capacity_block_duration_h: pd.Series | None = None
@@ -77,6 +79,7 @@ class AFRRDownSignals:
     afrr_energy_activated_mwh: pd.Series
     gas_benchmark_eur_per_mwh_th: pd.Series
     electricity_trading_benchmark_eur_per_mwh_el: pd.Series
+    additional_electricity_charge_eur_per_mwh: float = 0.0
     useful_heat_cap_binding: pd.Series | None = None
     curtailed_proxy_activation_due_to_heat_cap_mwh: pd.Series | None = None
     reserved_capacity_mwh: pd.Series | None = None
@@ -170,6 +173,9 @@ class SteamGenerationPlant(BasePlant):
                 electricity_price_col=signals.electricity_price_col,
                 gas_price_col=signals.gas_price_col,
                 co2_price_col=signals.co2_price_col,
+                additional_electricity_charge_eur_per_mwh=(
+                    signals.additional_electricity_charge_eur_per_mwh
+                ),
                 gas_benchmark_eur_per_mwh_th=signals.gas_benchmark_eur_per_mwh_th.loc[
                     horizon.index
                 ],
@@ -236,6 +242,9 @@ class SteamGenerationPlant(BasePlant):
                 ],
                 electricity_trading_benchmark_eur_per_mwh_el=(
                     signals.electricity_trading_benchmark_eur_per_mwh_el.loc[horizon.index]
+                ),
+                additional_electricity_charge_eur_per_mwh=(
+                    signals.additional_electricity_charge_eur_per_mwh
                 ),
                 reserved_capacity_mwh=_optional_loc(signals.reserved_capacity_mwh, horizon.index),
                 afrr_capacity_block_id=_optional_loc(signals.afrr_capacity_block_id, horizon.index),
@@ -306,6 +315,9 @@ class SteamGenerationPlant(BasePlant):
                 ],
                 electricity_trading_benchmark_eur_per_mwh_el=(
                     signals.electricity_trading_benchmark_eur_per_mwh_el.loc[horizon.index]
+                ),
+                additional_electricity_charge_eur_per_mwh=(
+                    signals.additional_electricity_charge_eur_per_mwh
                 ),
                 useful_heat_cap_binding=_optional_loc(
                     signals.useful_heat_cap_binding, horizon.index
@@ -512,7 +524,9 @@ class SteamGenerationPlant(BasePlant):
         m.T = pyo.Set(initialize=steps, ordered=True)
 
         heat_demand_mwh = forecasts[self.heat_demand_column].astype(float).to_numpy() * dt_hours
-        electricity_price = forecasts[signals.electricity_price_col].astype(float).to_numpy()
+        market_electricity_price = forecasts[signals.electricity_price_col].astype(float).to_numpy()
+        additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
+        electricity_price = market_electricity_price + additional_charge
         gas_price = forecasts[signals.gas_price_col].astype(float).to_numpy()
         if signals.co2_price_col and signals.co2_price_col in forecasts.columns:
             co2_price = forecasts[signals.co2_price_col].astype(float).to_numpy()
@@ -522,6 +536,11 @@ class SteamGenerationPlant(BasePlant):
         reserved_capacity_mwh = _series_or_zero(signals.reserved_capacity_mwh, forecasts.index)
 
         m.heat_demand = pyo.Param(m.T, initialize={t: heat_demand_mwh[t] for t in steps})
+        m.market_electricity_price = pyo.Param(
+            m.T,
+            initialize={t: market_electricity_price[t] for t in steps},
+        )
+        m.additional_electricity_charge = pyo.Param(initialize=additional_charge)
         m.electricity_price = pyo.Param(m.T, initialize={t: electricity_price[t] for t in steps})
         m.gas_price = pyo.Param(m.T, initialize={t: gas_price[t] for t in steps})
         m.co2_price = pyo.Param(m.T, initialize={t: co2_price[t] for t in steps})
@@ -576,6 +595,17 @@ class SteamGenerationPlant(BasePlant):
             )
 
         @m.Expression(m.T)
+        def electricity_market_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.electricity_consumption[t] * mm.market_electricity_price[t]
+
+        @m.Expression(m.T)
+        def additional_electricity_charges_cost(
+            mm: pyo.ConcreteModel,
+            t: int,
+        ) -> pyo.Expression:
+            return mm.electricity_consumption[t] * mm.additional_electricity_charge
+
+        @m.Expression(m.T)
         def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return mm.technology_blocks["thermal_storage"].electricity_cost[t]
 
@@ -612,6 +642,7 @@ class SteamGenerationPlant(BasePlant):
         heat_demand_mwh = forecasts[self.heat_demand_column].astype(float).to_numpy() * dt_hours
         da_price = forecasts[signals.da_price_col].astype(float).to_numpy()
         idc_price = forecasts[signals.idc_price_col].astype(float).fillna(0.0).to_numpy()
+        additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
         gas_price = forecasts[signals.gas_price_col].astype(float).to_numpy()
         if signals.co2_price_col and signals.co2_price_col in forecasts.columns:
             co2_price = forecasts[signals.co2_price_col].astype(float).to_numpy()
@@ -640,7 +671,11 @@ class SteamGenerationPlant(BasePlant):
         m.heat_demand = pyo.Param(m.T, initialize={t: heat_demand_mwh[t] for t in steps})
         m.da_price = pyo.Param(m.T, initialize={t: da_price[t] for t in steps})
         m.idc_price = pyo.Param(m.T, initialize={t: idc_price[t] for t in steps})
-        m.electricity_price = pyo.Param(m.T, initialize={t: idc_price[t] for t in steps})
+        m.additional_electricity_charge = pyo.Param(initialize=additional_charge)
+        m.electricity_price = pyo.Param(
+            m.T,
+            initialize={t: idc_price[t] + additional_charge for t in steps},
+        )
         m.gas_price = pyo.Param(m.T, initialize={t: gas_price[t] for t in steps})
         m.co2_price = pyo.Param(m.T, initialize={t: co2_price[t] for t in steps})
         m.da_position_mwh = pyo.Param(m.T, initialize={t: da_position[t] for t in steps})
@@ -739,8 +774,19 @@ class SteamGenerationPlant(BasePlant):
             return mm.idc_sell_mwh[t] * mm.idc_price[t]
 
         @m.Expression(m.T)
-        def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+        def electricity_market_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return mm.da_electricity_cost[t] + mm.idc_buy_cost[t] - mm.idc_sell_revenue[t]
+
+        @m.Expression(m.T)
+        def additional_electricity_charges_cost(
+            mm: pyo.ConcreteModel,
+            t: int,
+        ) -> pyo.Expression:
+            return mm.final_planned_electricity_mwh[t] * mm.additional_electricity_charge
+
+        @m.Expression(m.T)
+        def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.electricity_market_cost[t] + mm.additional_electricity_charges_cost[t]
 
         @m.Expression(m.T)
         def gas_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
@@ -775,6 +821,7 @@ class SteamGenerationPlant(BasePlant):
         heat_demand_mwh = forecasts[self.heat_demand_column].astype(float).to_numpy() * dt_hours
         da_price = forecasts[signals.da_price_col].astype(float).to_numpy()
         idc_price = forecasts[signals.idc_price_col].astype(float).fillna(0.0).to_numpy()
+        additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
         gas_price = forecasts[signals.gas_price_col].astype(float).to_numpy()
         if signals.co2_price_col and signals.co2_price_col in forecasts.columns:
             co2_price = forecasts[signals.co2_price_col].astype(float).to_numpy()
@@ -801,8 +848,9 @@ class SteamGenerationPlant(BasePlant):
         m.afrr_energy_price = pyo.Param(
             m.T, initialize={t: float(afrr_price.iloc[t]) for t in steps}
         )
+        m.additional_electricity_charge = pyo.Param(initialize=additional_charge)
         m.electricity_price = pyo.Param(
-            m.T, initialize={t: float(afrr_price.iloc[t]) for t in steps}
+            m.T, initialize={t: float(afrr_price.iloc[t]) + additional_charge for t in steps}
         )
         m.gas_price = pyo.Param(m.T, initialize={t: gas_price[t] for t in steps})
         m.co2_price = pyo.Param(m.T, initialize={t: co2_price[t] for t in steps})
@@ -876,13 +924,24 @@ class SteamGenerationPlant(BasePlant):
             return mm.afrr_energy_activated_mwh[t] * mm.afrr_energy_price[t]
 
         @m.Expression(m.T)
-        def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+        def electricity_market_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return (
                 mm.da_electricity_cost[t]
                 + mm.idc_buy_cost[t]
                 - mm.idc_sell_revenue[t]
                 + mm.afrr_energy_cost[t]
             )
+
+        @m.Expression(m.T)
+        def additional_electricity_charges_cost(
+            mm: pyo.ConcreteModel,
+            t: int,
+        ) -> pyo.Expression:
+            return mm.actual_electricity_consumption_mwh[t] * mm.additional_electricity_charge
+
+        @m.Expression(m.T)
+        def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.electricity_market_cost[t] + mm.additional_electricity_charges_cost[t]
 
         @m.Expression(m.T)
         def gas_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
@@ -917,8 +976,12 @@ class SteamGenerationPlant(BasePlant):
         rows = []
         for t, timestamp in enumerate(forecasts.index):
             electricity_cost = _value(model.electricity_cost[t])
+            electricity_market_cost = _value(model.electricity_market_cost[t])
+            additional_charges_cost = _value(model.additional_electricity_charges_cost[t])
             gas_cost = _value(model.gas_cost[t])
             co2_cost = _value(model.co2_cost[t])
+            additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
+            day_ahead_price = float(forecasts[signals.electricity_price_col].iloc[t])
             co2_price = (
                 float(forecasts[signals.co2_price_col].iloc[t])
                 if signals.co2_price_col and signals.co2_price_col in forecasts.columns
@@ -928,9 +991,9 @@ class SteamGenerationPlant(BasePlant):
                 "datetime": timestamp,
                 "plant_name": self.name,
                 "heat_demand_MWh": float(forecasts[self.heat_demand_column].iloc[t]) * dt_hours,
-                "day_ahead_price_EUR_per_MWh": float(
-                    forecasts[signals.electricity_price_col].iloc[t]
-                ),
+                "day_ahead_price_EUR_per_MWh": day_ahead_price,
+                "additional_electricity_charge_EUR_per_MWh_el": additional_charge,
+                "day_ahead_delivered_price_EUR_per_MWh": day_ahead_price + additional_charge,
                 "gas_price_EUR_per_MWh": float(forecasts[signals.gas_price_col].iloc[t]),
                 "co2_price_EUR_per_t": co2_price,
                 "day_ahead_price_signal": signals.electricity_price_col,
@@ -951,7 +1014,7 @@ class SteamGenerationPlant(BasePlant):
                 "IDC_price_EUR_per_MWh": float("nan"),
                 "final_planned_electricity_MWh": _value(model.electricity_consumption[t]),
                 "actual_electricity_consumption_MWh": _value(model.electricity_consumption[t]),
-                "DA_electricity_cost_EUR": electricity_cost,
+                "DA_electricity_cost_EUR": electricity_market_cost,
                 "IDC_buy_cost_EUR": 0.0,
                 "IDC_sell_revenue_EUR": 0.0,
                 "afrr_energy_bid_MWh": 0.0,
@@ -961,6 +1024,8 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_system_activation_MWh": 0.0,
                 "afrr_energy_cost_EUR": 0.0,
                 "afrr_energy_savings_vs_benchmark_EUR": 0.0,
+                "electricity_market_cost_EUR": electricity_market_cost,
+                "additional_electricity_charges_cost_EUR": additional_charges_cost,
                 "electricity_cost_EUR": electricity_cost,
                 "gas_cost_EUR": gas_cost,
                 "co2_cost_EUR": co2_cost,
@@ -1007,12 +1072,16 @@ class SteamGenerationPlant(BasePlant):
         rows = []
         for t, timestamp in enumerate(forecasts.index):
             electricity_cost = _value(model.electricity_cost[t])
+            electricity_market_cost = _value(model.electricity_market_cost[t])
+            additional_charges_cost = _value(model.additional_electricity_charges_cost[t])
             gas_cost = _value(model.gas_cost[t])
             co2_cost = _value(model.co2_cost[t])
             da_position = _value(model.da_position_mwh[t])
             idc_buy = _value(model.idc_buy_mwh[t])
             idc_sell = _value(model.idc_sell_mwh[t])
             final_planned = _value(model.final_planned_electricity_mwh[t])
+            additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
+            day_ahead_price = float(forecasts[signals.da_price_col].iloc[t])
             idc_price = float(forecasts[signals.idc_price_col].iloc[t])
             co2_price = (
                 float(forecasts[signals.co2_price_col].iloc[t])
@@ -1023,8 +1092,11 @@ class SteamGenerationPlant(BasePlant):
                 "datetime": timestamp,
                 "plant_name": self.name,
                 "heat_demand_MWh": float(forecasts[self.heat_demand_column].iloc[t]) * dt_hours,
-                "day_ahead_price_EUR_per_MWh": float(forecasts[signals.da_price_col].iloc[t]),
+                "day_ahead_price_EUR_per_MWh": day_ahead_price,
                 "IDC_price_EUR_per_MWh": idc_price,
+                "additional_electricity_charge_EUR_per_MWh_el": additional_charge,
+                "day_ahead_delivered_price_EUR_per_MWh": day_ahead_price + additional_charge,
+                "IDC_delivered_price_EUR_per_MWh": idc_price + additional_charge,
                 "gas_price_EUR_per_MWh": float(forecasts[signals.gas_price_col].iloc[t]),
                 "co2_price_EUR_per_t": co2_price,
                 "day_ahead_price_signal": signals.da_price_col,
@@ -1058,6 +1130,8 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_system_activation_MWh": 0.0,
                 "afrr_energy_cost_EUR": 0.0,
                 "afrr_energy_savings_vs_benchmark_EUR": 0.0,
+                "electricity_market_cost_EUR": electricity_market_cost,
+                "additional_electricity_charges_cost_EUR": additional_charges_cost,
                 "electricity_cost_EUR": electricity_cost,
                 "gas_cost_EUR": gas_cost,
                 "co2_cost_EUR": co2_cost,
@@ -1110,6 +1184,8 @@ class SteamGenerationPlant(BasePlant):
         rows = []
         for t, timestamp in enumerate(forecasts.index):
             electricity_cost = _value(model.electricity_cost[t])
+            electricity_market_cost = _value(model.electricity_market_cost[t])
+            additional_charges_cost = _value(model.additional_electricity_charges_cost[t])
             gas_cost = _value(model.gas_cost[t])
             co2_cost = _value(model.co2_cost[t])
             final_planned = _value(model.final_planned_electricity_mwh[t])
@@ -1117,8 +1193,12 @@ class SteamGenerationPlant(BasePlant):
             afrr_activation = _value(model.afrr_energy_activated_mwh[t])
             actual_electricity = _value(model.actual_electricity_consumption_mwh[t])
             afrr_price_clean = _value(model.afrr_energy_price[t])
+            additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
             benchmark = float(signals.electricity_trading_benchmark_eur_per_mwh_el.iloc[t])
-            afrr_savings = afrr_activation * (benchmark - afrr_price_clean)
+            afrr_delivered_price = afrr_price_clean + additional_charge
+            afrr_savings = afrr_activation * (benchmark - afrr_delivered_price)
+            day_ahead_price = float(forecasts[signals.da_price_col].iloc[t])
+            idc_price = float(forecasts[signals.idc_price_col].iloc[t])
             co2_price = (
                 float(forecasts[signals.co2_price_col].iloc[t])
                 if signals.co2_price_col and signals.co2_price_col in forecasts.columns
@@ -1128,8 +1208,12 @@ class SteamGenerationPlant(BasePlant):
                 "datetime": timestamp,
                 "plant_name": self.name,
                 "heat_demand_MWh": float(forecasts[self.heat_demand_column].iloc[t]) * dt_hours,
-                "day_ahead_price_EUR_per_MWh": float(forecasts[signals.da_price_col].iloc[t]),
-                "IDC_price_EUR_per_MWh": float(forecasts[signals.idc_price_col].iloc[t]),
+                "day_ahead_price_EUR_per_MWh": day_ahead_price,
+                "IDC_price_EUR_per_MWh": idc_price,
+                "additional_electricity_charge_EUR_per_MWh_el": additional_charge,
+                "day_ahead_delivered_price_EUR_per_MWh": day_ahead_price + additional_charge,
+                "IDC_delivered_price_EUR_per_MWh": idc_price + additional_charge,
+                "afrr_energy_delivered_price_EUR_per_MWh": afrr_delivered_price,
                 "gas_price_EUR_per_MWh": float(forecasts[signals.gas_price_col].iloc[t]),
                 "co2_price_EUR_per_t": co2_price,
                 "day_ahead_price_signal": signals.da_price_col,
@@ -1171,6 +1255,8 @@ class SteamGenerationPlant(BasePlant):
                         0.0,
                     )
                 ),
+                "electricity_market_cost_EUR": electricity_market_cost,
+                "additional_electricity_charges_cost_EUR": additional_charges_cost,
                 "electricity_cost_EUR": electricity_cost,
                 "gas_cost_EUR": gas_cost,
                 "co2_cost_EUR": co2_cost,

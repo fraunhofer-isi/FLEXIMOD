@@ -67,6 +67,10 @@ day-ahead market with optional intraday continuous and aFRR down energy stages
 15-minute dispatch resolution
 ```
 
+<p align="center">
+  <img src="assets/hybrid_etes_strategy_flowchart_9x16.svg" alt="Hybrid ETES and gas boiler sequential market strategy flowchart" width="420">
+</p>
+
 ## Day-Ahead Strategy Logic
 
 The strategy is a price-taking day-ahead procurement strategy for ETES charging.
@@ -127,7 +131,7 @@ effective electric heat cost is calculated as:
 
 ```text
 electric_heat_cost =
-    day_ahead_price
+    delivered_day_ahead_price
     / (ETES charge efficiency * ETES discharge efficiency)
 ```
 
@@ -138,11 +142,23 @@ of electricity produces:
 0.92 * 0.92 = 0.8464 MWh_th
 ```
 
-So a day-ahead price of `40 EUR/MWh_el` corresponds to:
+So a delivered day-ahead electricity price of `40 EUR/MWh_el` corresponds to:
 
 ```text
 40 / 0.8464 = 47.26 EUR/MWh_th
 ```
+
+The delivered electricity price is the market energy price plus optional
+industrial electricity consumption charges:
+
+```text
+delivered_price = market_price + additional_electricity_charges
+```
+
+Additional charges are loaded from `additional_charges.csv` only when
+`case.additional_charges` is true. They apply to consumed electricity energy in
+DA, IDC, and aFRR energy stages. They do not apply to aFRR capacity reservation
+or capacity revenue.
 
 ## Charging Rule
 
@@ -241,10 +257,10 @@ IDC_MARGIN_EUR_PER_MWH = 5.0
 The rules are:
 
 ```text
-if IDC_price < electricity_trading_benchmark - margin:
+if delivered_IDC_price < electricity_trading_benchmark - margin:
     allow IDC buy
 
-if IDC_price > electricity_trading_benchmark + margin:
+if delivered_IDC_price > electricity_trading_benchmark + margin:
     allow IDC sell/reduction
 
 otherwise:
@@ -310,7 +326,8 @@ afrr_energy_activated_MWh =
         afrr_system_activation_MWh)
 ```
 
-The aFRR down price rule uses the same electricity-side ETES benchmark as IDC.
+The aFRR down price rule uses the delivered aFRR down energy price and the same
+electricity-side ETES benchmark as IDC.
 The current aFRR down margin is embedded in the strategy code:
 
 ```text
@@ -320,7 +337,7 @@ AFRR_ENERGY_MARGIN_EUR_PER_MWH = 5.0
 So the current rule is:
 
 ```text
-aFRR_down_price <= electricity_trading_benchmark - 5.0
+delivered_aFRR_down_price <= electricity_trading_benchmark - 5.0
 ```
 
 This means aFRR down electricity must be at least `5 EUR/MWh_el` cheaper than
@@ -346,7 +363,8 @@ After the strategy computes the benchmark and charging gate, the plant model
 decides the feasible dispatch by minimizing:
 
 ```text
-electricity cost
+electricity market cost
++ additional electricity consumption charges
 + gas fuel cost
 ```
 

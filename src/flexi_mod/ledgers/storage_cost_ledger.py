@@ -230,13 +230,27 @@ def _procured_electricity_by_market(
 
 
 def _electricity_price(row: pd.Series, market: str) -> float:
-    price_columns = {
+    delivered_price_columns = {
+        "day_ahead": "day_ahead_delivered_price_EUR_per_MWh",
+        "intraday_continuous": "IDC_delivered_price_EUR_per_MWh",
+        "afrr_energy": "afrr_energy_delivered_price_EUR_per_MWh",
+        "other": "day_ahead_delivered_price_EUR_per_MWh",
+    }
+    raw_price_columns = {
         "day_ahead": "day_ahead_price_EUR_per_MWh",
         "intraday_continuous": "IDC_price_EUR_per_MWh",
         "afrr_energy": "afrr_energy_price_EUR_per_MWh",
         "other": "day_ahead_price_EUR_per_MWh",
     }
-    return float(row.get(price_columns[market], 0.0))
+    delivered_price = _numeric_value(row.get(delivered_price_columns[market]))
+    if delivered_price is not None:
+        return delivered_price
+
+    raw_price = _numeric_value(row.get(raw_price_columns[market]))
+    additional_charge = _numeric_value(row.get("additional_electricity_charge_EUR_per_MWh_el"))
+    if raw_price is None:
+        return 0.0
+    return raw_price + (additional_charge or 0.0)
 
 
 def _normalise_charge(charge: dict[str, float | str]) -> dict[str, float | str]:
@@ -280,6 +294,12 @@ def _ledger_row(
 
 def _charging_cost(charge: dict[str, float | str]) -> float:
     return float(charge["electricity_price"]) * float(charge["electricity_mwh"])
+
+
+def _numeric_value(value: Any) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    return float(value)
 
 
 def _scale_inventory_to_total(

@@ -192,3 +192,38 @@ markets:
 
     with pytest.raises(ConfigError, match="afrr_energy.enabled=true"):
         CaseConfig.from_case_dir(case_dir)
+
+
+def test_additional_charges_flag_must_be_boolean(tmp_path: Path) -> None:
+    case_dir = tmp_path / "bad_additional_charges"
+    case_dir.mkdir()
+    (case_dir / "config.yaml").write_text(
+        """
+case:
+  name: bad_additional_charges
+  country: DE
+  timestep_minutes: 15
+  simulation_start: "2025-01-01 00:00"
+  simulation_end: "2025-01-01 00:45"
+  additional_charges: "yes"
+strategy:
+  name: hybrid_etes_gas
+  dispatch:
+    dispatch_method: pyomo
+solver:
+  name: highs
+  fallback_solvers: []
+  tee: false
+market_sequence:
+  - day_ahead
+markets:
+  day_ahead:
+    enabled: true
+    signals:
+      price: DE_DA_price
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="case.additional_charges"):
+        CaseConfig.from_case_dir(case_dir)
