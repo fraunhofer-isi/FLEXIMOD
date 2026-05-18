@@ -12,7 +12,7 @@ build/
 dist/
 *.egg-info/
 
-data/input/aFRR_data/
+data/input/Archive/
 data/output/
 data/processed/
 *.xlsx
