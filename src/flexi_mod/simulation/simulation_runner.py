@@ -15,7 +15,7 @@ from flexi_mod.data.data_loader import DataLoader
 from flexi_mod.ledgers.market_ledger import MarketLedger
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.markets import BaseMarket, build_markets
-from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
+from flexi_mod.plants.steam_generation_plant import DispatchSignals, SteamGenerationPlant
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.visualisation.analytics import calculate_summary_indicators
 from flexi_mod.visualisation.plots import create_case_plots
@@ -33,6 +33,15 @@ class OutputOptions:
     save_storage_cost_ledger: bool = True
     save_summary_indicators: bool = True
     create_plots: bool = True
+
+
+@dataclass(frozen=True)
+class DecisionWindow:
+    """One market-calendar decision window and its committed output slice."""
+
+    number: int
+    forecasts: pd.DataFrame
+    commit_index: pd.DatetimeIndex
 
 
 class SimulationRunner:
@@ -159,39 +168,98 @@ class SimulationRunner:
         strategy: HybridETESGasStrategy,
     ) -> pd.DataFrame:
         dispatch_parts: list[pd.DataFrame] = []
-        enabled_markets = [
-            market for market in self.markets.values() if market.name in self.config.enabled_markets
-        ]
-        for market_name in self.config.market_sequence:
-            if market_name not in self.config.enabled_markets:
-                self._progress(f"{_stage_label(market_name)} stage skipped (disabled)")
+        capacity_summary_parts: list[pd.DataFrame] = []
+        afrr_quality_parts: list[pd.DataFrame] = []
+        self._report_market_calendar_notices()
+        windows = list(_decision_windows(self.config, forecasts))
+        if not windows:
+            raise ValueError("No decision windows could be created from forecasts_df.csv")
 
         for plant in plants:
-            fixed_positions = pd.DataFrame(index=forecasts.index)
-            capacity_reservation = pd.DataFrame(index=forecasts.index)
-            stage_outputs: dict[str, pd.DataFrame] = {}
-            if AFRR_CAPACITY in self.config.enabled_markets:
-                capacity_reservation = strategy.decide_afrr_capacity(plant, forecasts)
-                stage_outputs[AFRR_CAPACITY] = capacity_reservation.copy()
-                self._progress(f"aFRR capacity stage solved for {plant.name}")
-            for market in enabled_markets:
-                if market.name == AFRR_CAPACITY:
-                    continue
-                fixed_positions = self._run_configured_market(
-                    market,
-                    plant,
-                    forecasts,
-                    fixed_positions,
-                    strategy,
-                    capacity_reservation,
+            current_soc = plant.etes.initial_soc_mwh
+            for window in windows:
+                window_forecasts = window.forecasts
+                commit_index = window.commit_index
+                window_start = pd.Timestamp(commit_index[0])
+                window_end = pd.Timestamp(commit_index[-1])
+                self._progress(
+                    f"Delivery window {window.number} for {plant.name}: "
+                    f"{window_start:%Y-%m-%d %H:%M} to {window_end:%Y-%m-%d %H:%M}; "
+                    f"initial ETES SoC = {current_soc:.3f} MWh_th"
                 )
-                stage_outputs[market.name] = fixed_positions.copy()
-                self._progress(f"{_stage_label(market.name)} stage solved for {plant.name}")
 
-            if fixed_positions.empty:
-                raise NotImplementedError("The MVP requires the day_ahead market to be enabled")
+                fixed_positions = _zero_market_positions(window_forecasts.index)
+                capacity_reservation = pd.DataFrame(index=window_forecasts.index)
+                stage_outputs: dict[str, pd.DataFrame] = {}
+                dispatch_stage_ran = False
 
-            dispatch_parts.append(_add_stage_dispatch_columns(fixed_positions, stage_outputs))
+                for market_name in self.config.market_sequence:
+                    market = self.markets[market_name]
+                    if not market.enabled:
+                        self._progress(f"{_stage_label(market_name)} stage skipped (disabled)")
+                        continue
+
+                    timing = _market_timing_message(market, window_start)
+                    if timing:
+                        self._progress(timing)
+
+                    stage_result = self._run_configured_market(
+                        market,
+                        plant,
+                        window_forecasts,
+                        fixed_positions,
+                        strategy,
+                        capacity_reservation,
+                        initial_soc_mwh=current_soc,
+                    )
+                    if market.name == AFRR_CAPACITY:
+                        capacity_reservation = stage_result
+                        stage_outputs[AFRR_CAPACITY] = capacity_reservation.copy()
+                        capacity_summary_parts.extend(
+                            _capacity_summaries_for_commit(
+                                strategy.afrr_capacity_block_summary,
+                                capacity_reservation,
+                                commit_index,
+                            )
+                        )
+                    else:
+                        fixed_positions = stage_result
+                        stage_outputs[market.name] = fixed_positions.copy()
+                        dispatch_stage_ran = True
+                        if market.name == AFRR_ENERGY and not (
+                            strategy.afrr_energy_data_quality_summary.empty
+                        ):
+                            afrr_quality_parts.append(
+                                strategy.afrr_energy_data_quality_summary.copy()
+                            )
+                    self._progress(f"{_stage_label(market.name)} stage solved for {plant.name}")
+
+                if not dispatch_stage_ran:
+                    fixed_positions = _run_zero_electricity_dispatch(
+                        plant=plant,
+                        config=self.config,
+                        forecasts=window_forecasts,
+                        capacity_reservation=capacity_reservation,
+                        initial_soc_mwh=current_soc,
+                    )
+
+                committed = fixed_positions.reindex(commit_index).copy()
+                committed = _add_stage_dispatch_columns(committed, stage_outputs)
+                dispatch_parts.append(committed)
+                current_soc = float(committed["etes_soc_MWh"].iloc[-1])
+                self._progress(
+                    f"Delivery window {window.number} completed for {plant.name}; "
+                    f"final ETES SoC = {current_soc:.3f} MWh_th"
+                )
+
+        if capacity_summary_parts:
+            strategy.afrr_capacity_block_summary = _combine_capacity_summaries(
+                capacity_summary_parts
+            )
+        if afrr_quality_parts:
+            strategy.afrr_energy_data_quality_summary = _combine_afrr_quality_summaries(
+                afrr_quality_parts
+            )
 
         combined = (
             pd.concat(dispatch_parts)
@@ -205,6 +273,24 @@ class SimulationRunner:
         if self._progress_callback is not None:
             self._progress_callback(message)
 
+    def _report_market_calendar_notices(self) -> None:
+        horizon = float(self.config.dispatch_setting("dispatch_horizon_hours", 24))
+        step = float(self.config.dispatch_setting("rolling_step_hours", horizon))
+        rolling = bool(self.config.dispatch_setting("rolling_horizon_enabled", True))
+        if rolling:
+            self._progress(
+                f"Market calendar: {horizon:g} h decision window, {step:g} h rolling step"
+            )
+        else:
+            self._progress("Market calendar: single full-period decision window")
+        capacity_enabled = AFRR_CAPACITY in self.config.enabled_markets
+        afrr_energy_enabled = AFRR_ENERGY in self.config.enabled_markets
+        if capacity_enabled and not afrr_energy_enabled:
+            self._progress(
+                "Notice: aFRR capacity is enabled but aFRR energy is disabled; reserved "
+                "capacity can earn capacity revenue, but no activation energy is modelled."
+            )
+
     @staticmethod
     def _run_configured_market(
         market: BaseMarket,
@@ -213,29 +299,40 @@ class SimulationRunner:
         fixed_positions: pd.DataFrame,
         strategy: HybridETESGasStrategy,
         capacity_reservation: pd.DataFrame | None = None,
+        initial_soc_mwh: float | None = None,
     ) -> pd.DataFrame:
         if market.name == DAY_AHEAD:
-            return strategy.decide_day_ahead(plant, forecasts, capacity_reservation)
+            return strategy.decide_day_ahead(
+                plant,
+                forecasts,
+                capacity_reservation,
+                initial_soc_mwh=initial_soc_mwh,
+                rolling=False,
+            )
         if market.name == INTRADAY_CONTINUOUS:
-            if fixed_positions.empty:
-                raise NotImplementedError("IDC requires fixed day-ahead positions")
             return strategy.decide_intraday_continuous(
                 plant,
                 forecasts,
                 fixed_positions,
                 capacity_reservation,
+                initial_soc_mwh=initial_soc_mwh,
+                rolling=False,
             )
         if market.name == AFRR_ENERGY:
-            if fixed_positions.empty:
-                raise NotImplementedError("aFRR energy requires fixed DA or IDC positions")
             return strategy.decide_afrr_energy(
                 plant,
                 forecasts,
                 fixed_positions,
                 capacity_reservation,
+                initial_soc_mwh=initial_soc_mwh,
+                rolling=False,
             )
         if market.name == AFRR_CAPACITY:
-            return capacity_reservation if capacity_reservation is not None else fixed_positions
+            return strategy.decide_afrr_capacity(
+                plant,
+                forecasts,
+                initial_soc_mwh=initial_soc_mwh,
+            )
         raise NotImplementedError(f"Market '{market.name}' is not implemented")
 
     @staticmethod
@@ -282,6 +379,235 @@ def _add_stage_dispatch_columns(
         if "etes_discharge_MWh" in stage.columns:
             dispatch[f"etes_discharge_after_{label}_MWh"] = stage["etes_discharge_MWh"]
     return dispatch
+
+
+def _decision_windows(config: CaseConfig, forecasts: pd.DataFrame) -> list[DecisionWindow]:
+    dt_hours = config.timestep_minutes / 60.0
+    rolling_enabled = bool(config.dispatch_setting("rolling_horizon_enabled", True))
+    if not rolling_enabled:
+        index = pd.DatetimeIndex(forecasts.index)
+        return [DecisionWindow(number=1, forecasts=forecasts.copy(), commit_index=index)]
+
+    horizon_hours = float(config.dispatch_setting("dispatch_horizon_hours", 24))
+    step_hours = float(config.dispatch_setting("rolling_step_hours", horizon_hours))
+    horizon_steps = max(1, int(round(horizon_hours / dt_hours)))
+    step_steps = max(1, int(round(step_hours / dt_hours)))
+
+    windows: list[DecisionWindow] = []
+    position = 0
+    number = 1
+    while position < len(forecasts):
+        horizon = forecasts.iloc[position : position + horizon_steps].copy()
+        commit_count = min(step_steps, len(forecasts) - position, len(horizon))
+        commit_index = pd.DatetimeIndex(horizon.iloc[:commit_count].index)
+        windows.append(
+            DecisionWindow(
+                number=number,
+                forecasts=horizon,
+                commit_index=commit_index,
+            )
+        )
+        position += commit_count
+        number += 1
+    return windows
+
+
+def _zero_market_positions(index: pd.DatetimeIndex) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "DA_position_MWh": 0.0,
+            "IDC_buy_MWh": 0.0,
+            "IDC_sell_MWh": 0.0,
+            "final_planned_electricity_MWh": 0.0,
+            "actual_electricity_consumption_MWh": 0.0,
+        },
+        index=index,
+    )
+
+
+def _run_zero_electricity_dispatch(
+    plant: SteamGenerationPlant,
+    config: CaseConfig,
+    forecasts: pd.DataFrame,
+    capacity_reservation: pd.DataFrame,
+    initial_soc_mwh: float,
+) -> pd.DataFrame:
+    """Dispatch useful heat with no electricity market procurement."""
+
+    zero_price_col = "__zero_electricity_price_EUR_per_MWh"
+    dispatch_forecasts = forecasts.copy()
+    dispatch_forecasts[zero_price_col] = 0.0
+    gas_price_col = "natural_gas_price"
+    if plant.gas_boiler is None:
+        raise ValueError(f"Plant '{plant.name}' needs a gas boiler for zero-electricity dispatch")
+    gas_benchmark = dispatch_forecasts[gas_price_col].astype(float) / plant.gas_boiler.efficiency
+    signals = DispatchSignals(
+        electricity_price_col=zero_price_col,
+        gas_price_col=gas_price_col,
+        gas_benchmark_eur_per_mwh_th=gas_benchmark,
+        charge_allowed=pd.Series(False, index=dispatch_forecasts.index),
+        additional_electricity_charge_eur_per_mwh=(plant.additional_electricity_charge_eur_per_mwh),
+        **_capacity_signal_kwargs(capacity_reservation, dispatch_forecasts.index),
+    )
+    result = plant.solve_horizon(
+        config=config,
+        forecasts=dispatch_forecasts,
+        signals=signals,
+        initial_soc_mwh=initial_soc_mwh,
+    )
+    result["DA_position_MWh"] = 0.0
+    result["final_planned_electricity_MWh"] = 0.0
+    result["actual_electricity_consumption_MWh"] = 0.0
+    result["electricity_consumption_MWh"] = 0.0
+    return result
+
+
+def _capacity_signal_kwargs(
+    capacity_reservation: pd.DataFrame | None,
+    index: pd.DatetimeIndex,
+) -> dict[str, pd.Series]:
+    if capacity_reservation is None or capacity_reservation.empty:
+        return {}
+
+    frame = capacity_reservation.reindex(index)
+    return {
+        "reserved_capacity_mwh": _capacity_float_column(
+            frame,
+            index,
+            "afrr_capacity_reserved_MWh",
+        ),
+        "afrr_capacity_block_id": _capacity_object_column(
+            frame,
+            index,
+            "afrr_capacity_block_id",
+            "",
+        ),
+        "afrr_capacity_block_duration_h": _capacity_float_column(
+            frame,
+            index,
+            "block_duration_h",
+        ),
+        "afrr_capacity_price_eur_per_mw_h": _capacity_float_column(
+            frame,
+            index,
+            "capacity_price_EUR_per_MW_h",
+        ),
+        "afrr_capacity_reserved_mw": _capacity_float_column(
+            frame,
+            index,
+            "afrr_capacity_reserved_MW",
+        ),
+        "afrr_capacity_revenue_eur": _capacity_float_column(
+            frame,
+            index,
+            "afrr_capacity_revenue_EUR",
+        ),
+    }
+
+
+def _capacity_float_column(
+    capacity_reservation: pd.DataFrame,
+    index: pd.DatetimeIndex,
+    column: str,
+) -> pd.Series:
+    if column not in capacity_reservation:
+        return pd.Series(0.0, index=index)
+    return capacity_reservation[column].astype(float).reindex(index).fillna(0.0)
+
+
+def _capacity_object_column(
+    capacity_reservation: pd.DataFrame,
+    index: pd.DatetimeIndex,
+    column: str,
+    default: object,
+) -> pd.Series:
+    if column not in capacity_reservation:
+        return pd.Series(default, index=index)
+    return capacity_reservation[column].reindex(index).fillna(default)
+
+
+def _capacity_summaries_for_commit(
+    block_summary: pd.DataFrame,
+    capacity_reservation: pd.DataFrame,
+    commit_index: pd.DatetimeIndex,
+) -> list[pd.DataFrame]:
+    if block_summary.empty or capacity_reservation.empty:
+        return []
+    if "afrr_capacity_block_id" not in capacity_reservation.columns:
+        return []
+    block_ids = (
+        capacity_reservation.reindex(commit_index)["afrr_capacity_block_id"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+    if not block_ids:
+        return []
+    selected = block_summary[block_summary["block_id"].astype(str).isin(block_ids)].copy()
+    return [selected] if not selected.empty else []
+
+
+def _combine_capacity_summaries(parts: list[pd.DataFrame]) -> pd.DataFrame:
+    combined = pd.concat(parts, ignore_index=True)
+    if "block_id" in combined.columns:
+        combined = combined.drop_duplicates(subset=["block_id"], keep="first")
+    return combined.sort_values("block_start").reset_index(drop=True)
+
+
+def _combine_afrr_quality_summaries(parts: list[pd.DataFrame]) -> pd.DataFrame:
+    numeric_parts = [part.select_dtypes(include=["number"]) for part in parts if not part.empty]
+    if not numeric_parts:
+        return pd.DataFrame()
+    totals = pd.concat(numeric_parts, ignore_index=True).sum(axis=0)
+    return pd.DataFrame([totals.to_dict()])
+
+
+def _market_timing_message(market: BaseMarket, delivery_start: pd.Timestamp) -> str:
+    events = []
+    open_text = _gate_text("opens", market.gate_open, delivery_start)
+    close_text = _gate_text("closes", market.gate_close, delivery_start)
+    if open_text:
+        events.append(open_text)
+    if close_text:
+        events.append(close_text)
+    if not events:
+        return ""
+    return f"{_stage_label(market.name)} gate: " + ", ".join(events)
+
+
+def _gate_text(label: str, gate: dict[str, object], delivery_start: pd.Timestamp) -> str:
+    if not gate:
+        return ""
+    if "day_relation" in gate and "time" in gate:
+        relation = str(gate["day_relation"])
+        event_time = _day_relation_timestamp(delivery_start, relation, str(gate["time"]))
+        return f"{label} {relation} {gate['time']} ({event_time:%Y-%m-%d %H:%M})"
+    if "relative_to_delivery_start_minutes" in gate:
+        minutes = int(gate["relative_to_delivery_start_minutes"])
+        event_time = delivery_start + pd.Timedelta(minutes=minutes)
+        if minutes < 0:
+            relation = f"{abs(minutes)} min before delivery start"
+        elif minutes > 0:
+            relation = f"{minutes} min after delivery start"
+        else:
+            relation = "at delivery start"
+        return f"{label} {relation} ({event_time:%Y-%m-%d %H:%M} for first timestep)"
+    return ""
+
+
+def _day_relation_timestamp(
+    delivery_start: pd.Timestamp,
+    relation: str,
+    time_text: str,
+) -> pd.Timestamp:
+    text = relation.strip().upper()
+    if not text.startswith("D"):
+        raise ValueError(f"Unsupported market day_relation '{relation}'")
+    offset_text = text[1:] or "+0"
+    offset_days = int(offset_text)
+    hour, minute = [int(part) for part in time_text.split(":", maxsplit=1)]
+    return delivery_start.normalize() + pd.Timedelta(days=offset_days, hours=hour, minutes=minute)
 
 
 def _update_capacity_block_summary(

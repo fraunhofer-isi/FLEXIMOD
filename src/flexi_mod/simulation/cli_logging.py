@@ -111,4 +111,21 @@ def _friendly_warning(message: str) -> str:
             "IDC sell source plot skipped because there are no IDC sell/reduction volumes."
         ),
     }
+    if message.startswith("aFRR down system activation contains missing values."):
+        return (
+            "aFRR down system activation contains missing values in one or more decision "
+            "windows. Missing activation values are set to zero; see "
+            "afrr_energy_data_quality_summary.csv for counts."
+        )
+    if message.startswith("aFRR down price contains missing values."):
+        return (
+            "aFRR down price contains missing values in one or more decision windows. "
+            "Bids and activations are set to zero for those timesteps; see "
+            "afrr_energy_data_quality_summary.csv for counts."
+        )
+    if message.startswith("IDC price contains missing values."):
+        return (
+            "IDC price contains missing values in one or more decision windows. IDC action "
+            "is set to zero for those timesteps."
+        )
     return replacements.get(message, message)

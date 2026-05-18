@@ -156,6 +156,7 @@ class SteamGenerationPlant(BasePlant):
         config: CaseConfig,
         forecasts: pd.DataFrame,
         signals: DispatchSignals,
+        initial_soc_mwh: float | None = None,
     ) -> pd.DataFrame:
         dt_hours = config.timestep_minutes / 60.0
         horizon_hours = float(config.dispatch_setting("dispatch_horizon_hours", 48))
@@ -164,7 +165,7 @@ class SteamGenerationPlant(BasePlant):
         step_steps = max(1, int(round(step_hours / dt_hours)))
 
         implemented_frames: list[pd.DataFrame] = []
-        initial_soc = self.etes.initial_soc_mwh
+        initial_soc = self.etes.initial_soc_mwh if initial_soc_mwh is None else initial_soc_mwh
         position = 0
 
         while position < len(forecasts):
@@ -216,6 +217,7 @@ class SteamGenerationPlant(BasePlant):
         config: CaseConfig,
         forecasts: pd.DataFrame,
         signals: IDCAdjustmentSignals,
+        initial_soc_mwh: float | None = None,
     ) -> pd.DataFrame:
         dt_hours = config.timestep_minutes / 60.0
         horizon_hours = float(config.dispatch_setting("dispatch_horizon_hours", 48))
@@ -224,7 +226,7 @@ class SteamGenerationPlant(BasePlant):
         step_steps = max(1, int(round(step_hours / dt_hours)))
 
         implemented_frames: list[pd.DataFrame] = []
-        initial_soc = self.etes.initial_soc_mwh
+        initial_soc = self.etes.initial_soc_mwh if initial_soc_mwh is None else initial_soc_mwh
         position = 0
 
         while position < len(forecasts):
@@ -282,6 +284,7 @@ class SteamGenerationPlant(BasePlant):
         config: CaseConfig,
         forecasts: pd.DataFrame,
         signals: AFRRDownSignals,
+        initial_soc_mwh: float | None = None,
     ) -> pd.DataFrame:
         dt_hours = config.timestep_minutes / 60.0
         horizon_hours = float(config.dispatch_setting("dispatch_horizon_hours", 48))
@@ -290,7 +293,7 @@ class SteamGenerationPlant(BasePlant):
         step_steps = max(1, int(round(step_hours / dt_hours)))
 
         implemented_frames: list[pd.DataFrame] = []
-        initial_soc = self.etes.initial_soc_mwh
+        initial_soc = self.etes.initial_soc_mwh if initial_soc_mwh is None else initial_soc_mwh
         position = 0
 
         while position < len(forecasts):

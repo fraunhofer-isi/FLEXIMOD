@@ -169,6 +169,72 @@ def test_additional_charges_enter_strategy_and_electricity_cost(
     assert summary["total_additional_electricity_charges_cost_EUR"].iloc[0] == pytest.approx(0.0)
 
 
+def test_market_calendar_carries_final_soc_to_next_decision_window(tmp_path: Path) -> None:
+    case_dir = tmp_path / "soc_handoff_case"
+    case_dir.mkdir()
+    _write_config(case_dir / "config.yaml")
+    _write_plants(
+        case_dir / "plants.csv",
+        storage_initial_soc=2.0,
+        storage_capacity=4.0,
+    )
+    _write_forecasts(
+        case_dir / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+    progress_messages: list[str] = []
+    runner = SimulationRunner(
+        case_dir=case_dir,
+        input_dir=case_dir,
+        output_dir=tmp_path / "soc_handoff_output",
+        output_options=OutputOptions(create_plots=False),
+        progress_callback=progress_messages.append,
+    )
+
+    outputs = runner.run()
+    dispatch = pd.read_csv(outputs["dispatch_results"], parse_dates=["datetime"])
+    first_window_final_soc = float(dispatch["etes_soc_MWh"].iloc[3])
+    second_window_start = next(
+        message for message in progress_messages if message.startswith("Delivery window 2")
+    )
+
+    assert f"initial ETES SoC = {first_window_final_soc:.3f} MWh_th" in second_window_start
+
+
+def test_afrr_capacity_can_run_without_afrr_energy_with_notice(tmp_path: Path) -> None:
+    case_dir = tmp_path / "capacity_without_energy_run"
+    case_dir.mkdir()
+    _write_config(
+        case_dir / "config.yaml",
+        idc_enabled=False,
+        afrr_enabled=False,
+        afrr_capacity_enabled=True,
+    )
+    _write_plants(case_dir / "plants.csv", storage_capacity=24.0)
+    _write_forecasts(
+        case_dir / "forecasts_df.csv",
+        afrr_capacity_prices=[100.0] * 8,
+    )
+    progress_messages: list[str] = []
+    runner = SimulationRunner(
+        case_dir=case_dir,
+        input_dir=case_dir,
+        output_dir=tmp_path / "capacity_without_energy_output",
+        output_options=OutputOptions(create_plots=False),
+        progress_callback=progress_messages.append,
+    )
+
+    outputs = runner.run()
+    market = pd.read_csv(outputs["market_ledger"], parse_dates=["datetime"])
+
+    assert any(
+        "aFRR capacity is enabled but aFRR energy is disabled" in message
+        for message in progress_messages
+    )
+    assert market["afrr_energy_activated_MWh_el"].sum() == pytest.approx(0.0)
+
+
 def test_idc_disabled_keeps_day_ahead_position(
     day_ahead_only_results: dict[str, pd.DataFrame],
 ) -> None:

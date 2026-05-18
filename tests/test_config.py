@@ -4,9 +4,11 @@
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from flexi_mod.config.case_config import CaseConfig, ConfigError
+from flexi_mod.simulation.simulation_runner import _decision_windows
 
 CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_DE"
 
@@ -145,7 +147,7 @@ markets:
         CaseConfig.from_case_dir(case_dir)
 
 
-def test_enabled_afrr_capacity_requires_enabled_afrr_energy(tmp_path: Path) -> None:
+def test_enabled_afrr_capacity_allows_disabled_afrr_energy(tmp_path: Path) -> None:
     case_dir = tmp_path / "capacity_without_energy"
     case_dir.mkdir()
     (case_dir / "config.yaml").write_text(
@@ -190,8 +192,9 @@ markets:
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="afrr_energy.enabled=true"):
-        CaseConfig.from_case_dir(case_dir)
+    config = CaseConfig.from_case_dir(case_dir)
+    assert "afrr_capacity" in config.enabled_markets
+    assert "afrr_energy" not in config.enabled_markets
 
 
 def test_additional_charges_flag_must_be_boolean(tmp_path: Path) -> None:
@@ -227,3 +230,60 @@ markets:
 
     with pytest.raises(ConfigError, match="case.additional_charges"):
         CaseConfig.from_case_dir(case_dir)
+
+
+def test_dispatch_horizon_defines_market_decision_window(tmp_path: Path) -> None:
+    case_dir = tmp_path / "window_case"
+    case_dir.mkdir()
+    _write_window_config(case_dir / "config.yaml", dispatch_horizon_hours=24)
+    config = CaseConfig.from_case_dir(case_dir)
+    forecasts = pd.DataFrame(index=pd.date_range("2025-01-01 00:00", periods=96 * 3, freq="15min"))
+
+    windows = _decision_windows(config, forecasts)
+
+    assert len(windows) == 3
+    assert all(len(window.commit_index) == 96 for window in windows)
+
+
+def test_larger_dispatch_horizon_creates_larger_decision_windows(tmp_path: Path) -> None:
+    case_dir = tmp_path / "two_day_window_case"
+    case_dir.mkdir()
+    _write_window_config(case_dir / "config.yaml", dispatch_horizon_hours=48)
+    config = CaseConfig.from_case_dir(case_dir)
+    forecasts = pd.DataFrame(index=pd.date_range("2025-01-01 00:00", periods=96 * 4, freq="15min"))
+
+    windows = _decision_windows(config, forecasts)
+
+    assert len(windows) == 2
+    assert all(len(window.commit_index) == 192 for window in windows)
+
+
+def _write_window_config(path: Path, dispatch_horizon_hours: int) -> None:
+    path.write_text(
+        f"""
+case:
+  name: window_case
+  country: DE
+  timestep_minutes: 15
+  simulation_start: "2025-01-01 00:00"
+  simulation_end: "2025-01-04 23:45"
+strategy:
+  name: hybrid_etes_gas
+  dispatch:
+    dispatch_method: pyomo
+    rolling_horizon_enabled: true
+    dispatch_horizon_hours: {dispatch_horizon_hours}
+solver:
+  name: highs
+  fallback_solvers: []
+  tee: false
+market_sequence:
+  - day_ahead
+markets:
+  day_ahead:
+    enabled: true
+    signals:
+      price: DE_DA_price
+""".strip(),
+        encoding="utf-8",
+    )

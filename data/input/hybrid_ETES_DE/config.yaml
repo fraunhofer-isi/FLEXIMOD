@@ -17,7 +17,7 @@ strategy:
   dispatch:
     dispatch_method: pyomo
     rolling_horizon_enabled: true
-    dispatch_horizon_hours: 48
+    dispatch_horizon_hours: 24
     rolling_step_hours: 24
 
 solver:

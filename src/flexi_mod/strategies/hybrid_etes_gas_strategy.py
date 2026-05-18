@@ -58,6 +58,8 @@ class HybridETESGasStrategy(BaseStrategy):
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
         capacity_reservation: pd.DataFrame | None = None,
+        initial_soc_mwh: float | None = None,
+        rolling: bool = True,
     ) -> pd.DataFrame:
         market = DayAheadMarket("day_ahead", self.config.market("day_ahead"))
         market_data = market.prepare_market_data(forecasts)
@@ -84,7 +86,19 @@ class HybridETESGasStrategy(BaseStrategy):
             ),
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
-        return plant.solve_rolling(self.config, forecasts, signals)
+        if rolling:
+            return plant.solve_rolling(
+                self.config,
+                forecasts,
+                signals,
+                initial_soc_mwh=initial_soc_mwh,
+            )
+        return plant.solve_horizon(
+            self.config,
+            forecasts,
+            signals,
+            initial_soc_mwh=initial_soc_mwh,
+        )
 
     def decide_intraday_continuous(
         self,
@@ -92,6 +106,8 @@ class HybridETESGasStrategy(BaseStrategy):
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
         capacity_reservation: pd.DataFrame | None = None,
+        initial_soc_mwh: float | None = None,
+        rolling: bool = True,
     ) -> pd.DataFrame:
         idc_market = IntradayContinuousMarket(
             "intraday_continuous",
@@ -100,6 +116,9 @@ class HybridETESGasStrategy(BaseStrategy):
         idc_data = idc_market.prepare_market_data(forecasts)
         idc_price_col = idc_market.signal_column("price")
         da_price_col = self.config.market_signal("day_ahead", "price")
+        if da_price_col not in forecasts.columns:
+            forecasts = forecasts.copy()
+            forecasts[da_price_col] = 0.0
 
         da_position = self._fixed_da_position(fixed_positions, forecasts.index)
         idc_price = idc_data["IDC_price_EUR_per_MWh"]
@@ -152,7 +171,19 @@ class HybridETESGasStrategy(BaseStrategy):
             ),
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
-        return plant.solve_intraday_adjustment_rolling(self.config, forecasts, signals)
+        if rolling:
+            return plant.solve_intraday_adjustment_rolling(
+                self.config,
+                forecasts,
+                signals,
+                initial_soc_mwh=initial_soc_mwh,
+            )
+        return plant.solve_intraday_adjustment_horizon(
+            self.config,
+            forecasts,
+            signals,
+            initial_soc_mwh=initial_soc_mwh,
+        )
 
     def decide_afrr_energy(
         self,
@@ -160,8 +191,13 @@ class HybridETESGasStrategy(BaseStrategy):
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
         capacity_reservation: pd.DataFrame | None = None,
+        initial_soc_mwh: float | None = None,
+        rolling: bool = True,
     ) -> pd.DataFrame:
         da_price_col = self.config.market_signal("day_ahead", "price")
+        if da_price_col not in forecasts.columns:
+            forecasts = forecasts.copy()
+            forecasts[da_price_col] = 0.0
         idc_price_col = self.config.market_signal("intraday_continuous", "price")
         if idc_price_col not in forecasts.columns:
             forecasts = forecasts.copy()
@@ -303,7 +339,19 @@ class HybridETESGasStrategy(BaseStrategy):
             ),
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
-        return plant.solve_afrr_down_rolling(self.config, forecasts, signals)
+        if rolling:
+            return plant.solve_afrr_down_rolling(
+                self.config,
+                forecasts,
+                signals,
+                initial_soc_mwh=initial_soc_mwh,
+            )
+        return plant.solve_afrr_down_horizon(
+            self.config,
+            forecasts,
+            signals,
+            initial_soc_mwh=initial_soc_mwh,
+        )
 
     def _strict_afrr_down_offer_and_activation(
         self,
@@ -438,7 +486,10 @@ class HybridETESGasStrategy(BaseStrategy):
         )
 
     def decide_afrr_capacity(
-        self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
+        self,
+        plant: SteamGenerationPlant,
+        forecasts: pd.DataFrame,
+        initial_soc_mwh: float | None = None,
     ) -> pd.DataFrame:
         capacity_market = AFRRCapacityMarket(
             "afrr_capacity",
@@ -453,8 +504,20 @@ class HybridETESGasStrategy(BaseStrategy):
         block_summary = capacity_data.block_summary.copy()
 
         da_price_col = self.config.market_signal("day_ahead", "price")
-        cleaned_afrr_energy = self._prepare_afrr_down_energy_data(forecasts, timestep_hours)
-        afrr_energy = cleaned_afrr_energy.frame
+        afrr_energy_enabled = "afrr_energy" in self.config.enabled_markets
+        if afrr_energy_enabled:
+            cleaned_afrr_energy = self._prepare_afrr_down_energy_data(forecasts, timestep_hours)
+            afrr_energy = cleaned_afrr_energy.frame
+        else:
+            afrr_energy = pd.DataFrame(
+                {
+                    "afrr_energy_down_price_EUR_per_MWh": 0.0,
+                    "afrr_price_available": False,
+                    "afrr_system_activation_MWh": 0.0,
+                    "afrr_activation_without_price": False,
+                },
+                index=forecasts.index,
+            )
         gas_heat_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         electricity_benchmark = self.calculate_electricity_trading_benchmark(
             plant,
@@ -479,7 +542,7 @@ class HybridETESGasStrategy(BaseStrategy):
 
         max_charge_power_mw = plant.etes.max_power_charge_mw
         min_bid_mw = float(capacity_market.product_rules.get("min_bid_mw", 0.0))
-        expected_soc = plant.etes.initial_soc_mwh
+        expected_soc = plant.etes.initial_soc_mwh if initial_soc_mwh is None else initial_soc_mwh
         records = []
         for _, block in block_summary.iterrows():
             block_id = str(block["block_id"])
