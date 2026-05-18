@@ -8,7 +8,7 @@ case:
   description: "Hybrid ETES + gas boiler case for Germany"
   timestep_minutes: 15
   simulation_start: "2025-01-01 00:00"
-  simulation_end: "2025-01-21 23:45"
+  simulation_end: "2025-12-31 23:45"
   timezone: "Europe/Berlin"
   additional_charges: true
 
@@ -17,7 +17,7 @@ strategy:
   dispatch:
     dispatch_method: pyomo
     rolling_horizon_enabled: true
-    dispatch_horizon_hours: 24
+    dispatch_horizon_hours: 48
     rolling_step_hours: 24
 
 solver:
@@ -68,7 +68,7 @@ markets:
       relative_to_delivery_start_minutes: -5
     allowed_actions:
       buy: true
-      sell: false
+      sell: true
     signals:
       price: "DE_ID3_price"
       volume: "DE_ID3_volume"

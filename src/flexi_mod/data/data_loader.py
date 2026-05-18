@@ -124,7 +124,11 @@ class DataLoader:
 
         forecasts = pd.read_csv(path, skipinitialspace=True)
         datetime_col = _find_datetime_column(forecasts)
-        forecasts[datetime_col] = _parse_datetime_column(forecasts[datetime_col], datetime_col)
+        parsed_datetime = _parse_datetime_column(forecasts[datetime_col], datetime_col)
+        forecasts[datetime_col] = _case_datetime_index(
+            parsed_datetime,
+            timezone=self.config.timezone,
+        )
         forecasts = (
             forecasts.rename(columns={datetime_col: "datetime"}).set_index("datetime").sort_index()
         )
@@ -169,8 +173,16 @@ class DataLoader:
         return filtered
 
     def _slice_time_range(self, forecasts: pd.DataFrame) -> pd.DataFrame:
-        start = pd.Timestamp(self.config.simulation_start)
-        end = pd.Timestamp(self.config.simulation_end)
+        start = _timestamp_for_index(
+            pd.Timestamp(self.config.simulation_start),
+            forecasts.index,
+            "simulation_start",
+        )
+        end = _timestamp_for_index(
+            pd.Timestamp(self.config.simulation_end),
+            forecasts.index,
+            "simulation_end",
+        )
         filtered = forecasts.loc[(forecasts.index >= start) & (forecasts.index <= end)].copy()
         if filtered.empty:
             raise DataValidationError(
@@ -181,8 +193,11 @@ class DataLoader:
     def _check_expected_period_count(self, forecasts: pd.DataFrame) -> None:
         start = pd.Timestamp(self.config.simulation_start)
         end = pd.Timestamp(self.config.simulation_end)
-        expected_periods = (
-            int(((end - start).total_seconds() / 60) / self.config.timestep_minutes) + 1
+        expected_periods = _expected_period_count(
+            start,
+            end,
+            self.config.timestep_minutes,
+            self.config.timezone,
         )
         if len(forecasts) != expected_periods:
             raise DataValidationError(
@@ -195,7 +210,7 @@ class DataLoader:
             raise DataValidationError("forecasts_df.csv needs at least two timestamps")
 
         target_minutes = self.config.timestep_minutes
-        observed_minutes = _infer_step_minutes(forecasts.index)
+        observed_minutes = _infer_step_minutes(forecasts.index, self.config.timezone)
         if observed_minutes == target_minutes:
             return forecasts
 
@@ -215,15 +230,17 @@ class DataLoader:
             # step only when the source grid is a clean multiple of the configured step.
             start = pd.Timestamp(self.config.simulation_start)
             end = pd.Timestamp(self.config.simulation_end)
-            if forecasts.index.min() > start:
+            indexed_start = _timestamp_for_index(start, forecasts.index, "simulation_start")
+            if forecasts.index.min() > indexed_start:
                 raise DataValidationError(
                     "Forecast data start after the configured simulation_start, so DA-only "
                     "resampling would create leading missing values"
                 )
-            full_index = pd.date_range(
+            full_index = _case_date_range(
                 start=start,
                 end=end,
-                freq=f"{target_minutes}min",
+                timestep_minutes=target_minutes,
+                timezone=self.config.timezone,
             )
             return forecasts.reindex(full_index).ffill()
 
@@ -274,8 +291,24 @@ def _parse_datetime_column(series: pd.Series, column_name: str) -> pd.Series:
             ) from second_error
 
 
-def _infer_step_minutes(index: pd.DatetimeIndex) -> int:
-    diffs = index.to_series().diff().dropna().dt.total_seconds().div(60)
+def _case_datetime_index(series: pd.Series, timezone: str | None = None) -> pd.DatetimeIndex:
+    index = pd.DatetimeIndex(series)
+    if timezone is None or index.tz is not None:
+        return index
+    try:
+        return index.tz_localize(timezone, ambiguous="infer", nonexistent="raise")
+    except (TypeError, ValueError) as exc:
+        raise DataValidationError(
+            f"Could not interpret forecast timestamps in timezone '{timezone}'. "
+            "For spring DST changes, remove nonexistent local timestamps. For autumn "
+            "DST changes, include both duplicated local timestamps in chronological order "
+            "or provide timezone-aware timestamps."
+        ) from exc
+
+
+def _infer_step_minutes(index: pd.DatetimeIndex, timezone: str | None = None) -> int:
+    validation_index = _elapsed_time_index(index, timezone)
+    diffs = validation_index.to_series().diff().dropna().dt.total_seconds().div(60)
     unique = sorted(set(int(value) for value in diffs))
     if len(unique) != 1:
         raise DataValidationError(
@@ -284,6 +317,98 @@ def _infer_step_minutes(index: pd.DatetimeIndex) -> int:
             + " minutes"
         )
     return unique[0]
+
+
+def _expected_period_count(
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    timestep_minutes: int,
+    timezone: str | None = None,
+) -> int:
+    if timezone is None:
+        elapsed_minutes = (end - start).total_seconds() / 60
+    else:
+        start_utc = _local_timestamp_to_utc(start, timezone, label="simulation_start")
+        end_utc = _local_timestamp_to_utc(end, timezone, label="simulation_end")
+        elapsed_minutes = (end_utc - start_utc).total_seconds() / 60
+    return int(elapsed_minutes / timestep_minutes) + 1
+
+
+def _case_date_range(
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    timestep_minutes: int,
+    timezone: str | None = None,
+) -> pd.DatetimeIndex:
+    if timezone is None:
+        return pd.date_range(start=start, end=end, freq=f"{timestep_minutes}min")
+    try:
+        return pd.date_range(
+            start=start,
+            end=end,
+            freq=f"{timestep_minutes}min",
+            tz=timezone,
+        )
+    except (TypeError, ValueError) as exc:
+        raise DataValidationError(
+            f"Could not create a {timestep_minutes}-minute datetime grid in timezone "
+            f"'{timezone}'. Check case.timezone, simulation_start and simulation_end."
+        ) from exc
+
+
+def _elapsed_time_index(index: pd.DatetimeIndex, timezone: str | None) -> pd.DatetimeIndex:
+    """Return timestamps on an elapsed-time axis for robust DST-aware grid checks."""
+
+    if timezone is None:
+        return index
+    if index.tz is not None:
+        return index.tz_convert("UTC")
+    try:
+        return index.tz_localize(timezone, ambiguous="infer", nonexistent="raise").tz_convert("UTC")
+    except (TypeError, ValueError) as exc:
+        raise DataValidationError(
+            f"Could not validate forecast timestamps in timezone '{timezone}'. "
+            "If the data cover the autumn DST clock change, use timezone-aware "
+            "timestamps or make duplicated local times distinguishable."
+        ) from exc
+
+
+def _timestamp_for_index(
+    timestamp: pd.Timestamp,
+    index: pd.DatetimeIndex,
+    label: str,
+) -> pd.Timestamp:
+    if index.tz is None:
+        return timestamp.tz_localize(None) if timestamp.tzinfo is not None else timestamp
+    try:
+        if timestamp.tzinfo is not None:
+            return timestamp.tz_convert(index.tz)
+        return timestamp.tz_localize(index.tz, ambiguous="raise", nonexistent="raise")
+    except (TypeError, ValueError) as exc:
+        raise DataValidationError(
+            f"Configured {label}={timestamp} cannot be interpreted unambiguously in "
+            f"timezone '{index.tz}'. Choose an existing, unambiguous local timestamp "
+            "or provide timezone-aware timestamps."
+        ) from exc
+
+
+def _local_timestamp_to_utc(
+    timestamp: pd.Timestamp,
+    timezone: str,
+    label: str,
+) -> pd.Timestamp:
+    if timestamp.tzinfo is not None:
+        return timestamp.tz_convert("UTC")
+    try:
+        return timestamp.tz_localize(timezone, ambiguous="raise", nonexistent="raise").tz_convert(
+            "UTC"
+        )
+    except (TypeError, ValueError) as exc:
+        raise DataValidationError(
+            f"Configured {label}={timestamp} cannot be interpreted unambiguously in "
+            f"timezone '{timezone}'. Choose an existing, unambiguous local timestamp "
+            "or provide timezone-aware timestamps."
+        ) from exc
 
 
 def _demand_column_for_plant(plant_name: str, plant_rows: pd.DataFrame) -> str:

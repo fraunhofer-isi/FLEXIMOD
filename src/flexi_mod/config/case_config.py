@@ -65,6 +65,14 @@ class CaseConfig:
         return str(self.raw["case"]["simulation_end"])
 
     @property
+    def timezone(self) -> str | None:
+        value = self.raw["case"].get("timezone")
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @property
     def additional_charges_enabled(self) -> bool:
         return bool(self.raw["case"].get("additional_charges", False))
 

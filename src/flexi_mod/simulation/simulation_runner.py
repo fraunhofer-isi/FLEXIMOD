@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ from flexi_mod.data.data_loader import DataLoader
 from flexi_mod.ledgers.market_ledger import MarketLedger
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.markets import BaseMarket, build_markets
+from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
 from flexi_mod.plants.steam_generation_plant import DispatchSignals, SteamGenerationPlant
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.visualisation.analytics import calculate_summary_indicators
@@ -92,6 +94,11 @@ class SimulationRunner:
         forecasts = self.loader.load_forecasts(required_columns=required_columns)
         self._progress("Input data loaded")
         dispatch_results = self._run_market_sequence(plants, forecasts, strategy)
+        if AFRR_ENERGY in self.config.enabled_markets:
+            strategy.afrr_energy_data_quality_summary = _full_period_afrr_quality_summary(
+                self.config,
+                forecasts,
+            )
 
         output_dir = self.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -169,7 +176,6 @@ class SimulationRunner:
     ) -> pd.DataFrame:
         dispatch_parts: list[pd.DataFrame] = []
         capacity_summary_parts: list[pd.DataFrame] = []
-        afrr_quality_parts: list[pd.DataFrame] = []
         self._report_market_calendar_notices()
         windows = list(_decision_windows(self.config, forecasts))
         if not windows:
@@ -226,12 +232,6 @@ class SimulationRunner:
                         fixed_positions = stage_result
                         stage_outputs[market.name] = fixed_positions.copy()
                         dispatch_stage_ran = True
-                        if market.name == AFRR_ENERGY and not (
-                            strategy.afrr_energy_data_quality_summary.empty
-                        ):
-                            afrr_quality_parts.append(
-                                strategy.afrr_energy_data_quality_summary.copy()
-                            )
                     self._progress(f"{_stage_label(market.name)} stage solved for {plant.name}")
 
                 if not dispatch_stage_ran:
@@ -256,10 +256,6 @@ class SimulationRunner:
             strategy.afrr_capacity_block_summary = _combine_capacity_summaries(
                 capacity_summary_parts
             )
-        if afrr_quality_parts:
-            strategy.afrr_energy_data_quality_summary = _combine_afrr_quality_summaries(
-                afrr_quality_parts
-            )
 
         combined = (
             pd.concat(dispatch_parts)
@@ -279,7 +275,7 @@ class SimulationRunner:
         rolling = bool(self.config.dispatch_setting("rolling_horizon_enabled", True))
         if rolling:
             self._progress(
-                f"Market calendar: {horizon:g} h decision window, {step:g} h rolling step"
+                f"Market calendar: {step:g} h commit window, {horizon:g} h optimisation horizon"
             )
         else:
             self._progress("Market calendar: single full-period decision window")
@@ -555,12 +551,16 @@ def _combine_capacity_summaries(parts: list[pd.DataFrame]) -> pd.DataFrame:
     return combined.sort_values("block_start").reset_index(drop=True)
 
 
-def _combine_afrr_quality_summaries(parts: list[pd.DataFrame]) -> pd.DataFrame:
-    numeric_parts = [part.select_dtypes(include=["number"]) for part in parts if not part.empty]
-    if not numeric_parts:
-        return pd.DataFrame()
-    totals = pd.concat(numeric_parts, ignore_index=True).sum(axis=0)
-    return pd.DataFrame([totals.to_dict()])
+def _full_period_afrr_quality_summary(config: CaseConfig, forecasts: pd.DataFrame) -> pd.DataFrame:
+    market = AFRRDownEnergyMarket("afrr_energy", config.market("afrr_energy"))
+    timestep_hours = config.timestep_minutes / 60.0
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        prepared = market.prepare_market_data(
+            forecasts,
+            timestep_hours=timestep_hours,
+        )
+    return prepared.quality_summary
 
 
 def _market_timing_message(market: BaseMarket, delivery_start: pd.Timestamp) -> str:

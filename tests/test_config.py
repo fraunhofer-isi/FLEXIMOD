@@ -232,7 +232,7 @@ markets:
         CaseConfig.from_case_dir(case_dir)
 
 
-def test_dispatch_horizon_defines_market_decision_window(tmp_path: Path) -> None:
+def test_rolling_step_defines_market_commit_window(tmp_path: Path) -> None:
     case_dir = tmp_path / "window_case"
     case_dir.mkdir()
     _write_window_config(case_dir / "config.yaml", dispatch_horizon_hours=24)
@@ -245,20 +245,32 @@ def test_dispatch_horizon_defines_market_decision_window(tmp_path: Path) -> None
     assert all(len(window.commit_index) == 96 for window in windows)
 
 
-def test_larger_dispatch_horizon_creates_larger_decision_windows(tmp_path: Path) -> None:
+def test_larger_dispatch_horizon_keeps_daily_commit_windows(tmp_path: Path) -> None:
     case_dir = tmp_path / "two_day_window_case"
     case_dir.mkdir()
-    _write_window_config(case_dir / "config.yaml", dispatch_horizon_hours=48)
+    _write_window_config(
+        case_dir / "config.yaml",
+        dispatch_horizon_hours=48,
+        rolling_step_hours=24,
+    )
     config = CaseConfig.from_case_dir(case_dir)
     forecasts = pd.DataFrame(index=pd.date_range("2025-01-01 00:00", periods=96 * 4, freq="15min"))
 
     windows = _decision_windows(config, forecasts)
 
-    assert len(windows) == 2
-    assert all(len(window.commit_index) == 192 for window in windows)
+    assert len(windows) == 4
+    assert all(len(window.commit_index) == 96 for window in windows)
+    assert len(windows[0].forecasts) == 192
 
 
-def _write_window_config(path: Path, dispatch_horizon_hours: int) -> None:
+def _write_window_config(
+    path: Path,
+    dispatch_horizon_hours: int,
+    rolling_step_hours: int | None = None,
+) -> None:
+    rolling_step_line = (
+        f"    rolling_step_hours: {rolling_step_hours}\n" if rolling_step_hours is not None else ""
+    )
     path.write_text(
         f"""
 case:
@@ -273,6 +285,7 @@ strategy:
     dispatch_method: pyomo
     rolling_horizon_enabled: true
     dispatch_horizon_hours: {dispatch_horizon_hours}
+{rolling_step_line.rstrip()}
 solver:
   name: highs
   fallback_solvers: []
