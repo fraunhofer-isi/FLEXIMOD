@@ -24,6 +24,18 @@ plant model: feasible dispatch, heat balance, storage balance, costs
 runner: sequencing, input/output coordination
 ```
 
+The runner applies these strategy methods inside each configured decision
+window. For example, with a 24-hour decision window the sequence is:
+
+```text
+day 1: decide_afrr_capacity -> decide_day_ahead -> decide_intraday_continuous -> decide_afrr_energy
+day 2: decide_afrr_capacity -> decide_day_ahead -> decide_intraday_continuous -> decide_afrr_energy
+...
+```
+
+If a market is disabled, its strategy method is skipped and the downstream
+positions default to zero where this is physically meaningful.
+
 The current base strategy interface is defined in:
 
 ```text
@@ -379,6 +391,25 @@ The plant model decides:
 The strategy only decides when charging is economically allowed. The plant model
 decides how much charging is useful and feasible.
 
+## aFRR Down Capacity Strategy Logic
+
+When enabled, aFRR down capacity is evaluated before day-ahead. The strategy
+uses 4-hour capacity blocks prepared by the market class and applies a
+conservative rule:
+
+```text
+reserve capacity only if:
+    capacity revenue covers estimated opportunity cost
+    possible activation energy is economically safe versus the gas benchmark
+    ETES charge-power and storage-capacity headroom are sufficient
+```
+
+Capacity reservation itself does not add energy to storage. It only reserves
+charging headroom and earns capacity revenue. If aFRR energy is also enabled,
+later aFRR down activation is capacity-backed. If aFRR capacity is enabled but
+aFRR energy is disabled, the runner logs this clearly: capacity revenue can be
+modelled, but activation energy is not modelled.
+
 ## Current Simplifications
 
 The current DA + IDC + aFRR down strategy is deliberately simple:
@@ -400,9 +431,13 @@ realistic market mechanisms.
 
 ## Planned Strategy Extensions
 
-The next strategy stage should be:
+The next strategy extensions should improve market realism around the existing
+stages:
 
-1. Negative aFRR capacity with reserved charging headroom.
+1. Optional extra aFRR energy bids above awarded capacity.
+2. Strict bid increments and bid granularity.
+3. Bid acceptance probability or merit-order award modelling.
+4. Forecast-based or stochastic price expectations.
 
 The key rule for all future stages:
 

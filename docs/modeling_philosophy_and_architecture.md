@@ -46,7 +46,8 @@ hard-code market rules. The runner coordinates the order in which both are used.
 ## Sequential Market Logic
 
 Markets are evaluated in the order defined by `market_sequence` in `config.yaml`.
-The intended market sequence is:
+They are evaluated inside each rolling decision window, not one market over the
+entire simulation period. The intended market sequence is:
 
 ```text
 afrr_capacity -> day_ahead -> intraday_continuous -> afrr_energy
@@ -54,7 +55,7 @@ afrr_capacity -> day_ahead -> intraday_continuous -> afrr_energy
 
 After these market stages, the model performs final physical dispatch/accounting.
 The intended rule is that earlier market decisions become fixed when later
-markets are evaluated.
+markets are evaluated inside the same decision window.
 
 Examples:
 
@@ -64,19 +65,39 @@ Examples:
 - aFRR energy must use only the remaining ETES charging headroom, or the reserved
   capacity headroom when capacity is enabled.
 
-## Rolling-Horizon Plant Dispatch
+## Decision Windows And Rolling Simulation
 
-The current plant dispatch is deterministic rolling horizon:
+The current market-calendar simulation is deterministic and window-based:
 
-- solve a 48-hour Pyomo horizon;
-- implement the first 24 hours;
-- carry the implemented final state of charge into the next horizon;
-- continue until the simulation period ends.
+- `dispatch_horizon_hours` defines the market decision window;
+- `rolling_step_hours` defines how far the simulation moves forward after each
+  decision window;
+- all configured market stages are cleared inside the current window;
+- only the final enabled market stage in that window carries ETES state of
+  charge into the next window.
 
-This rolling horizon is located in `SteamGenerationPlant.solve_rolling`.
+For example, with:
 
-The market simulation is sequential. The plant dispatch inside each market stage
-is rolling horizon. These are related but distinct concepts.
+```yaml
+dispatch_horizon_hours: 24
+rolling_step_hours: 24
+```
+
+the runner makes daily decisions:
+
+```text
+day 1: afrr_capacity -> day_ahead -> intraday_continuous -> afrr_energy
+day 2: afrr_capacity -> day_ahead -> intraday_continuous -> afrr_energy
+...
+```
+
+If both values are changed to `48`, the model makes two-day decision windows.
+The sequence remains modular: disabled markets are skipped, and the configured
+`market_sequence` controls the stage order.
+
+The plant-level Pyomo solves live in `SteamGenerationPlant`. The simulation
+runner decides which forecast slice, initial state of charge, fixed market
+positions, and reserved headroom are passed to each stage.
 
 ## Main Package
 
@@ -110,7 +131,7 @@ The case configuration describes modelling assumptions and market setup:
 
 - case name, country, time range, and time resolution;
 - active strategy name;
-- Pyomo dispatch horizon and rolling step;
+- market decision window and rolling step;
 - solver choice;
 - market sequence;
 - market enable flags;

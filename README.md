@@ -174,10 +174,10 @@ gas-based benchmark and later IDC/aFRR bidding rules are embedded in
 `HybridETESGasStrategy`, so the config stays compact and close to the market
 setup.
 
-## Sequential Simulation
+## Market-Calendar Simulation
 
-Markets are evaluated in the order given by `market_sequence`. The intended
-industrial sequence is:
+Markets are evaluated in the order given by `market_sequence`, inside each
+rolling decision window. The intended industrial sequence is:
 
 ```text
 aFRR down capacity reservation
@@ -187,11 +187,39 @@ aFRR down capacity reservation
 -> final physical dispatch/accounting
 ```
 
+With the current German case settings:
+
+```yaml
+strategy:
+  dispatch:
+    rolling_horizon_enabled: true
+    dispatch_horizon_hours: 24
+    rolling_step_hours: 24
+```
+
+FLEXIMOD runs one delivery day at a time:
+
+```text
+Day 1: configured market stages -> final dispatch/accounting
+Day 2: configured market stages -> final dispatch/accounting
+...
+```
+
+If `dispatch_horizon_hours` and `rolling_step_hours` are both changed to `48`,
+the model makes two-day decision windows instead. Disabled markets are skipped
+cleanly, and missing intermediate markets use zero positions or reserves where
+that is physically meaningful.
+
 aFRR down capacity, when enabled, reserves ETES charging headroom before the
 day-ahead stage. Day-ahead then creates a fixed electricity baseline. Intraday
 continuous can adjust that baseline through buy/sell volumes. aFRR down energy
 adds proxy activated electricity consumption on top of the final planned
 position.
+
+The market timing metadata in `config.yaml`, such as `gate_open` and
+`gate_close`, is read and reported by the runner. For the German case, this
+keeps day-ahead, intraday, aFRR capacity, and aFRR energy timing assumptions in
+the case configuration rather than in the strategy code.
 
 The aFRR down activation signal is system-level/proxy activation, not plant-specific activation. Results should be interpreted as a scenario based on the available system activation proxy unless plant-specific bid acceptance and activation data are available.
 
@@ -203,14 +231,17 @@ The aFRR down price sign convention is:
 
 If source data use another convention, preprocess it before putting it into `forecasts_df.csv`.
 
-## Pyomo Rolling Horizon
+## Decision Windows And Pyomo Dispatch
 
-The plant dispatch is deterministic rolling horizon. In the first case:
+The plant dispatch is solved with Pyomo inside each market stage and decision
+window. For the current case:
 
-- solve a 48-hour Pyomo dispatch horizon;
-- implement the first 24 hours;
-- carry the ETES state of charge into the next solve;
-- repeat until the simulation period ends.
+- `dispatch_horizon_hours` defines the market decision window;
+- `rolling_step_hours` defines how far the window advances;
+- all market stages in one decision window start from the same physical ETES
+  state of charge;
+- only the final enabled stage in that window updates ETES state of charge for
+  the next window.
 
 The Pyomo model enforces technology limits, storage state of charge, and strict
 useful heat dispatch. For the current ETES + gas boiler case:
