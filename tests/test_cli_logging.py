@@ -65,6 +65,8 @@ def test_run_case_concise_output_hides_individual_output_paths(
     output = capsys.readouterr().out
     assert "Case started: cli_case" in output
     assert "Additional charges: disabled; market prices are used directly." in output
+    assert "Simulating 2025-01-01 for plant_1 (1/1 windows, 0 remaining)" in output
+    assert "Day-ahead stage solved for plant_1" not in output
     assert "Case completed: 1 table file(s), 1 plot file(s) saved." in output
     assert "Created outputs:" not in output
     assert "dispatch_results.csv" not in output
@@ -83,6 +85,7 @@ def test_run_case_verbose_output_lists_created_paths(
 
     output = capsys.readouterr().out
     assert "Additional charges: enabled; plant_1 = 12.10 EUR/MWh_el." in output
+    assert "Day-ahead stage solved for plant_1" in output
     assert "dispatch_results.csv" in output
     assert "plot_1.png" in output
 
@@ -113,6 +116,9 @@ def _patch_runner(monkeypatch: pytest.MonkeyPatch) -> None:
 
         def run(self) -> dict[str, Path | list[Path]]:
             if self.progress_callback is not None:
+                self.progress_callback(
+                    "Simulating 2025-01-01 for plant_1 (1/1 windows, 0 remaining)"
+                )
                 self.progress_callback("Day-ahead stage solved for plant_1")
                 self.progress_callback("Outputs saved")
             return {

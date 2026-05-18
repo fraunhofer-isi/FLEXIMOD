@@ -36,7 +36,8 @@ class CliLogger:
         print(f"Error: {message}")
 
     def progress(self, message: str) -> None:
-        print(message)
+        if self.verbose or _show_progress_by_default(message):
+            print(message)
 
     @contextmanager
     def capture_warnings(self) -> Iterator[None]:
@@ -129,3 +130,17 @@ def _friendly_warning(message: str) -> str:
             "is set to zero for those timesteps."
         )
     return replacements.get(message, message)
+
+
+def _show_progress_by_default(message: str) -> bool:
+    default_prefixes = (
+        "Loading input data",
+        "Input data loaded",
+        "Market calendar:",
+        "Simulating ",
+        "Plot creation started",
+        "Plots created",
+        "Outputs saved",
+        "Notice:",
+    )
+    return message.startswith(default_prefixes)

@@ -180,14 +180,26 @@ class SimulationRunner:
         windows = list(_decision_windows(self.config, forecasts))
         if not windows:
             raise ValueError("No decision windows could be created from forecasts_df.csv")
+        total_windows = len(plants) * len(windows)
+        progress_counter = 0
 
         for plant in plants:
             current_soc = plant.etes.initial_soc_mwh
             for window in windows:
+                progress_counter += 1
                 window_forecasts = window.forecasts
                 commit_index = window.commit_index
                 window_start = pd.Timestamp(commit_index[0])
                 window_end = pd.Timestamp(commit_index[-1])
+                self._progress(
+                    _window_progress_message(
+                        current=progress_counter,
+                        total=total_windows,
+                        plant_name=plant.name,
+                        window_start=window_start,
+                        window_end=window_end,
+                    )
+                )
                 self._progress(
                     f"Delivery window {window.number} for {plant.name}: "
                     f"{window_start:%Y-%m-%d %H:%M} to {window_end:%Y-%m-%d %H:%M}; "
@@ -406,6 +418,24 @@ def _decision_windows(config: CaseConfig, forecasts: pd.DataFrame) -> list[Decis
         position += commit_count
         number += 1
     return windows
+
+
+def _window_progress_message(
+    current: int,
+    total: int,
+    plant_name: str,
+    window_start: pd.Timestamp,
+    window_end: pd.Timestamp,
+) -> str:
+    if window_start.date() == window_end.date():
+        window_label = f"{window_start:%Y-%m-%d}"
+    else:
+        window_label = f"{window_start:%Y-%m-%d} to {window_end:%Y-%m-%d}"
+    remaining = max(total - current, 0)
+    return (
+        f"Simulating {window_label} for {plant_name} "
+        f"({current}/{total} windows, {remaining} remaining)"
+    )
 
 
 def _zero_market_positions(index: pd.DatetimeIndex) -> pd.DataFrame:
