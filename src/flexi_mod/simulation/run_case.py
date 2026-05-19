@@ -25,20 +25,19 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 available_examples: dict[str, dict[str, str]] = {
-    "hybrid_etes_de": {
-        "scenario": "hybrid_ETES_DE",
+    "hybrid_ETES_ID_buy_sell": {
+        "scenario": "hybrid_ETES_ID_buy_sell",
         "study_case": "base",
     },
-    # Add future examples here once their input folders exist, for example:
-    # "hybrid_etes_de_high_gas": {
-    #     "scenario": "hybrid_ETES_DE",
-    #     "study_case": "high_gas_price",
-    # },
+    "hybrid_ETES_ID_buy": {
+        "scenario": "hybrid_ETES_ID_buy",
+        "study_case": "base",
+    },
 }
 
 
 # Select the example to run from the available examples above.
-example = "hybrid_etes_de"
+example = "hybrid_ETES_ID_buy"
 
 
 def resolve_example_paths(example: str) -> dict[str, Path]:
