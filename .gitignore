@@ -13,7 +13,7 @@ dist/
 *.egg-info/
 
 data/input/Archive/
-data/output/
+# data/output/
 data/processed/
 *.xlsx
 *.parquet
