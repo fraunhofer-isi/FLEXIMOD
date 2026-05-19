@@ -19,6 +19,47 @@ The architecture is intentionally modular:
 - `plants.csv` defines one plant by grouping connected technology rows.
 - `forecasts_df.csv` contains all time series.
 
+## Quick Start For Beginners
+
+FLEXIMOD targets Python 3.13 or newer. From a fresh checkout, open PowerShell in
+the repository folder and run:
+
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Linux/macOS users can activate the same `.venv` layout with:
+
+```bash
+source .venv/bin/activate
+```
+
+Run the first case:
+
+```powershell
+python src\flexi_mod\simulation\run_case.py --case data\input\hybrid_ETES_DE
+```
+
+Create plots from the generated output:
+
+```powershell
+python src\flexi_mod\simulation\plot_case.py --case data\input\hybrid_ETES_DE
+```
+
+Check the output folder:
+
+```text
+data/output/hybrid_ETES_DE/
+|-- dispatch_results.csv
+|-- market_ledger.csv
+|-- storage_cost_ledger.csv
+|-- summary_indicators.csv
+`-- plots/
+```
+
 ## Input Structure
 
 The first case is stored in:
@@ -81,9 +122,8 @@ reservation or capacity revenue.
 
 ## Run The First Case
 
-FLEXIMOD targets Python 3.13 or newer.
-
-Run the registered example:
+The beginner setup above shows the complete installation and first run. Once the
+environment is active, you can run the registered example:
 
 ```bash
 python src/flexi_mod/simulation/run_case.py --example hybrid_etes_de
@@ -119,6 +159,12 @@ plant operation and storage dynamics, market prices and benchmark, electricity
 procurement, storage content by source market, a sample-day explanation figure,
 cost breakdown, heat supply share, electricity market share, and price-response
 plots.
+
+## Troubleshooting
+
+- If `pre-commit` is not recognized, run `python -m pip install -r requirements.txt`.
+- If solver errors mention HiGHS or `highspy`, confirm installation with `python -m pip show highspy`.
+- If input data are missing, check that `data/input/hybrid_ETES_DE/` contains `config.yaml`, `plants.csv`, and `forecasts_df.csv`.
 
 ## Pre-Commit Hooks
 

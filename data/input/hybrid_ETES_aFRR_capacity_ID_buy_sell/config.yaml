@@ -1,0 +1,90 @@
+# SPDX-FileCopyrightText: FLEXIMOD Developers
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+case:
+  name: hybrid_ETES_DE
+  country: DE
+  description: "Hybrid ETES + gas boiler case for Germany"
+  timestep_minutes: 15
+  simulation_start: "2025-01-01 00:00"
+  simulation_end: "2025-12-31 23:45"
+  timezone: "Europe/Berlin"
+  additional_charges: true
+
+strategy:
+  name: hybrid_etes_gas
+  dispatch:
+    dispatch_method: pyomo
+    rolling_horizon_enabled: true
+    dispatch_horizon_hours: 48
+    rolling_step_hours: 24
+
+solver:
+  name: highs
+  fallback_solvers:
+    - gurobi
+  tee: false
+
+market_sequence:
+  # Physical dispatch/accounting happens after the configured markets are cleared.
+  - afrr_capacity
+  - day_ahead
+  - intraday_continuous
+  - afrr_energy
+
+markets:
+  afrr_capacity:
+    enabled: false
+    direction: "down"
+    product_length: "4h"
+    price_unit: "EUR_per_MW_per_h"
+    gate_open:
+      day_relation: "D-7"
+      time: "10:00"
+    gate_close:
+      day_relation: "D-1"
+      time: "09:00"
+    product_rules:
+      min_bid_mw: 1.0
+      bid_increment_mw: 1.0
+      divisible: true
+    signals:
+      price: "aFRR_capacity_down_price"
+
+  day_ahead:
+    enabled: true
+    product_resolution: "15min"
+    gate_close:
+      day_relation: "D-1"
+      time: "12:00"
+    signals:
+      price: "DE_DA_price"
+
+  intraday_continuous:
+    enabled: true
+    product_resolution: "15min"
+    gate_close:
+      relative_to_delivery_start_minutes: -5
+    allowed_actions:
+      buy: true
+      sell: true
+    signals:
+      price: "DE_ID3_price"
+      volume: "DE_ID3_volume"
+
+  afrr_energy:
+    enabled: true
+    direction: "down"
+    product_resolution: "15min"
+    gate_close:
+      relative_to_delivery_start_minutes: -25
+    product_rules:
+      min_bid_mw: 1.0
+      bid_increment_mw: 1.0
+      validity_period_minutes: 15
+    signals:
+      price: "aFRR_energy_down_price"
+      system_activation: "aFRR_energy_down_quantity"
+    interpretation:
+      activation_unit: "MW"

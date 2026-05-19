@@ -33,11 +33,19 @@ available_examples: dict[str, dict[str, str]] = {
         "scenario": "hybrid_ETES_ID_buy",
         "study_case": "base",
     },
+    "hybrid_ETES_aFRR_capacity_ID_buy_sell": {
+        "scenario": "hybrid_ETES_aFRR_capacity_ID_buy_sell",
+        "study_case": "base",
+    },
+    "hybrid_ETES_aFRR_capacity_ID_buy": {
+        "scenario": "hybrid_ETES_aFRR_capacity_ID_buy",
+        "study_case": "base",
+    },
 }
 
 
 # Select the example to run from the available examples above.
-example = "hybrid_ETES_ID_buy"
+example = "hybrid_ETES_aFRR_capacity_ID_buy"
 
 
 def resolve_example_paths(example: str) -> dict[str, Path]:
