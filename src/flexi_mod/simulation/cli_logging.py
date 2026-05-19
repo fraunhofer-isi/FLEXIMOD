@@ -97,7 +97,7 @@ def additional_charges_message(enabled: bool, charges: dict[str, float] | None =
 def missing_additional_charges_message(path: Path) -> str:
     return (
         "Additional charges are enabled, but additional_charges.csv was not found at "
-        f"{path}. Add the file or set case.additional_charges: false."
+        f"{path}. Add the file or set cases.<case_name>.additional_charges: false."
     )
 
 

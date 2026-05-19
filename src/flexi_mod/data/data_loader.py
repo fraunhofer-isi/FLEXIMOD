@@ -66,8 +66,9 @@ class DataLoader:
     def load_additional_charges(self, plants: pd.DataFrame) -> dict[str, float]:
         """Load plant-specific electricity consumption charge adders.
 
-        The file is required only when ``case.additional_charges`` is true. Values
-        are summed over all component rows and interpreted as EUR/MWh_el consumed.
+        The file is required only when the selected study case has
+        ``additional_charges`` set to true. Values are summed over all component
+        rows and interpreted as EUR/MWh_el consumed.
         """
 
         plant_names = sorted(str(name) for name in plants["name"].dropna().unique())
@@ -77,7 +78,8 @@ class DataLoader:
         path = self.additional_charges_path
         if not path.exists():
             raise FileNotFoundError(
-                f"case.additional_charges=true but additional_charges.csv was not found at {path}"
+                "cases.<case_name>.additional_charges=true but additional_charges.csv "
+                f"was not found at {path}"
             )
 
         charges = pd.read_csv(path, skipinitialspace=True)

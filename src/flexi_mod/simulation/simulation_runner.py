@@ -56,15 +56,16 @@ class SimulationRunner:
         output_dir: str | Path | None = None,
         plants_file: str = "plants.csv",
         forecasts_file: str = "forecasts_df.csv",
+        study_case: str | None = None,
         output_options: OutputOptions | None = None,
         progress_callback: Callable[[str], None] | None = None,
     ):
-        self.config = CaseConfig.from_case_dir(case_dir)
+        self.config = CaseConfig.from_case_dir(case_dir, study_case=study_case)
         self.input_dir = Path(input_dir).resolve() if input_dir else Path(case_dir).resolve()
         self.output_dir = (
             Path(output_dir).resolve()
             if output_dir
-            else self.config.project_root / "data" / "output" / self.config.case_name
+            else self.config.project_root / "data" / "output" / self.config.output_folder_name
         )
         self.output_options = output_options or OutputOptions()
         self._progress_callback = progress_callback

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import case_config_text
 
 from flexi_mod.simulation import run_case
 from flexi_mod.simulation.cli_logging import CliLogger, output_summary, print_verbose_outputs
@@ -57,7 +58,7 @@ def test_run_case_concise_output_hides_individual_output_paths(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     case_dir = _write_cli_case(tmp_path, additional_charges=False)
-    _patch_runner(monkeypatch)
+    captured = _patch_runner(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["run_case.py", "--case", str(case_dir)])
 
     run_case.main()
@@ -70,6 +71,7 @@ def test_run_case_concise_output_hides_individual_output_paths(
     assert "Case completed: 1 table file(s), 1 plot file(s) saved." in output
     assert "Created outputs:" not in output
     assert "dispatch_results.csv" not in output
+    assert captured["kwargs"]["output_dir"].name == "cli_case_hybrid_etes_gas"
 
 
 def test_run_case_verbose_output_lists_created_paths(
@@ -90,6 +92,31 @@ def test_run_case_verbose_output_lists_created_paths(
     assert "plot_1.png" in output
 
 
+def test_run_case_direct_study_case_is_passed_to_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case_dir = _write_cli_case(tmp_path, additional_charges=False)
+    captured = _patch_runner(monkeypatch)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_case.py", "--case", str(case_dir), "--study-case", "cli_case"],
+    )
+
+    run_case.main()
+
+    assert captured["kwargs"]["study_case"] == "cli_case"
+    assert captured["kwargs"]["output_dir"].name == "cli_case_hybrid_etes_gas"
+
+
+def test_example_registry_uses_study_case_key() -> None:
+    paths = run_case.resolve_example_paths("hybrid_ETES_ID_buy")
+
+    assert paths["case_dir"].name == "hybrid_ETES_ID_buy"
+    assert paths["study_case"] == "hybrid_ETES_ID_buy"
+
+
 def test_run_case_missing_additional_charges_is_actionable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -104,15 +131,19 @@ def test_run_case_missing_additional_charges_is_actionable(
 
     output = capsys.readouterr().out
     assert "Additional charges are enabled" in output
-    assert "Add the file or set case.additional_charges: false" in output
+    assert "Add the file or set cases.<case_name>.additional_charges: false" in output
 
 
-def _patch_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_runner(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     import flexi_mod.simulation.simulation_runner as runner_module
+
+    captured: dict[str, Any] = {}
 
     class FakeRunner:
         def __init__(self, *args: Any, progress_callback=None, **kwargs: Any) -> None:
             self.progress_callback = progress_callback
+            captured["args"] = args
+            captured["kwargs"] = kwargs
 
         def run(self) -> dict[str, Path | list[Path]]:
             if self.progress_callback is not None:
@@ -127,6 +158,7 @@ def _patch_runner(monkeypatch: pytest.MonkeyPatch) -> None:
             }
 
     monkeypatch.setattr(runner_module, "SimulationRunner", FakeRunner)
+    return captured
 
 
 def _write_cli_case(
@@ -137,7 +169,8 @@ def _write_cli_case(
     case_dir = tmp_path / "cli_case"
     case_dir.mkdir()
     (case_dir / "config.yaml").write_text(
-        f"""
+        case_config_text(
+            f"""
 case:
   name: cli_case
   country: DE
@@ -160,7 +193,8 @@ markets:
     enabled: true
     signals:
       price: DE_DA_price
-""".strip(),
+""".strip()
+        ),
         encoding="utf-8",
     )
     (case_dir / "plants.csv").write_text(

@@ -27,28 +27,28 @@ if str(SRC_DIR) not in sys.path:
 available_examples: dict[str, dict[str, str]] = {
     "hybrid_ETES_ID_buy_sell": {
         "scenario": "hybrid_ETES_ID_buy_sell",
-        "study_case": "base",
+        "study_case": "hybrid_ETES_ID_buy_sell",
     },
     "hybrid_ETES_ID_buy": {
         "scenario": "hybrid_ETES_ID_buy",
-        "study_case": "base",
+        "study_case": "hybrid_ETES_ID_buy",
     },
     "hybrid_ETES_aFRR_capacity_ID_buy_sell": {
         "scenario": "hybrid_ETES_aFRR_capacity_ID_buy_sell",
-        "study_case": "base",
+        "study_case": "hybrid_ETES_aFRR_capacity_ID_buy_sell",
     },
     "hybrid_ETES_aFRR_capacity_ID_buy": {
         "scenario": "hybrid_ETES_aFRR_capacity_ID_buy",
-        "study_case": "base",
+        "study_case": "hybrid_ETES_aFRR_capacity_ID_buy",
     },
 }
 
 
 # Select the example to run from the available examples above.
-example = "hybrid_ETES_aFRR_capacity_ID_buy"
+example = "hybrid_ETES_ID_buy"
 
 
-def resolve_example_paths(example: str) -> dict[str, Path]:
+def resolve_example_paths(example: str) -> dict[str, Path | str]:
     if example not in available_examples:
         options = ", ".join(sorted(available_examples))
         raise ValueError(f"Unknown example '{example}'. Available examples: {options}")
@@ -57,24 +57,17 @@ def resolve_example_paths(example: str) -> dict[str, Path]:
     scenario = settings["scenario"]
     study_case = settings["study_case"]
 
-    scenario_input_dir = PROJECT_ROOT / "data" / "input" / scenario
-    if study_case == "base":
-        input_dir = scenario_input_dir
-    else:
-        input_dir = scenario_input_dir / study_case
+    input_dir = PROJECT_ROOT / "data" / "input" / scenario
 
     if not input_dir.exists():
         raise FileNotFoundError(
             f"Input directory for example '{example}' does not exist: {input_dir}"
         )
 
-    scenario_output_dir = PROJECT_ROOT / "data" / "output" / scenario
-    output_dir = scenario_output_dir if study_case == "base" else scenario_output_dir / study_case
-
     return {
         "case_dir": input_dir,
         "input_dir": input_dir,
-        "output_dir": output_dir,
+        "study_case": study_case,
     }
 
 
@@ -83,20 +76,20 @@ def build_runner_settings(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.case:
         case_dir = Path(args.case).resolve()
-        output_dir = (
-            Path(args.output_dir).resolve()
-            if args.output_dir
-            else PROJECT_ROOT / "data" / "output" / case_dir.name
-        )
         paths = {
             "case_dir": case_dir,
             "input_dir": case_dir,
-            "output_dir": output_dir,
+            "study_case": args.study_case,
         }
     else:
         paths = resolve_example_paths(args.example)
-        if args.output_dir:
-            paths["output_dir"] = Path(args.output_dir).resolve()
+        if args.study_case:
+            paths["study_case"] = args.study_case
+
+    if args.output_dir:
+        paths["output_dir"] = Path(args.output_dir).resolve()
+    else:
+        paths["output_dir"] = None
 
     defaults = _default_output_options()
     output_options = OutputOptions(
@@ -150,8 +143,14 @@ def main() -> None:
         help="Optional direct path to an input directory containing config.yaml.",
     )
     parser.add_argument(
+        "--study-case",
+        "--case-name",
+        dest="study_case",
+        help="Study-case key inside config.yaml cases: mapping.",
+    )
+    parser.add_argument(
         "--output-dir",
-        help="Optional output directory. Defaults to data/output/<scenario>.",
+        help="Optional output directory. Defaults to data/output/<case_name>_<strategy_name>.",
     )
     parser.add_argument("--plants-file", default="plants.csv")
     parser.add_argument("--forecasts-file", default="forecasts_df.csv")
@@ -169,8 +168,12 @@ def main() -> None:
     logger = CliLogger(verbose=args.verbose)
 
     settings = build_runner_settings(args)
-    config = CaseConfig.from_case_dir(settings["case_dir"])
+    config = CaseConfig.from_case_dir(settings["case_dir"], study_case=settings["study_case"])
+    if settings["output_dir"] is None:
+        settings["output_dir"] = PROJECT_ROOT / "data" / "output" / config.output_folder_name
     logger.info(f"Case started: {config.case_name}")
+    logger.info(f"Study case: {config.study_case}")
+    logger.info(f"Strategy: {config.strategy_name}")
     logger.info(
         "Simulation: "
         f"{config.simulation_start} to {config.simulation_end}, "

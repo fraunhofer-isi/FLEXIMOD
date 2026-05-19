@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import yaml
+from conftest import case_config_text
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataLoader, DataValidationError
@@ -43,7 +45,8 @@ def test_idc_enabled_does_not_resample_price_grid(tmp_path: Path) -> None:
     case_dir = tmp_path / "idc_resolution_case"
     case_dir.mkdir()
     (case_dir / "config.yaml").write_text(
-        """
+        case_config_text(
+            """
 case:
   name: idc_resolution_case
   country: DE
@@ -71,7 +74,8 @@ markets:
     signals:
       price: DE_ID3_price
       volume: DE_ID3_volume
-""".strip(),
+""".strip()
+        ),
         encoding="utf-8",
     )
     pd.DataFrame(
@@ -94,13 +98,9 @@ markets:
 def test_additional_charges_are_loaded_only_when_enabled(tmp_path: Path) -> None:
     case_dir = _write_loader_case(tmp_path)
     config_path = case_dir / "config.yaml"
-    config_path.write_text(
-        config_path.read_text(encoding="utf-8").replace(
-            'simulation_end: "2025-01-07 23:45"',
-            'simulation_end: "2025-01-07 23:45"\n  additional_charges: true',
-        ),
-        encoding="utf-8",
-    )
+    config_data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config_data["cases"]["loader_case"]["additional_charges"] = True
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
     (case_dir / "additional_charges.csv").write_text(
         "\n".join(
             [
@@ -224,7 +224,8 @@ def _write_loader_case(tmp_path: Path) -> Path:
     case_dir = tmp_path / "loader_case"
     case_dir.mkdir()
     (case_dir / "config.yaml").write_text(
-        """
+        case_config_text(
+            """
 case:
   name: loader_case
   country: DE
@@ -266,7 +267,8 @@ markets:
       system_activation: aFRR_energy_down_quantity
     interpretation:
       activation_unit: MW
-""".strip(),
+""".strip()
+        ),
         encoding="utf-8",
     )
     pd.DataFrame(
@@ -316,7 +318,8 @@ def _write_day_ahead_only_case(tmp_path: Path) -> Path:
     case_dir = tmp_path / "da_only_loader_case"
     case_dir.mkdir()
     (case_dir / "config.yaml").write_text(
-        """
+        case_config_text(
+            """
 case:
   name: da_only_loader_case
   country: DE
@@ -349,7 +352,8 @@ markets:
     signals:
       price: aFRR_energy_down_price
       system_activation: aFRR_energy_down_quantity
-""".strip(),
+""".strip()
+        ),
         encoding="utf-8",
     )
     pd.DataFrame(
@@ -390,7 +394,8 @@ def _write_dst_loader_case(
     case_dir = tmp_path / "dst_loader_case"
     case_dir.mkdir()
     (case_dir / "config.yaml").write_text(
-        f"""
+        case_config_text(
+            f"""
 case:
   name: dst_loader_case
   country: DE
@@ -413,7 +418,8 @@ markets:
     enabled: true
     signals:
       price: DE_DA_price
-""".strip(),
+""".strip()
+        ),
         encoding="utf-8",
     )
     return case_dir

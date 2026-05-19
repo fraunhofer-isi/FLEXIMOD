@@ -22,51 +22,66 @@ class CaseConfig:
     raw: dict[str, Any]
     config_path: Path
     project_root: Path
+    study_case: str
+    case: dict[str, Any]
 
     @classmethod
-    def from_case_dir(cls, case_dir: str | Path) -> CaseConfig:
+    def from_case_dir(
+        cls,
+        case_dir: str | Path,
+        study_case: str | None = None,
+        case_name: str | None = None,
+    ) -> CaseConfig:
         case_dir = Path(case_dir).resolve()
         config_path = case_dir / "config.yaml"
         if not config_path.exists():
             raise FileNotFoundError(f"Could not find config.yaml in {case_dir}")
-        return cls.from_file(config_path)
+        return cls.from_file(config_path, study_case=study_case, case_name=case_name)
 
     @classmethod
-    def from_file(cls, config_path: str | Path) -> CaseConfig:
+    def from_file(
+        cls,
+        config_path: str | Path,
+        study_case: str | None = None,
+        case_name: str | None = None,
+    ) -> CaseConfig:
         config_path = Path(config_path).resolve()
         with config_path.open("r", encoding="utf-8") as handle:
             raw = yaml.safe_load(handle) or {}
+        selected_case = _select_case(raw, study_case=study_case, case_name=case_name)
         config = cls(
             raw=raw,
             config_path=config_path,
             project_root=_find_project_root(config_path),
+            study_case=selected_case,
+            case=dict(raw["cases"][selected_case]),
         )
         config.validate()
         return config
 
     @property
     def case_name(self) -> str:
-        return str(self.raw["case"]["name"])
+        return str(self.case["name"])
 
     @property
     def country(self) -> str:
-        return str(self.raw["case"]["country"])
+        return str(self.case["country"])
 
     @property
     def timestep_minutes(self) -> int:
-        return int(self.raw["case"]["timestep_minutes"])
+        return int(self.case["timestep_minutes"])
 
     @property
     def simulation_start(self) -> str:
-        return str(self.raw["case"]["simulation_start"])
+        return str(self.case["simulation_start"])
 
     @property
     def simulation_end(self) -> str:
-        return str(self.raw["case"]["simulation_end"])
+        return str(self.case["simulation_end"])
 
     @property
     def timezone(self) -> str | None:
-        value = self.raw["case"].get("timezone")
+        value = self.case.get("timezone")
         if value is None:
             return None
         text = str(value).strip()
@@ -74,27 +89,35 @@ class CaseConfig:
 
     @property
     def additional_charges_enabled(self) -> bool:
-        return bool(self.raw["case"].get("additional_charges", False))
+        return bool(self.case.get("additional_charges", False))
+
+    @property
+    def strategy_name(self) -> str:
+        return str(self.case.get("strategy", {}).get("name", ""))
+
+    @property
+    def output_folder_name(self) -> str:
+        return f"{self.case_name}_{self.strategy_name}"
 
     @property
     def solver_name(self) -> str:
-        return str(self.raw.get("solver", {}).get("name", "highs"))
+        return str(self.case.get("solver", {}).get("name", "highs"))
 
     @property
     def solver_fallbacks(self) -> list[str]:
-        return list(self.raw.get("solver", {}).get("fallback_solvers", []))
+        return list(self.case.get("solver", {}).get("fallback_solvers", []))
 
     @property
     def solver_tee(self) -> bool:
-        return bool(self.raw.get("solver", {}).get("tee", False))
+        return bool(self.case.get("solver", {}).get("tee", False))
 
     @property
     def market_sequence(self) -> list[str]:
-        return list(self.raw.get("market_sequence", []))
+        return list(self.case.get("market_sequence", []))
 
     @property
     def enabled_markets(self) -> list[str]:
-        markets = self.raw.get("markets", {})
+        markets = self.case.get("markets", {})
         return [
             market_name
             for market_name in self.market_sequence
@@ -103,7 +126,7 @@ class CaseConfig:
 
     def market(self, market_name: str) -> dict[str, Any]:
         try:
-            return self.raw["markets"][market_name]
+            return self.case["markets"][market_name]
         except KeyError as exc:
             raise ConfigError(f"Market '{market_name}' is not defined in config.yaml") from exc
 
@@ -117,36 +140,47 @@ class CaseConfig:
             ) from exc
 
     def dispatch_setting(self, name: str, default: Any = None) -> Any:
-        return self.raw.get("strategy", {}).get("dispatch", {}).get(name, default)
+        return self.case.get("strategy", {}).get("dispatch", {}).get(name, default)
 
     def validate(self) -> None:
-        required_sections = [
-            "case",
-            "strategy",
-            "solver",
-            "market_sequence",
-            "markets",
-        ]
-        missing = [section for section in required_sections if section not in self.raw]
+        if "cases" not in self.raw:
+            old_sections = {"case", "strategy", "market_sequence", "markets"}.intersection(self.raw)
+            if old_sections:
+                raise ConfigError(
+                    "config.yaml uses the old top-level case format. FLEXIMOD now "
+                    "requires a top-level 'cases:' mapping, with strategy, solver, "
+                    "market_sequence and markets nested under each case."
+                )
+            raise ConfigError("config.yaml must define a top-level 'cases:' mapping")
+
+        required_sections = ["strategy", "solver", "market_sequence", "markets"]
+        missing = [section for section in required_sections if section not in self.case]
         if missing:
-            raise ConfigError(f"Missing required config section(s): {', '.join(missing)}")
+            raise ConfigError(
+                f"Case '{self.study_case}' is missing required section(s): " + ", ".join(missing)
+            )
 
         for field in ["name", "country", "timestep_minutes", "simulation_start", "simulation_end"]:
-            if field not in self.raw["case"]:
-                raise ConfigError(f"case.{field} is required")
-        if "additional_charges" in self.raw["case"] and not isinstance(
-            self.raw["case"]["additional_charges"], bool
+            if field not in self.case:
+                raise ConfigError(f"cases.{self.study_case}.{field} is required")
+        if str(self.case["name"]) != self.study_case:
+            raise ConfigError(
+                f"cases.{self.study_case}.name must match the selected study case "
+                f"'{self.study_case}'"
+            )
+        if "additional_charges" in self.case and not isinstance(
+            self.case["additional_charges"], bool
         ):
-            raise ConfigError("case.additional_charges must be true or false")
+            raise ConfigError("cases.<case_name>.additional_charges must be true or false")
 
-        if self.raw["strategy"].get("name") != "hybrid_etes_gas":
+        if self.case["strategy"].get("name") != "hybrid_etes_gas":
             raise ConfigError("Only strategy.name='hybrid_etes_gas' is implemented in the MVP")
 
-        dispatch = self.raw["strategy"].get("dispatch", {})
+        dispatch = self.case["strategy"].get("dispatch", {})
         if dispatch.get("dispatch_method") != "pyomo":
             raise ConfigError("Only strategy.dispatch.dispatch_method='pyomo' is implemented")
 
-        markets = self.raw["markets"]
+        markets = self.case["markets"]
         for market_name in self.market_sequence:
             if market_name not in markets:
                 raise ConfigError(f"market_sequence references undefined market '{market_name}'")
@@ -183,7 +217,7 @@ class CaseConfig:
         self._validate_market_order()
 
     def _validate_market_order(self) -> None:
-        markets = self.raw["markets"]
+        markets = self.case["markets"]
         if not bool(markets.get("afrr_capacity", {}).get("enabled", False)):
             return
         if not bool(markets.get("day_ahead", {}).get("enabled", False)):
@@ -197,6 +231,49 @@ class CaseConfig:
             raise ConfigError(
                 "Enabled afrr_capacity must appear before day_ahead in market_sequence"
             )
+
+
+def available_study_cases(config_path: str | Path) -> list[str]:
+    """Return study-case keys declared in a config file."""
+
+    config_path = Path(config_path).resolve()
+    with config_path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle) or {}
+    cases = raw.get("cases")
+    if not isinstance(cases, dict):
+        return []
+    return sorted(str(name) for name in cases)
+
+
+def _select_case(
+    raw: dict[str, Any],
+    study_case: str | None = None,
+    case_name: str | None = None,
+) -> str:
+    if study_case and case_name and study_case != case_name:
+        raise ConfigError("--study-case and --case-name must refer to the same case")
+    selected = study_case or case_name
+    cases = raw.get("cases")
+    if not isinstance(cases, dict) or not cases:
+        old_sections = {"case", "strategy", "market_sequence", "markets"}.intersection(raw)
+        if old_sections:
+            raise ConfigError(
+                "config.yaml uses the old top-level case format. FLEXIMOD now requires "
+                "a top-level 'cases:' mapping."
+            )
+        raise ConfigError("config.yaml must define a non-empty top-level 'cases:' mapping")
+    if selected is None:
+        if len(cases) == 1:
+            return str(next(iter(cases)))
+        options = ", ".join(sorted(str(name) for name in cases))
+        raise ConfigError(
+            "config.yaml defines multiple study cases. Select one with --study-case "
+            f"or --case-name. Available study cases: {options}"
+        )
+    if selected not in cases:
+        options = ", ".join(sorted(str(name) for name in cases))
+        raise ConfigError(f"Unknown study case '{selected}'. Available study cases: {options}")
+    return selected
 
 
 def _find_project_root(config_path: Path) -> Path:

@@ -17,7 +17,7 @@ from flexi_mod.plants.steam_generation_plant import (
 )
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 
-CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_DE"
+CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_ID_buy"
 
 
 def test_steam_generation_plant_builds_from_plants_csv() -> None:

@@ -45,9 +45,10 @@ hard-code market rules. The runner coordinates the order in which both are used.
 
 ## Sequential Market Logic
 
-Markets are evaluated in the order defined by `market_sequence` in `config.yaml`.
-They are evaluated inside each rolling decision window, not one market over the
-entire simulation period. The intended market sequence is:
+Markets are evaluated in the order defined by the selected study case's
+`market_sequence` under `cases.<case_name>` in `config.yaml`. They are evaluated
+inside each rolling decision window, not one market over the entire simulation
+period. The intended market sequence is:
 
 ```text
 afrr_capacity -> day_ahead -> intraday_continuous -> afrr_energy
@@ -127,9 +128,9 @@ src/flexi_mod/visualisation/plots.py
 
 ## Configuration Layer
 
-The case configuration describes modelling assumptions and market setup:
+Each `cases.<case_name>` entry describes modelling assumptions and market setup:
 
-- case name, country, time range, and time resolution;
+- study-case name, country, time range, and time resolution;
 - active strategy name;
 - market decision window and rolling step;
 - solver choice;
@@ -193,11 +194,12 @@ CO2 is currently disabled in the active objective and benchmark. A `co2_price`
 column may still exist in input files for later use, but it is not required for
 the current MVP.
 
-If `case.additional_charges` is true, `additional_charges.csv` is loaded as
-plant-specific electricity consumption charge adders in `EUR/MWh_el`. These
-charges are added to DA, IDC, and aFRR energy prices for strategy decisions,
-dispatch costs, and stored-heat cost accounting. They apply only to consumed
-electricity energy and not to aFRR capacity reservation revenue.
+If the selected `cases.<case_name>` entry sets `additional_charges: true`,
+`additional_charges.csv` is loaded as plant-specific electricity consumption
+charge adders in `EUR/MWh_el`. These charges are added to DA, IDC, and aFRR
+energy prices for strategy decisions, dispatch costs, and stored-heat cost
+accounting. They apply only to consumed electricity energy and not to aFRR
+capacity reservation revenue.
 
 ## Plant And Technology Layer
 
@@ -278,11 +280,12 @@ src/flexi_mod/visualisation/analytics.py
 src/flexi_mod/visualisation/plots.py
 ```
 
-The plotting script reads the case config, locates the output folder using the
-case name, refreshes analytics, and writes report-ready figures to:
+The plotting script reads the selected study case, locates the output folder
+using `<case_name>_<strategy_name>`, refreshes analytics, and writes
+report-ready figures to:
 
 ```text
-data/output/<case_name>/plots/
+data/output/<case_name>_<strategy_name>/plots/
 ```
 
 Plots are designed to handle missing future-market columns gracefully. For

@@ -37,8 +37,14 @@ def main() -> None:
         help="Path to a case input folder containing config.yaml.",
     )
     parser.add_argument(
+        "--study-case",
+        "--case-name",
+        dest="study_case",
+        help="Study-case key inside config.yaml cases: mapping.",
+    )
+    parser.add_argument(
         "--example",
-        default="hybrid_etes_de",
+        default="hybrid_ETES_ID_buy",
         choices=sorted(available_examples),
         help="Named example used when --case is not provided.",
     )
@@ -47,6 +53,10 @@ def main() -> None:
         default="png",
         choices=["png", "pdf", "both"],
         help="Figure output format.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        help="Optional output directory. Defaults to data/output/<case_name>_<strategy_name>.",
     )
     parser.add_argument(
         "--show",
@@ -65,12 +75,19 @@ def main() -> None:
     args = parser.parse_args()
     logger = CliLogger(verbose=args.verbose)
 
-    case_dir = _resolve_case_dir(args.case, args.example)
-    config = CaseConfig.from_case_dir(case_dir)
-    output_dir = config.project_root / "data" / "output" / config.case_name
+    paths = _resolve_case_paths(args.case, args.example, args.study_case)
+    case_dir = paths["case_dir"]
+    config = CaseConfig.from_case_dir(case_dir, study_case=paths["study_case"])
+    output_dir = (
+        Path(args.output_dir).resolve()
+        if args.output_dir
+        else PROJECT_ROOT / "data" / "output" / config.output_folder_name
+    )
     plot_dir = output_dir / "plots"
 
     logger.info(f"Plot creation started for case {config.case_name}")
+    logger.info(f"Study case: {config.study_case}")
+    logger.info(f"Strategy: {config.strategy_name}")
     logger.info(f"Output folder: {output_dir}")
     logger.info(f"Result tables found: {_available_result_tables(output_dir, RESULT_FILES)}")
     with logger.capture_warnings():
@@ -88,12 +105,26 @@ def main() -> None:
             logger.detail(f"  {path}")
 
 
-def _resolve_case_dir(case: str | None, example: str) -> Path:
+def _resolve_case_paths(
+    case: str | None,
+    example: str,
+    study_case: str | None,
+) -> dict[str, Path | str | None]:
     from flexi_mod.simulation.run_case import resolve_example_paths
 
     if case:
-        return Path(case).resolve()
-    return resolve_example_paths(example)["case_dir"]
+        case_dir = Path(case).resolve()
+        return {
+            "case_dir": case_dir,
+            "study_case": study_case,
+        }
+    paths = resolve_example_paths(example)
+    if study_case:
+        paths["study_case"] = study_case
+    return {
+        "case_dir": paths["case_dir"],
+        "study_case": paths["study_case"],
+    }
 
 
 def _available_result_tables(output_dir: Path, result_files: dict[str, str]) -> str:

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from conftest import case_config_text
 
 from flexi_mod.simulation.simulation_runner import OutputOptions, SimulationRunner
 
@@ -822,7 +823,8 @@ def _write_config(
     additional_charges: bool = False,
 ) -> None:
     path.write_text(
-        f"""
+        case_config_text(
+            f"""
 case:
   name: day_ahead_strategy_test_case
   country: DE
@@ -908,7 +910,8 @@ markets:
       divisible: true
     signals:
       price: "aFRR_capacity_down_price"
-""".strip(),
+""".strip()
+        ),
         encoding="utf-8",
     )
 

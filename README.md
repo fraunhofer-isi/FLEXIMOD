@@ -14,7 +14,7 @@ The current MVP uses a hybrid ETES + gas boiler steam plant as the first case st
 
 The architecture is intentionally modular:
 
-- `config.yaml` contains modelling settings, active markets, market product rules, market timing and market signal mappings.
+- `config.yaml` contains one or more study cases under a top-level `cases:` mapping.
 - `flexi_mod.simulation.run_case` contains example selection, input paths, output paths and output switches.
 - `plants.csv` defines one plant by grouping connected technology rows.
 - `forecasts_df.csv` contains all time series.
@@ -42,19 +42,19 @@ source .venv/bin/activate
 Run the first case:
 
 ```powershell
-python src\flexi_mod\simulation\run_case.py --case data\input\hybrid_ETES_DE
+python src\flexi_mod\simulation\run_case.py --case data\input\hybrid_ETES_ID_buy --study-case hybrid_ETES_ID_buy
 ```
 
 Create plots from the generated output:
 
 ```powershell
-python src\flexi_mod\simulation\plot_case.py --case data\input\hybrid_ETES_DE
+python src\flexi_mod\simulation\plot_case.py --case data\input\hybrid_ETES_ID_buy --study-case hybrid_ETES_ID_buy
 ```
 
 Check the output folder:
 
 ```text
-data/output/hybrid_ETES_DE/
+data/output/hybrid_ETES_ID_buy_hybrid_etes_gas/
 |-- dispatch_results.csv
 |-- market_ledger.csv
 |-- storage_cost_ledger.csv
@@ -67,14 +67,17 @@ data/output/hybrid_ETES_DE/
 The first case is stored in:
 
 ```text
-data/input/hybrid_ETES_DE/
+data/input/hybrid_ETES_ID_buy/
 |-- config.yaml
 |-- plants.csv
 |-- forecasts_df.csv
-`-- additional_charges.csv  # optional, only used when case.additional_charges is true
+`-- additional_charges.csv  # optional, only used when the selected case enables it
 ```
 
 `plants.csv` groups technologies by plant name. For example, two rows with `name=plant_1` define the ETES storage and gas boiler attached to the same industrial plant.
+
+Inside each study case, `strategy`, `market_sequence`, and `markets` define the
+operator strategy and market configuration for that case.
 
 `forecasts_df.csv` contains all time series. The current hybrid case uses:
 
@@ -102,8 +105,9 @@ operation, concession fees, surcharges, levies, and electricity tax.
 Enable them in `config.yaml` with:
 
 ```yaml
-case:
-  additional_charges: true
+cases:
+  hybrid_ETES_ID_buy:
+    additional_charges: true
 ```
 
 Then provide `additional_charges.csv` in the case input folder:
@@ -128,22 +132,23 @@ The beginner setup above shows the complete installation and first run. Once the
 environment is active, you can run the registered example:
 
 ```bash
-python src/flexi_mod/simulation/run_case.py --example hybrid_etes_de
+python src/flexi_mod/simulation/run_case.py --example hybrid_ETES_ID_buy
 ```
 
 You can also run a case directory directly:
 
 ```bash
-python src/flexi_mod/simulation/run_case.py --case data/input/hybrid_ETES_DE
+python src/flexi_mod/simulation/run_case.py --case data/input/hybrid_ETES_ID_buy --study-case hybrid_ETES_ID_buy
 ```
 
 Create plots from existing output files:
 
 ```bash
-python src/flexi_mod/simulation/plot_case.py --case data/input/hybrid_ETES_DE --format png
+python src/flexi_mod/simulation/plot_case.py --case data/input/hybrid_ETES_ID_buy --study-case hybrid_ETES_ID_buy --format png
 ```
 
-Outputs are written by the runner to `data/output/hybrid_ETES_DE/` by default:
+Outputs are written by the runner to `data/output/<case_name>_<strategy_name>/` by default.
+For the first case this is `data/output/hybrid_ETES_ID_buy_hybrid_etes_gas/`:
 
 ```text
 dispatch_results.csv
@@ -156,7 +161,7 @@ plots/
 
 The plotting command recalculates analytics from the output CSV files, refreshes
 `summary_indicators.csv`, and writes report-ready figures to
-`data/output/<case_name>/plots/`. The first plotting suite includes combined
+`data/output/<case_name>_<strategy_name>/plots/`. The first plotting suite includes combined
 plant operation and storage dynamics, market prices and benchmark, electricity
 procurement, storage content by source market, a sample-day explanation figure,
 cost breakdown, heat supply share, electricity market share, and price-response
@@ -166,7 +171,7 @@ plots.
 
 - If `pre-commit` is not recognized, run `python -m pip install -r requirements.txt`.
 - If solver errors mention HiGHS or `highspy`, confirm installation with `python -m pip show highspy`.
-- If input data are missing, check that `data/input/hybrid_ETES_DE/` contains `config.yaml`, `plants.csv`, and `forecasts_df.csv`.
+- If input data are missing, check that `data/input/hybrid_ETES_ID_buy/` contains `config.yaml`, `plants.csv`, and `forecasts_df.csv`.
 
 ## Pre-Commit Hooks
 
@@ -207,7 +212,8 @@ intraday continuous energy adjustments, and aFRR down energy.
 
 `config.yaml` does not contain file paths, output switches or detailed strategy rules. Those are owned by the runner and strategy classes.
 
-The current config keeps only case and model assumptions:
+The current config keeps only case and model assumptions. Each top-level
+`cases.<case_name>` entry owns:
 
 - simulation period and resolution;
 - strategy name and Pyomo rolling-horizon dispatch settings;
@@ -238,11 +244,13 @@ aFRR down capacity reservation
 With the current German case settings:
 
 ```yaml
-strategy:
-  dispatch:
-    rolling_horizon_enabled: true
-    dispatch_horizon_hours: 24
-    rolling_step_hours: 24
+cases:
+  hybrid_ETES_ID_buy:
+    strategy:
+      dispatch:
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 24
+        rolling_step_hours: 24
 ```
 
 FLEXIMOD runs one delivery day at a time:

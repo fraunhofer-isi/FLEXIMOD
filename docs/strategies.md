@@ -167,10 +167,10 @@ industrial electricity consumption charges:
 delivered_price = market_price + additional_electricity_charges
 ```
 
-Additional charges are loaded from `additional_charges.csv` only when
-`case.additional_charges` is true. They apply to consumed electricity energy in
-DA, IDC, and aFRR energy stages. They do not apply to aFRR capacity reservation
-or capacity revenue.
+Additional charges are loaded from `additional_charges.csv` only when the
+selected `cases.<case_name>` entry sets `additional_charges: true`. They apply
+to consumed electricity energy in DA, IDC, and aFRR energy stages. They do not
+apply to aFRR capacity reservation or capacity revenue.
 
 ## Charging Rule
 
