@@ -4,7 +4,7 @@
 
 cases:
   hybrid_ETES_DA_ID_buy_sell:
-    name: hybrid_ETES_ID_buy_sell
+    name: hybrid_ETES_DA_ID_buy_sell
     country: DE
     description: Hybrid ETES + gas boiler case for Germany
     timestep_minutes: 15
