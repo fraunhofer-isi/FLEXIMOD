@@ -31,7 +31,7 @@ cases:
     - afrr_energy
     markets:
       afrr_capacity:
-        enabled: false
+        enabled: true
         direction: down
         product_length: 4h
         price_unit: EUR_per_MW_per_h

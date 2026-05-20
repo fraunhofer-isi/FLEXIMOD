@@ -45,7 +45,7 @@ available_examples: dict[str, dict[str, str]] = {
 
 
 # Select the example to run from the available examples above.
-example = "hybrid_ETES_ID_buy"
+example = "hybrid_ETES_aFRR_capacity_ID_buy"
 
 
 def resolve_example_paths(example: str) -> dict[str, Path | str]:
