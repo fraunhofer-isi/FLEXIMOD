@@ -29,26 +29,22 @@ available_examples: dict[str, dict[str, str]] = {
         "scenario": "hybrid_ETES_DA",
         "study_case": "hybrid_ETES_DA",
     },
+    "hybrid_ETES_DA_ID_buy": {
+        "scenario": "hybrid_ETES_DA_ID_buy",
+        "study_case": "hybrid_ETES_DA_ID_buy",
+    },
+    "hybrid_ETES_DA_ID_buy_sell": {
+        "scenario": "hybrid_ETES_DA_ID_buy_sell",
+        "study_case": "hybrid_ETES_DA_ID_buy_sell",
+    },
     "hybrid_ETES_DA_ID_aFRR_energy": {
         "scenario": "hybrid_ETES_DA_ID_aFRR_energy",
         "study_case": "hybrid_ETES_DA_ID_aFRR_energy",
     },
-    "hybrid_ETES_ID_aFRR_energy_buy_sell": {
-        "scenario": "hybrid_ETES_ID_aFRR_energy_buy_sell",
-        "study_case": "hybrid_ETES_ID_aFRR_energy_buy_sell",
-    },
-    # "hybrid_ETES_ID_buy": {
-    #     "scenario": "hybrid_ETES_ID_buy",
-    #     "study_case": "hybrid_ETES_ID_buy",
-    # },
     "hybrid_ETES_DA_ID_aFRR_energy_capacity": {
         "scenario": "hybrid_ETES_DA_ID_aFRR_energy_capacity",
         "study_case": "hybrid_ETES_DA_ID_aFRR_energy_capacity",
     },
-    # "hybrid_ETES_aFRR_capacity_ID_buy": {
-    #     "scenario": "hybrid_ETES_aFRR_capacity_ID_buy",
-    #     "study_case": "hybrid_ETES_aFRR_capacity_ID_buy",
-    # },
 }
 
 
