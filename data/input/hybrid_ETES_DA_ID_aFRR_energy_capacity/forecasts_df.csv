@@ -1,4 +1,4 @@
-datetime,plant_1_heat_demand,DE_DA_price,natural_gas_price,co2_price,DE_ID3_price,DE_ID3_volume,aFRR_energy_down_price,aFRR_energy_down_quantity,aFRR_capacity_down_price
+datetime,plant_1_heat_demand,DE_DA_price,natural_gas_price,co2_price,DE_ID3_price,DE_ID3_volume,aFRR_energy_down_quantity,aFRR_energy_down_price,aFRR_capacity_down_price
 01.01.2025 00:00,4.533377229,2.16,50,,44.52,535.25,0,,28.8
 01.01.2025 00:15,4.533377229,2.16,50,,62.25,622.17,0,,28.8
 01.01.2025 00:30,4.533377229,2.16,50,,36.93,628.32,0,,28.8
