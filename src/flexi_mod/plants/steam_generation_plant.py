@@ -79,6 +79,11 @@ class AFRRDownSignals:
     afrr_energy_activated_mwh: pd.Series
     gas_benchmark_eur_per_mwh_th: pd.Series
     electricity_trading_benchmark_eur_per_mwh_el: pd.Series
+    afrr_energy_bid_price: pd.Series | None = None
+    afrr_energy_capacity_backed_bid_mwh: pd.Series | None = None
+    afrr_energy_free_bid_mwh: pd.Series | None = None
+    afrr_energy_capacity_backed_activated_mwh: pd.Series | None = None
+    afrr_energy_free_activated_mwh: pd.Series | None = None
     additional_electricity_charge_eur_per_mwh: float = 0.0
     useful_heat_cap_binding: pd.Series | None = None
     curtailed_proxy_activation_due_to_heat_cap_mwh: pd.Series | None = None
@@ -318,6 +323,19 @@ class SteamGenerationPlant(BasePlant):
                 ],
                 electricity_trading_benchmark_eur_per_mwh_el=(
                     signals.electricity_trading_benchmark_eur_per_mwh_el.loc[horizon.index]
+                ),
+                afrr_energy_bid_price=_optional_loc(signals.afrr_energy_bid_price, horizon.index),
+                afrr_energy_capacity_backed_bid_mwh=_optional_loc(
+                    signals.afrr_energy_capacity_backed_bid_mwh, horizon.index
+                ),
+                afrr_energy_free_bid_mwh=_optional_loc(
+                    signals.afrr_energy_free_bid_mwh, horizon.index
+                ),
+                afrr_energy_capacity_backed_activated_mwh=_optional_loc(
+                    signals.afrr_energy_capacity_backed_activated_mwh, horizon.index
+                ),
+                afrr_energy_free_activated_mwh=_optional_loc(
+                    signals.afrr_energy_free_activated_mwh, horizon.index
                 ),
                 additional_electricity_charge_eur_per_mwh=(
                     signals.additional_electricity_charge_eur_per_mwh
@@ -1025,8 +1043,17 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_energy_activated_MWh": 0.0,
                 "afrr_energy_price_EUR_per_MWh": float("nan"),
                 "afrr_system_activation_MWh": 0.0,
+                "afrr_energy_bid_price_EUR_per_MWh": float("nan"),
+                "afrr_energy_market_spread_EUR_per_MWh": 0.0,
+                "afrr_energy_net_spread_EUR_per_MWh": 0.0,
                 "afrr_energy_cost_EUR": 0.0,
                 "afrr_energy_savings_vs_benchmark_EUR": 0.0,
+                "afrr_energy_pay_as_cleared_reward_EUR": 0.0,
+                "afrr_energy_net_value_after_charges_EUR": 0.0,
+                "afrr_energy_capacity_backed_bid_MWh": 0.0,
+                "afrr_energy_free_bid_MWh": 0.0,
+                "afrr_energy_capacity_backed_activated_MWh": 0.0,
+                "afrr_energy_free_activated_MWh": 0.0,
                 "electricity_market_cost_EUR": electricity_market_cost,
                 "additional_electricity_charges_cost_EUR": additional_charges_cost,
                 "electricity_cost_EUR": electricity_cost,
@@ -1131,8 +1158,17 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_energy_activated_MWh": 0.0,
                 "afrr_energy_price_EUR_per_MWh": float("nan"),
                 "afrr_system_activation_MWh": 0.0,
+                "afrr_energy_bid_price_EUR_per_MWh": float("nan"),
+                "afrr_energy_market_spread_EUR_per_MWh": 0.0,
+                "afrr_energy_net_spread_EUR_per_MWh": 0.0,
                 "afrr_energy_cost_EUR": 0.0,
                 "afrr_energy_savings_vs_benchmark_EUR": 0.0,
+                "afrr_energy_pay_as_cleared_reward_EUR": 0.0,
+                "afrr_energy_net_value_after_charges_EUR": 0.0,
+                "afrr_energy_capacity_backed_bid_MWh": 0.0,
+                "afrr_energy_free_bid_MWh": 0.0,
+                "afrr_energy_capacity_backed_activated_MWh": 0.0,
+                "afrr_energy_free_activated_MWh": 0.0,
                 "electricity_market_cost_EUR": electricity_market_cost,
                 "additional_electricity_charges_cost_EUR": additional_charges_cost,
                 "electricity_cost_EUR": electricity_cost,
@@ -1198,8 +1234,14 @@ class SteamGenerationPlant(BasePlant):
             afrr_price_clean = _value(model.afrr_energy_price[t])
             additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
             benchmark = float(signals.electricity_trading_benchmark_eur_per_mwh_el.iloc[t])
+            afrr_bid_price = float(
+                _series_value(signals.afrr_energy_bid_price, timestamp, benchmark)
+            )
             afrr_delivered_price = afrr_price_clean + additional_charge
-            afrr_savings = afrr_activation * (benchmark - afrr_delivered_price)
+            afrr_market_spread = afrr_bid_price - afrr_price_clean
+            afrr_net_spread = afrr_bid_price - afrr_delivered_price
+            afrr_pay_as_cleared_reward = afrr_activation * afrr_market_spread
+            afrr_net_value = afrr_activation * afrr_net_spread
             day_ahead_price = float(forecasts[signals.da_price_col].iloc[t])
             idc_price = float(forecasts[signals.idc_price_col].iloc[t])
             co2_price = (
@@ -1246,8 +1288,33 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_energy_activated_MWh": afrr_activation,
                 "afrr_energy_price_EUR_per_MWh": afrr_price_clean,
                 "afrr_system_activation_MWh": float(signals.afrr_system_activation_mwh.iloc[t]),
+                "afrr_energy_bid_price_EUR_per_MWh": afrr_bid_price,
+                "afrr_energy_market_spread_EUR_per_MWh": afrr_market_spread,
+                "afrr_energy_net_spread_EUR_per_MWh": afrr_net_spread,
                 "afrr_energy_cost_EUR": _value(model.afrr_energy_cost[t]),
-                "afrr_energy_savings_vs_benchmark_EUR": afrr_savings,
+                "afrr_energy_savings_vs_benchmark_EUR": afrr_net_value,
+                "afrr_energy_pay_as_cleared_reward_EUR": afrr_pay_as_cleared_reward,
+                "afrr_energy_net_value_after_charges_EUR": afrr_net_value,
+                "afrr_energy_capacity_backed_bid_MWh": float(
+                    _series_value(
+                        signals.afrr_energy_capacity_backed_bid_mwh,
+                        timestamp,
+                        0.0,
+                    )
+                ),
+                "afrr_energy_free_bid_MWh": float(
+                    _series_value(signals.afrr_energy_free_bid_mwh, timestamp, 0.0)
+                ),
+                "afrr_energy_capacity_backed_activated_MWh": float(
+                    _series_value(
+                        signals.afrr_energy_capacity_backed_activated_mwh,
+                        timestamp,
+                        0.0,
+                    )
+                ),
+                "afrr_energy_free_activated_MWh": float(
+                    _series_value(signals.afrr_energy_free_activated_mwh, timestamp, 0.0)
+                ),
                 "useful_heat_cap_binding": bool(
                     _series_value(signals.useful_heat_cap_binding, timestamp, False)
                 ),

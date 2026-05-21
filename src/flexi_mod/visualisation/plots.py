@@ -509,7 +509,8 @@ def plot_cost_breakdown(
         ("Gas cost", "total_gas_cost_EUR"),
         ("CO2 cost", "total_co2_cost_EUR"),
         ("IDC trading value", "total_IDC_trading_value_EUR"),
-        ("aFRR energy value vs benchmark", "total_afrr_energy_value_EUR"),
+        ("aFRR energy net value after charges", "total_afrr_energy_net_value_after_charges_EUR"),
+        ("aFRR energy market reward", "total_afrr_energy_pay_as_cleared_reward_EUR"),
         ("aFRR capacity revenue", "total_afrr_capacity_revenue_EUR"),
         ("Net operating cost", "total_net_operating_cost_EUR"),
     ]

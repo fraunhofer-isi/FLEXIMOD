@@ -338,22 +338,45 @@ afrr_energy_activated_MWh =
         afrr_system_activation_MWh)
 ```
 
-The aFRR down price rule uses the delivered aFRR down energy price and the same
-electricity-side ETES benchmark as IDC.
-The current aFRR down margin is embedded in the strategy code:
+The aFRR down price rule uses an explicit benchmark bid price. The benchmark is
+the electricity-side ETES value of replacing gas heat:
 
 ```text
-AFRR_ENERGY_MARGIN_EUR_PER_MWH = 5.0
+afrr_energy_bid_price_EUR_per_MWh =
+    electricity_trading_benchmark_EUR_per_MWh_el
+    + AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH
 ```
 
-So the current rule is:
+The current margin is embedded in the strategy code and set to zero:
 
 ```text
-delivered_aFRR_down_price <= electricity_trading_benchmark - 5.0
+AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH = 0.0
 ```
 
-This means aFRR down electricity must be at least `5 EUR/MWh_el` cheaper than
-the gas-equivalent ETES benchmark before the plant offers bid potential.
+The market-side pay-as-cleared spread is reported as:
+
+```text
+afrr_energy_market_spread =
+    afrr_energy_bid_price - afrr_energy_down_price
+```
+
+The plant only places free aFRR down energy bids when the deal is profitable
+after industrial consumption charges:
+
+```text
+afrr_energy_down_price + additional_electricity_charge
+    <= afrr_energy_bid_price
+```
+
+So the market settlement stays:
+
+```text
+afrr_energy_cost_EUR =
+    afrr_energy_activated_MWh * afrr_energy_down_price
+```
+
+If the aFRR energy price is negative, this settlement becomes a credit. The
+net plant value after charges is reported separately from this settlement.
 
 Pyomo receives the activated volume as a fixed parameter. It does not decide TSO
 activation. For the current hybrid ETES + gas plant:
@@ -406,16 +429,19 @@ reserve capacity only if:
 
 Capacity reservation itself does not add energy to storage. It only reserves
 charging headroom and earns capacity revenue. If aFRR energy is also enabled,
-later aFRR down activation is capacity-backed. If aFRR capacity is enabled but
-aFRR energy is disabled, the runner logs this clearly: capacity revenue can be
-modelled, but activation energy is not modelled.
+later aFRR down activation first uses the capacity-backed energy bid. The
+strategy can now also place optional free aFRR energy bids above the reserved
+capacity if the additional bid volume is profitable after charges and physically
+feasible. If aFRR capacity is enabled but aFRR energy is disabled, the runner
+logs this clearly: capacity revenue can be modelled, but activation energy is
+not modelled.
 
 ## Current Simplifications
 
 The current DA + IDC + aFRR down strategy is deliberately simple:
 
 - the plant is treated as a price taker;
-- there is no explicit bid curve;
+- there is no explicit multi-step bid curve;
 - there is no market clearing uncertainty;
 - IDC is an index-based adjustment, not an order-book model;
 - aFRR down activation is proxy/scenario activation, not plant-specific TSO
@@ -434,10 +460,9 @@ realistic market mechanisms.
 The next strategy extensions should improve market realism around the existing
 stages:
 
-1. Optional extra aFRR energy bids above awarded capacity.
-2. Strict bid increments and bid granularity.
-3. Bid acceptance probability or merit-order award modelling.
-4. Forecast-based or stochastic price expectations.
+1. Strict bid increments and bid granularity.
+2. Bid acceptance probability or merit-order award modelling.
+3. Forecast-based or stochastic price expectations.
 
 The key rule for all future stages:
 

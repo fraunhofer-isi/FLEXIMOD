@@ -494,7 +494,7 @@ def test_expensive_afrr_down_creates_no_bid_or_activation(
     _assert_actual_electricity_with_afrr(market)
 
 
-def test_afrr_down_margin_blocks_price_too_close_to_benchmark(
+def test_afrr_down_uses_zero_margin_benchmark_bid_price(
     afrr_case: Path,
     tmp_path: Path,
 ) -> None:
@@ -510,9 +510,49 @@ def test_afrr_down_margin_blocks_price_too_close_to_benchmark(
     results = _run_case(afrr_case, tmp_path)
     market = results["market"]
 
+    assert market["afrr_energy_bid_MWh_el"].sum() > 0.0
+    assert market["afrr_energy_activated_MWh_el"].sum() > 0.0
+    assert (market["afrr_energy_net_spread_EUR_per_MWh_el"] >= -1e-8).all()
+    assert market["afrr_energy_pay_as_cleared_reward_EUR"].sum() > 0.0
+    _assert_actual_electricity_with_afrr(market)
+
+
+def test_afrr_down_additional_charges_block_unprofitable_free_bid(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "afrr_charges_case"
+    case_dir.mkdir()
+    _write_config(
+        case_dir / "config.yaml",
+        idc_enabled=True,
+        afrr_enabled=True,
+        additional_charges=True,
+    )
+    _write_plants(case_dir / "plants.csv")
+    _write_forecasts(
+        case_dir / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[72.0] * 8,
+        afrr_quantities=[2.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+    (case_dir / "additional_charges.csv").write_text(
+        "\n".join(
+            [
+                "component,unit,plant_1",
+                "Network consumption price,EUR/MWh,10.0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    results = _run_case(case_dir, tmp_path)
+    market = results["market"]
+
     assert market["afrr_energy_bid_MWh_el"].sum() == pytest.approx(0.0)
     assert market["afrr_energy_activated_MWh_el"].sum() == pytest.approx(0.0)
-    _assert_actual_electricity_with_afrr(market)
+    assert (market["afrr_energy_net_spread_EUR_per_MWh_el"] < 0.0).any()
 
 
 def test_afrr_missing_price_blocks_bid_even_with_activation(
@@ -648,6 +688,44 @@ def test_afrr_capacity_reserves_headroom_and_caps_activation(
         market["afrr_energy_activated_MWh_el"] <= market["afrr_capacity_reserved_MWh"] + 1e-8
     ).all()
     assert market["afrr_capacity_revenue_EUR"].sum() > 0.0
+
+
+def test_afrr_capacity_allows_profitable_free_energy_bid_above_reserved_capacity(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "afrr_capacity_with_free_energy_case"
+    case_dir.mkdir()
+    _write_config(
+        case_dir / "config.yaml",
+        idc_enabled=True,
+        afrr_enabled=True,
+        afrr_capacity_enabled=True,
+    )
+    _write_plants(case_dir / "plants.csv", storage_capacity=4.0)
+    _write_forecasts(
+        case_dir / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[10.0] * 8,
+        afrr_capacity_prices=[100.0] * 8,
+        heat_demand=[5.0] * 8,
+    )
+
+    results = _run_case(case_dir, tmp_path)
+    market = results["market"]
+
+    assert market["afrr_capacity_reserved_MWh"].sum() > 0.0
+    assert market["afrr_energy_capacity_backed_bid_MWh_el"].sum() == pytest.approx(
+        market["afrr_capacity_reserved_MWh"].sum()
+    )
+    assert market["afrr_energy_free_bid_MWh_el"].sum() > 0.0
+    assert market["afrr_energy_bid_MWh_el"].sum() == pytest.approx(
+        (
+            market["afrr_energy_capacity_backed_bid_MWh_el"] + market["afrr_energy_free_bid_MWh_el"]
+        ).sum()
+    )
+    assert market["afrr_energy_free_activated_MWh_el"].sum() > 0.0
 
 
 def test_afrr_capacity_low_capacity_price_blocks_reservation(

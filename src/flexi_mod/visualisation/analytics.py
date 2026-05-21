@@ -321,6 +321,10 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
     idc_sell = _sum(market, "intraday_sell_MWh_el")
     afrr = _sum(market, "afrr_energy_activated_MWh_el")
     afrr_bid = _sum(market, "afrr_energy_bid_MWh_el")
+    afrr_capacity_backed_bid = _sum(market, "afrr_energy_capacity_backed_bid_MWh_el")
+    afrr_free_bid = _sum(market, "afrr_energy_free_bid_MWh_el")
+    afrr_capacity_backed_activation = _sum(market, "afrr_energy_capacity_backed_activated_MWh_el")
+    afrr_free_activation = _sum(market, "afrr_energy_free_activated_MWh_el")
     reserved_mw_h = _sum(market, "afrr_capacity_reserved_MWh")
     reserved_mw = _average_nonzero(market, "afrr_capacity_reserved_MW")
     final_planned = _sum(
@@ -341,6 +345,10 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
         "total_final_planned_electricity_MWh": final_planned,
         "total_afrr_energy_bid_MWh": afrr_bid,
         "total_afrr_energy_activated_MWh": afrr,
+        "total_afrr_energy_capacity_backed_bid_MWh": afrr_capacity_backed_bid,
+        "total_afrr_energy_free_bid_MWh": afrr_free_bid,
+        "total_afrr_energy_capacity_backed_activated_MWh": afrr_capacity_backed_activation,
+        "total_afrr_energy_free_activated_MWh": afrr_free_activation,
         "total_afrr_capacity_reserved_MW_h": reserved_mw_h,
         "average_afrr_capacity_reserved_MW": reserved_mw,
         "max_afrr_capacity_reserved_MW": _max(market, "afrr_capacity_reserved_MW"),
@@ -352,6 +360,10 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
         "total_scheduled_electricity_procurement_MWh_el": final_planned,
         "total_afrr_energy_bid_MWh_el": afrr_bid,
         "total_afrr_energy_activated_MWh_el": afrr,
+        "total_afrr_energy_capacity_backed_bid_MWh_el": afrr_capacity_backed_bid,
+        "total_afrr_energy_free_bid_MWh_el": afrr_free_bid,
+        "total_afrr_energy_capacity_backed_activated_MWh_el": afrr_capacity_backed_activation,
+        "total_afrr_energy_free_activated_MWh_el": afrr_free_activation,
         "total_IDC_buy_electricity_MWh": idc_buy,
         "total_IDC_sell_electricity_MWh": idc_sell,
         "total_afrr_activated_electricity_MWh": afrr,
@@ -388,11 +400,6 @@ def _economic_indicators(
         sell_col="intraday_sell_MWh_el",
         price_col="intraday_price_EUR_per_MWh_el",
     )
-    afrr_energy_value = _energy_value(
-        market,
-        "afrr_energy_activated_MWh_el",
-        "afrr_energy_price_EUR_per_MWh_el",
-    )
     afrr_energy_cost = _sum(
         dispatch,
         "afrr_energy_cost_EUR",
@@ -403,6 +410,16 @@ def _economic_indicators(
         ),
     )
     afrr_savings = _sum(dispatch, "afrr_energy_savings_vs_benchmark_EUR")
+    afrr_reward = _sum(
+        market,
+        "afrr_energy_pay_as_cleared_reward_EUR",
+        fallback=_sum(dispatch, "afrr_energy_pay_as_cleared_reward_EUR"),
+    )
+    afrr_net_value = _sum(
+        market,
+        "afrr_energy_net_value_after_charges_EUR",
+        fallback=_sum(dispatch, "afrr_energy_net_value_after_charges_EUR", afrr_savings),
+    )
     afrr_capacity_revenue = _sum(
         market,
         "afrr_capacity_revenue_EUR",
@@ -430,8 +447,12 @@ def _economic_indicators(
         "IDC_net_cashflow_EUR": idc_sell_revenue - idc_buy_cost,
         "afrr_energy_cost_EUR": afrr_energy_cost,
         "afrr_energy_savings_vs_benchmark_EUR": afrr_savings,
+        "afrr_energy_pay_as_cleared_reward_EUR": afrr_reward,
+        "afrr_energy_net_value_after_charges_EUR": afrr_net_value,
         "total_IDC_trading_value_EUR": idc_value,
-        "total_afrr_energy_value_EUR": afrr_energy_value,
+        "total_afrr_energy_value_EUR": afrr_net_value,
+        "total_afrr_energy_pay_as_cleared_reward_EUR": afrr_reward,
+        "total_afrr_energy_net_value_after_charges_EUR": afrr_net_value,
         "total_afrr_capacity_revenue_EUR": afrr_capacity_revenue,
         "gross_operating_cost_EUR": gross_operating_cost,
         "total_operating_cost_EUR": total_operating_cost,

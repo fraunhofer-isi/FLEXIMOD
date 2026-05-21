@@ -11,15 +11,15 @@ from conftest import case_config_text
 from flexi_mod.config.case_config import CaseConfig, ConfigError
 from flexi_mod.simulation.simulation_runner import _decision_windows
 
-CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_ID_buy"
+CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_DA_ID_buy"
 
 
 def test_config_can_be_loaded() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
-    assert config.case_name == "hybrid_ETES_ID_buy"
-    assert config.study_case == "hybrid_ETES_ID_buy"
+    assert config.case_name == "hybrid_ETES_DA_ID_buy"
+    assert config.study_case == "hybrid_ETES_DA_ID_buy"
     assert config.strategy_name == "hybrid_etes_gas"
-    assert config.output_folder_name == "hybrid_ETES_ID_buy_hybrid_etes_gas"
+    assert config.output_folder_name == "hybrid_ETES_DA_ID_buy_hybrid_etes_gas"
     assert config.timestep_minutes == 15
     assert config.market_sequence == [
         "afrr_capacity",
