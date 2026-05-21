@@ -504,12 +504,12 @@ def plot_cost_breakdown(
 
     summary = _aggregate_summary(summary_indicators)
     labels_and_columns = [
-        ("Electricity market cost", "total_electricity_market_cost_EUR"),
+        ("Net electricity market settlement", "total_electricity_market_cost_EUR"),
         ("Additional electricity charges", "total_additional_electricity_charges_cost_EUR"),
         ("Gas cost", "total_gas_cost_EUR"),
         ("CO2 cost", "total_co2_cost_EUR"),
         ("IDC trading value", "total_IDC_trading_value_EUR"),
-        ("aFRR energy value", "total_afrr_energy_value_EUR"),
+        ("aFRR energy value vs benchmark", "total_afrr_energy_value_EUR"),
         ("aFRR capacity revenue", "total_afrr_capacity_revenue_EUR"),
         ("Net operating cost", "total_net_operating_cost_EUR"),
     ]
@@ -527,7 +527,7 @@ def plot_cost_breakdown(
     fig, ax = plt.subplots(figsize=(11, 5.5))
     colors = [COLOR_DA if value >= 0 else COLOR_STORAGE for value in values]
     ax.bar(labels, values, color=colors, alpha=0.8)
-    ax.set_title("Cost and value breakdown")
+    ax.set_title("Cost, settlement, and value breakdown")
     ax.set_ylabel("EUR")
     ax.tick_params(axis="x", rotation=25)
     fig.tight_layout()
