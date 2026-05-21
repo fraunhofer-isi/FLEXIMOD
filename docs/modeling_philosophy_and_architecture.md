@@ -100,6 +100,57 @@ The plant-level Pyomo solves live in `SteamGenerationPlant`. The simulation
 runner decides which forecast slice, initial state of charge, fixed market
 positions, and reserved headroom are passed to each stage.
 
+## German Market Gate Clock Example
+
+The German case stores market timing in `config.yaml` so the market calendar is
+visible to modellers and not hidden in strategy code. The visual timeline below
+summarises the example gate times used for the current German electricity market
+setup.
+
+<p align="center">
+  <img src="assets/germany_electricity_market_gates.svg" alt="German electricity market gate times" width="760">
+</p>
+
+For a daily decision window, the delivery day is called `D`. The runner evaluates
+the configured market sequence for that delivery window:
+
+```yaml
+market_sequence:
+  - afrr_capacity
+  - day_ahead
+  - intraday_continuous
+  - afrr_energy
+```
+
+The timing fields describe when each market opens or closes relative to the
+delivery window:
+
+| Market stage | German example in config | Algorithmic meaning |
+| --- | --- | --- |
+| aFRR down capacity | opens `D-7 10:00`, closes `D-1 09:00`, 4-hour product, `EUR/MW/h` price | reserves ETES charging headroom before DA and IDC; creates capacity revenue and capacity-backed aFRR energy limits |
+| Day-ahead | closes `D-1 12:00`, 15-minute energy product | creates the fixed DA electricity position for the delivery window |
+| Intraday continuous | rolling close `5` minutes before delivery start | adjusts the fixed DA position with IDC buy or sell/reduction volumes |
+| aFRR down energy | rolling close `25` minutes before delivery start in the current config, 15-minute validity | adds activated down energy on top of the scheduled DA+IDC position |
+
+The current algorithm uses this clock as follows:
+
+1. Select the next rolling decision window from the simulation index.
+2. Treat that window as the delivery period `D`.
+3. Read `market_sequence` as the execution order.
+4. Read each market's `gate_open`, `gate_close`, product length, product
+   resolution and signal mapping from the selected `cases.<case_name>` entry.
+5. Run each enabled market stage on the same delivery-window forecast slice.
+6. Pass fixed outputs forward: capacity reservation constrains DA and IDC,
+   DA becomes the IDC baseline, IDC creates scheduled electricity, and aFRR
+   energy creates actual electricity consumption.
+7. Commit the accepted rows from the rolling window and carry the final ETES
+   state of charge to the next decision window.
+
+`market_sequence` remains the authoritative execution order. Gate times explain
+the market-calendar clock, support validation and logging, and make it possible
+to adapt the same algorithm to another country by changing configuration rather
+than strategy or plant physics.
+
 ## Main Package
 
 The canonical Python import package is `flexi_mod`. Model configuration, data
