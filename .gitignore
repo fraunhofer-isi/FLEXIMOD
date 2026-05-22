@@ -14,6 +14,7 @@ dist/
 
 data/input/Archive/
 data/output/Archive/
+data/output/reports/
 data/processed/
 *.xlsx
 *.parquet
