@@ -26,7 +26,7 @@ GAS_PRICE_SIGNAL = "natural_gas_price"
 ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH = 0.0
 # TODO: Move IDC_MARGIN_EUR_PER_MWH to config.yaml once multi-country cases
 # or sensitivity analyses are implemented.
-IDC_MARGIN_EUR_PER_MWH = 5.0
+IDC_MARGIN_EUR_PER_MWH = 0.0
 AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH = 0.0
 AFRR_CAPACITY_MARGIN_EUR_PER_MW_H = 0.0
 
