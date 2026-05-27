@@ -688,6 +688,21 @@ def test_afrr_capacity_reserves_headroom_and_caps_activation(
         market["afrr_energy_activated_MWh_el"] <= market["afrr_capacity_reserved_MWh"] + 1e-8
     ).all()
     assert market["afrr_capacity_revenue_EUR"].sum() > 0.0
+    block = results["afrr_capacity_blocks"].iloc[0]
+    expected_diagnostics = {
+        "max_afrr_down_activation_need_MWh_in_block",
+        "max_afrr_down_activation_need_MW_in_block",
+        "raw_feasible_capacity_potential_MW",
+        "market_compliant_capacity_potential_MW",
+        "activation_need_cap_binding",
+        "capacity_limited_by_activation_need_MW",
+        "bid_increment_mw",
+    }
+    assert expected_diagnostics.issubset(results["afrr_capacity_blocks"].columns)
+    assert block["max_afrr_down_activation_need_MW_in_block"] == pytest.approx(2.0)
+    assert block["feasible_capacity_potential_MW"] == pytest.approx(
+        block["market_compliant_capacity_potential_MW"]
+    )
 
 
 def test_afrr_capacity_allows_profitable_free_energy_bid_above_reserved_capacity(
@@ -794,7 +809,7 @@ def test_afrr_capacity_activation_without_price_blocks_reservation(
     assert results["afrr_quality"]["aFRR_down_activation_without_price_rows"].iloc[0] == 1
 
 
-def test_afrr_capacity_no_activation_block_can_reserve(
+def test_afrr_capacity_no_activation_block_does_not_reserve(
     afrr_capacity_case: Path,
     tmp_path: Path,
 ) -> None:
@@ -811,9 +826,95 @@ def test_afrr_capacity_no_activation_block_can_reserve(
     results = _run_case(afrr_capacity_case, tmp_path)
     block = results["afrr_capacity_blocks"].iloc[0]
 
-    assert block["reserved_capacity_MW"] > 0.0
+    assert block["reserved_capacity_MW"] == pytest.approx(0.0)
+    assert block["max_afrr_down_activation_need_MW_in_block"] == pytest.approx(0.0)
+    assert block["raw_feasible_capacity_potential_MW"] == pytest.approx(0.0)
+    assert block["market_compliant_capacity_potential_MW"] == pytest.approx(0.0)
     assert bool(block["activation_safety_check_passed"])
     assert block["activation_relevant_timesteps"] == 0
+
+
+def test_afrr_capacity_activation_need_caps_technical_potential(
+    afrr_capacity_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        afrr_capacity_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[2.7] * 8,
+        afrr_capacity_prices=[100.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+
+    results = _run_case(afrr_capacity_case, tmp_path)
+    block = results["afrr_capacity_blocks"].iloc[0]
+
+    assert block["max_afrr_down_activation_need_MW_in_block"] == pytest.approx(2.7)
+    assert block["raw_feasible_capacity_potential_MW"] == pytest.approx(2.7)
+    assert bool(block["activation_need_cap_binding"])
+    assert block["capacity_limited_by_activation_need_MW"] > 0.0
+    assert block["market_compliant_capacity_potential_MW"] == pytest.approx(2.0)
+    assert block["feasible_capacity_potential_MW"] == pytest.approx(2.0)
+    assert block["reserved_capacity_MW"] == pytest.approx(2.0)
+
+
+def test_afrr_capacity_bid_increment_rounds_down_to_half_mw(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "afrr_capacity_half_mw_increment_case"
+    case_dir.mkdir()
+    _write_config(
+        case_dir / "config.yaml",
+        idc_enabled=True,
+        afrr_enabled=True,
+        afrr_capacity_enabled=True,
+        afrr_capacity_bid_increment_mw=0.5,
+    )
+    _write_plants(case_dir / "plants.csv", storage_capacity=24.0)
+    _write_forecasts(
+        case_dir / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[2.7] * 8,
+        afrr_capacity_prices=[100.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+
+    results = _run_case(case_dir, tmp_path)
+    block = results["afrr_capacity_blocks"].iloc[0]
+
+    assert block["bid_increment_mw"] == pytest.approx(0.5)
+    assert block["raw_feasible_capacity_potential_MW"] == pytest.approx(2.7)
+    assert block["market_compliant_capacity_potential_MW"] == pytest.approx(2.5)
+    assert block["reserved_capacity_MW"] == pytest.approx(2.5)
+
+
+def test_afrr_capacity_activation_need_below_minimum_bid_gives_zero_reservation(
+    afrr_capacity_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        afrr_capacity_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[0.8] * 8,
+        afrr_capacity_prices=[100.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+
+    results = _run_case(afrr_capacity_case, tmp_path)
+    block = results["afrr_capacity_blocks"].iloc[0]
+
+    assert block["max_afrr_down_activation_need_MW_in_block"] == pytest.approx(0.8)
+    assert block["raw_feasible_capacity_potential_MW"] == pytest.approx(0.8)
+    assert block["market_compliant_capacity_potential_MW"] == pytest.approx(0.0)
+    assert block["feasible_capacity_potential_MW"] == pytest.approx(0.0)
+    assert block["reserved_capacity_MW"] == pytest.approx(0.0)
+    assert not bool(block["physical_feasibility_check_passed"])
 
 
 def test_afrr_capacity_reports_useful_heat_cap_binding(
@@ -898,6 +999,7 @@ def _write_config(
     idc_buy_enabled: bool = True,
     idc_sell_enabled: bool = True,
     afrr_capacity_enabled: bool = False,
+    afrr_capacity_bid_increment_mw: float = 1.0,
     additional_charges: bool = False,
 ) -> None:
     path.write_text(
@@ -984,7 +1086,7 @@ markets:
       time: "09:00"
     product_rules:
       min_bid_mw: 1.0
-      bid_increment_mw: 1.0
+      bid_increment_mw: {afrr_capacity_bid_increment_mw}
       divisible: true
     signals:
       price: "aFRR_capacity_down_price"
