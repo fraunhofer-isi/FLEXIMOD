@@ -1,7 +1,7 @@
 component,unit,plant_1
-Grid energy charge ?2500 h/a,EUR/MWh,36.9
+Grid energy charge >=2500 h/a,EUR/MWh,36.9
 Grid energy charge <2500 h/a,EUR/MWh,45.6
-Grid capacity charge ?2500 h/a,EUR/MW.a,66570
+Grid capacity charge >=2500 h/a,EUR/MW.a,66570
 Grid capacity charge <2500 h/a,EUR/MW.a,44850
 CHP surcharge,EUR/MWh,2.77
 Offshore grid levy,EUR/MWh,8.16

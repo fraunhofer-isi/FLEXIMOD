@@ -13,6 +13,7 @@ import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataLoader
+from flexi_mod.regulations import GridFeeResult, build_grid_fee_regulation
 from flexi_mod.ledgers.market_ledger import MarketLedger
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.markets import BaseMarket, build_markets
@@ -59,8 +60,10 @@ class SimulationRunner:
         study_case: str | None = None,
         output_options: OutputOptions | None = None,
         progress_callback: Callable[[str], None] | None = None,
+        assumed_grid_tier: str = "high",
     ):
         self.config = CaseConfig.from_case_dir(case_dir, study_case=study_case)
+        self.assumed_grid_tier = assumed_grid_tier
         self.input_dir = Path(input_dir).resolve() if input_dir else Path(case_dir).resolve()
         self.output_dir = (
             Path(output_dir).resolve()
@@ -83,9 +86,14 @@ class SimulationRunner:
         plants = SteamGenerationPlant.from_plants_dataframe(plants_df)
         additional_charges = self.loader.load_additional_charges(plants_df)
         for plant in plants:
-            plant.additional_electricity_charge_eur_per_mwh = additional_charges.get(
-                plant.name,
-                0.0,
+            regulation = build_grid_fee_regulation(
+                self.config.country,
+                additional_charges.get(plant.name),
+                assumed_tier=self.assumed_grid_tier,
+            )
+            plant.grid_fee_regulation = regulation
+            plant.additional_electricity_charge_eur_per_mwh = (
+                regulation.marginal_charge_eur_per_mwh()
             )
         strategy = HybridETESGasStrategy(self.config)
         required_columns = self.loader.required_forecast_columns(
@@ -100,6 +108,8 @@ class SimulationRunner:
                 self.config,
                 forecasts,
             )
+
+        grid_fee_results = self._settle_grid_fees(plants, dispatch_results)
 
         output_dir = self.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +138,11 @@ class SimulationRunner:
             storage_cost_ledger=storage_ledger.to_dataframe(),
             afrr_energy_data_quality_summary=strategy.afrr_energy_data_quality_summary,
         )
+        summary = _attach_grid_fee_summary(summary, grid_fee_results)
+        if grid_fee_results and self.output_options.save_summary_indicators:
+            path = output_dir / "grid_fee_summary.csv"
+            _grid_fee_summary_frame(grid_fee_results).to_csv(path, index=False)
+            output_paths["grid_fee_summary"] = path
         if not strategy.afrr_capacity_block_summary.empty:
             strategy.afrr_capacity_block_summary = _update_capacity_block_summary(
                 strategy.afrr_capacity_block_summary,
@@ -168,6 +183,36 @@ class SimulationRunner:
         self._progress("Outputs saved")
 
         return output_paths
+
+    def _settle_grid_fees(
+        self,
+        plants: list[SteamGenerationPlant],
+        dispatch_results: pd.DataFrame,
+    ) -> dict[str, GridFeeResult]:
+        """Compute the authoritative ex-post grid-fee bill per plant."""
+
+        if not self.config.additional_charges_enabled:
+            return {}
+        results: dict[str, GridFeeResult] = {}
+        for plant in plants:
+            regulation = getattr(plant, "grid_fee_regulation", None)
+            if regulation is None:
+                continue
+            plant_rows = dispatch_results[dispatch_results["plant_name"] == plant.name]
+            if plant_rows.empty:
+                continue
+            result = regulation.settle(plant_rows, self.config.timestep_minutes)
+            results[plant.name] = result
+            self._progress(
+                f"Grid fees for {plant.name}: {result.grid_energy_MWh:,.0f} MWh_el, "
+                f"full-load hours {result.full_load_hours:,.0f} h/a -> tier "
+                f"'{result.realized_tier}' (assumed '{result.assumed_tier}'); billed peak "
+                f"{result.billed_peak_MW:,.2f} MW; total grid fee "
+                f"{result.grid_fee_total_EUR:,.0f} EUR"
+            )
+            for message in result.warnings:
+                warnings.warn(message, stacklevel=2)
+        return results
 
     def _run_market_sequence(
         self,
@@ -364,6 +409,40 @@ class SimulationRunner:
                 }
             )
         return pd.DataFrame(records)
+
+
+def _grid_fee_summary_frame(grid_fee_results: dict[str, GridFeeResult]) -> pd.DataFrame:
+    rows = []
+    for plant_name, result in grid_fee_results.items():
+        row: dict[str, object] = {"plant_name": plant_name, **result.as_summary_dict()}
+        row["warnings"] = " | ".join(result.warnings)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _attach_grid_fee_summary(
+    summary: pd.DataFrame,
+    grid_fee_results: dict[str, GridFeeResult],
+) -> pd.DataFrame:
+    """Merge per-plant grid-fee scalars into the summary and add the net incl. grid fees."""
+
+    if not grid_fee_results:
+        return summary
+    grid_df = pd.DataFrame(
+        {"plant_name": name, **result.as_summary_dict()}
+        for name, result in grid_fee_results.items()
+    )
+    merged = summary.merge(grid_df, on="plant_name", how="left")
+    if {"net_operating_cost_EUR", "grid_fee_total_EUR"}.issubset(merged.columns):
+        in_dispatch = (
+            merged["total_additional_electricity_charges_cost_EUR"]
+            if "total_additional_electricity_charges_cost_EUR" in merged.columns
+            else 0.0
+        )
+        merged["net_operating_cost_incl_grid_fees_EUR"] = (
+            merged["net_operating_cost_EUR"] - in_dispatch + merged["grid_fee_total_EUR"]
+        )
+    return merged
 
 
 def _add_stage_dispatch_columns(

@@ -111,6 +111,7 @@ def build_runner_settings(args: argparse.Namespace) -> dict[str, Any]:
         "plants_file": args.plants_file,
         "forecasts_file": args.forecasts_file,
         "output_options": output_options,
+        "assumed_grid_tier": args.assumed_grid_tier,
     }
 
 
@@ -158,6 +159,16 @@ def main() -> None:
     )
     parser.add_argument("--plants-file", default="plants.csv")
     parser.add_argument("--forecasts-file", default="forecasts_df.csv")
+    parser.add_argument(
+        "--assumed-grid-tier",
+        choices=["high", "low"],
+        default="high",
+        help=(
+            "Full-load-hour tier assumed for the per-MWh grid energy charge in the dispatch "
+            "strike price. The bill is corrected ex-post; a warning is printed if the realized "
+            "tier differs. Re-run with the warned tier for a self-consistent dispatch."
+        ),
+    )
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--skip-dispatch-results", action="store_true")
     parser.add_argument("--skip-market-ledger", action="store_true")

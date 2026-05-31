@@ -76,6 +76,7 @@ class HybridETESGasStrategy(BaseStrategy):
             electricity_price=delivered_da_price,
             benchmark=benchmark,
         )
+        charge_allowed = charge_allowed & ~self._grid_charging_block(plant, forecasts)
 
         signals = DispatchSignals(
             electricity_price_col=price_col,
@@ -138,9 +139,10 @@ class HybridETESGasStrategy(BaseStrategy):
                 stacklevel=2,
             )
 
+        grid_block = self._grid_charging_block(plant, forecasts)
         buy_allowed = (
             delivered_idc_price < (electricity_benchmark - IDC_MARGIN_EUR_PER_MWH)
-        ) & ~missing_price
+        ) & ~missing_price & ~grid_block
         sell_allowed = (
             delivered_idc_price > (electricity_benchmark + IDC_MARGIN_EUR_PER_MWH)
         ) & ~missing_price
@@ -273,7 +275,11 @@ class HybridETESGasStrategy(BaseStrategy):
         # aFRR energy is offered only when the deal is profitable for the plant:
         # the market clearing price plus industrial electricity charges must stay
         # below the benchmark bid price derived from gas-based heat value.
-        price_allowed = (delivered_afrr_price <= afrr_energy_bid_price) & valid_price
+        price_allowed = (
+            (delivered_afrr_price <= afrr_energy_bid_price)
+            & valid_price
+            & ~self._grid_charging_block(plant, forecasts)
+        )
         max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours
         charge_power_headroom_after_reserve = (
             max_charge_mwh - final_planned - reserved_capacity
@@ -526,6 +532,10 @@ class HybridETESGasStrategy(BaseStrategy):
         if bid_increment_mw <= 0:
             raise ValueError("afrr_capacity.product_rules.bid_increment_mw must be positive")
         expected_soc = plant.etes.initial_soc_mwh if initial_soc_mwh is None else initial_soc_mwh
+        # Under atypical grid use, do not commit aFRR-down capacity in blocks that overlap a
+        # high-load window: a mandatory capacity-backed activation there would raise the billed
+        # window peak and forfeit the §19(2) capacity-charge saving.
+        grid_block = self._grid_charging_block(plant, forecasts)
         records = []
         for _, block in block_summary.iterrows():
             block_id = str(block["block_id"])
@@ -580,10 +590,12 @@ class HybridETESGasStrategy(BaseStrategy):
                 >= opportunity_cost_block + AFRR_CAPACITY_MARGIN_EUR_PER_MW_H
             )
             physical_feasibility_allowed = market_compliant_capacity >= min_bid_mw
+            block_overlaps_high_load_window = bool(grid_block.loc[mask].any())
             economic_allowed = (
                 capacity_profitability_allowed
                 and activation_safety_allowed
                 and physical_feasibility_allowed
+                and not block_overlaps_high_load_window
             )
             if not economic_allowed:
                 reserved_mw = 0.0
@@ -700,6 +712,23 @@ class HybridETESGasStrategy(BaseStrategy):
         """Return market electricity price plus plant consumption charges."""
 
         return market_price.astype(float) + float(plant.additional_electricity_charge_eur_per_mwh)
+
+    @staticmethod
+    def _grid_charging_block(
+        plant: SteamGenerationPlant,
+        forecasts: pd.DataFrame,
+    ) -> pd.Series:
+        """Per-timestep mask, True where the grid-fee regulation blocks grid-charging.
+
+        Under atypical grid use (§19(2) StromNEV) the plant avoids drawing grid
+        power during DSO high-load windows to keep its billed capacity peak low.
+        """
+
+        regulation = getattr(plant, "grid_fee_regulation", None)
+        if regulation is None:
+            return pd.Series(False, index=forecasts.index)
+        mask = regulation.charging_block_mask(forecasts)
+        return mask.reindex(forecasts.index).fillna(False).astype(bool)
 
     def _calculate_charge_gate(
         self,

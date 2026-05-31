@@ -63,17 +63,19 @@ class DataLoader:
         plants["technology"] = plants["technology"].astype(str).str.strip()
         return plants
 
-    def load_additional_charges(self, plants: pd.DataFrame) -> dict[str, float]:
-        """Load plant-specific electricity consumption charge adders.
+    def load_additional_charges(self, plants: pd.DataFrame) -> dict[str, pd.DataFrame]:
+        """Load plant-specific network-tariff components.
 
-        The file is required only when the selected study case has
-        ``additional_charges`` set to true. Values are summed over all component
-        rows and interpreted as EUR/MWh_el consumed.
+        Returns one tidy frame per plant with columns ``component``, ``unit`` and
+        ``value``. The loader stays country-agnostic: tier/levy/threshold
+        interpretation is performed later by the selected grid-fee regulation
+        (see :mod:`flexi_mod.grid_fees`). Returns an empty mapping when the case
+        has ``additional_charges`` disabled.
         """
 
         plant_names = sorted(str(name) for name in plants["name"].dropna().unique())
         if not self.config.additional_charges_enabled:
-            return dict.fromkeys(plant_names, 0.0)
+            return {}
 
         path = self.additional_charges_path
         if not path.exists():
@@ -94,10 +96,11 @@ class DataLoader:
             raise DataValidationError("additional_charges.csv contains no charge rows")
 
         units = charges["unit"].astype(str).str.strip()
-        invalid_units = sorted(set(units[units != "EUR/MWh"]))
+        allowed_units = {"EUR/MWh", "EUR/MW.a"}
+        invalid_units = sorted(set(units) - allowed_units)
         if invalid_units:
             raise DataValidationError(
-                "additional_charges.csv supports only unit 'EUR/MWh'; found: "
+                "additional_charges.csv supports units 'EUR/MWh' and 'EUR/MW.a'; found: "
                 + ", ".join(invalid_units)
             )
 
@@ -107,7 +110,8 @@ class DataLoader:
                 "additional_charges.csv is missing plant column(s): " + ", ".join(missing_plants)
             )
 
-        result: dict[str, float] = {}
+        components = charges["component"].astype(str).str.strip()
+        result: dict[str, pd.DataFrame] = {}
         for plant_name in plant_names:
             values = pd.to_numeric(charges[plant_name], errors="coerce")
             if values.isna().any():
@@ -116,7 +120,13 @@ class DataLoader:
                     f"additional_charges.csv has non-numeric value(s) for plant "
                     f"'{plant_name}' in component(s): {', '.join(bad_components)}"
                 )
-            result[plant_name] = float(values.sum())
+            result[plant_name] = pd.DataFrame(
+                {
+                    "component": components.to_numpy(),
+                    "unit": units.to_numpy(),
+                    "value": values.to_numpy(dtype=float),
+                }
+            )
         return result
 
     def load_forecasts(self, required_columns: set[str] | None = None) -> pd.DataFrame:

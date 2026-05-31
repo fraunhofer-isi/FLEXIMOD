@@ -82,14 +82,15 @@ def print_verbose_outputs(logger: CliLogger, outputs: dict[str, Any]) -> None:
             logger.detail(f"  {name}: {Path(path)}")
 
 
-def additional_charges_message(enabled: bool, charges: dict[str, float] | None = None) -> str:
+def additional_charges_message(enabled: bool, charges: dict[str, Any] | None = None) -> str:
     if not enabled:
         return "Additional charges: disabled; market prices are used directly."
     charges = charges or {}
     if not charges:
         return "Additional charges: enabled; no plant-specific charge rows were loaded."
     plant_parts = [
-        f"{plant_name} = {charge:.2f} EUR/MWh_el" for plant_name, charge in sorted(charges.items())
+        f"{plant_name} = {len(frame)} tariff components"
+        for plant_name, frame in sorted(charges.items())
     ]
     return "Additional charges: enabled; " + "; ".join(plant_parts) + "."
 

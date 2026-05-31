@@ -119,7 +119,11 @@ def test_additional_charges_are_loaded_only_when_enabled(tmp_path: Path) -> None
     loader = DataLoader(config, input_dir=case_dir)
     plants = loader.load_plants()
 
-    assert loader.load_additional_charges(plants)["plant_1"] == pytest.approx(12.1)
+    charges = loader.load_additional_charges(plants)
+    plant_charges = charges["plant_1"]
+    assert list(plant_charges.columns) == ["component", "unit", "value"]
+    assert len(plant_charges) == 5
+    assert plant_charges["value"].sum() == pytest.approx(12.1)
 
 
 def test_day_ahead_only_ignores_dst_irregularities_outside_case_range(tmp_path: Path) -> None:

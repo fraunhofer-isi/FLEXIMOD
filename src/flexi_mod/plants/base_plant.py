@@ -5,6 +5,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from flexi_mod.regulations import GridFeeRegulation
 
 
 @dataclass
@@ -17,6 +21,7 @@ class BasePlant:
     objective: str = "min_variable_cost"
     heat_demand_column: str = ""
     additional_electricity_charge_eur_per_mwh: float = 0.0
+    grid_fee_regulation: GridFeeRegulation | None = None
 
     @property
     def plant_type(self) -> str:

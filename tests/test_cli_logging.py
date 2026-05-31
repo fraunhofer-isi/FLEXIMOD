@@ -86,7 +86,7 @@ def test_run_case_verbose_output_lists_created_paths(
     run_case.main()
 
     output = capsys.readouterr().out
-    assert "Additional charges: enabled; plant_1 = 12.10 EUR/MWh_el." in output
+    assert "Additional charges: enabled; plant_1 = 5 tariff components." in output
     assert "Day-ahead stage solved for plant_1" in output
     assert "dispatch_results.csv" in output
     assert "plot_1.png" in output
