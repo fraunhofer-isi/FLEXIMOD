@@ -1,6 +1,11 @@
 component,unit,plant_1
-Network consumption price,EUR/MWh,6.9
-Metering and operation,EUR/MWh,2
-Concession fees,EUR/MWh,1.1
-Surcharges and levies,EUR/MWh,1.6
+Grid energy charge ?2500 h/a,EUR/MWh,36.9
+Grid energy charge <2500 h/a,EUR/MWh,45.6
+Grid capacity charge ?2500 h/a,EUR/MW.a,66570
+Grid capacity charge <2500 h/a,EUR/MW.a,44850
+CHP surcharge,EUR/MWh,2.77
+Offshore grid levy,EUR/MWh,8.16
+Surcharge for special network use (group A),EUR/MWh,15.58
+Surcharge for special network use (group B),EUR/MWh,0.5
+Concession fee,EUR/MWh,1.1
 Electricity tax,EUR/MWh,0.5
