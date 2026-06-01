@@ -92,6 +92,15 @@ class GridFeeRegulation(ABC):
     def settle(self, dispatch_results: pd.DataFrame, timestep_minutes: int) -> GridFeeResult:
         """Compute the authoritative annual grid-fee bill from the realized dispatch."""
 
+    def tier_prompt_options(self) -> list[dict[str, str]]:
+        """Return interactive-prompt choices for the assumed full-load-hour tier.
+
+        Each entry has keys ``key`` (the value to pass as ``assumed_tier``),
+        ``label`` (human-readable threshold), and ``rate`` (rate description).
+        Return an empty list when the regulation has no tiered energy charge.
+        """
+        return []
+
 
 class NullGridFeeRegulation(GridFeeRegulation):
     """No-op regulation used when ``additional_charges`` is disabled for the case."""
@@ -104,6 +113,8 @@ class NullGridFeeRegulation(GridFeeRegulation):
 
     def settle(self, dispatch_results: pd.DataFrame, timestep_minutes: int) -> GridFeeResult:
         return GridFeeResult()
+
+    # tier_prompt_options() inherited → returns [] (no prompt shown)
 
 
 # --------------------------------------------------------------------- Germany
@@ -188,6 +199,22 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         self._special_a = special.get("a", 0.0)
         self._special_b = special.get("b", 0.0)
         self._levies = levies
+
+    def tier_prompt_options(self) -> list[dict[str, str]]:
+        if self._energy["high"] == self._energy["low"] == 0.0:
+            return []
+        return [
+            {
+                "key": "high",
+                "label": f">= {self.FULL_LOAD_HOURS_THRESHOLD_H:.0f} h/a",
+                "rate": f"{self._energy['high']:.2f} EUR/MWh",
+            },
+            {
+                "key": "low",
+                "label": f"< {self.FULL_LOAD_HOURS_THRESHOLD_H:.0f} h/a",
+                "rate": f"{self._energy['low']:.2f} EUR/MWh",
+            },
+        ]
 
     # ------------------------------------------------------------ interface (A)
     def marginal_charge_eur_per_mwh(self) -> float:

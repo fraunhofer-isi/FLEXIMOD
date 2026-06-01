@@ -49,7 +49,7 @@ available_examples: dict[str, dict[str, str]] = {
 
 
 # Select the example to run from the available examples above.
-example = "hybrid_ETES_DA_ID_aFRR_energy"
+example = "hybrid_ETES_DA_ID_aFRR_energy_capacity"
 
 
 def resolve_example_paths(example: str) -> dict[str, Path | str]:
@@ -162,11 +162,12 @@ def main() -> None:
     parser.add_argument(
         "--assumed-grid-tier",
         choices=["high", "low"],
-        default="high",
+        default=None,
         help=(
             "Full-load-hour tier assumed for the per-MWh grid energy charge in the dispatch "
-            "strike price. The bill is corrected ex-post; a warning is printed if the realized "
-            "tier differs. Re-run with the warned tier for a self-consistent dispatch."
+            "strike price. If omitted and tiered rates are present in additional_charges.csv, "
+            "you will be prompted interactively. The bill is corrected ex-post if the realized "
+            "tier differs."
         ),
     )
     parser.add_argument("--no-plots", action="store_true")
@@ -201,12 +202,63 @@ def main() -> None:
     _report_additional_charges(logger, config, settings)
     _report_intraday_mode(logger, config)
 
+    if settings["assumed_grid_tier"] is None:
+        settings["assumed_grid_tier"] = _prompt_grid_tier(config, settings) or "high"
+
     runner = SimulationRunner(**settings, progress_callback=logger.progress)
     with logger.capture_warnings():
         outputs = runner.run()
 
     logger.success(f"Case completed: {output_summary(outputs)} saved.")
     print_verbose_outputs(logger, outputs)
+
+
+def _prompt_grid_tier(config: Any, settings: dict[str, Any]) -> str | None:
+    """Interactively ask which full-load-hour tier to assume, if the tariff is tiered."""
+    from flexi_mod.data.data_loader import DataLoader
+    from flexi_mod.regulations import build_grid_fee_regulation
+
+    if not config.additional_charges_enabled:
+        return None
+
+    loader = DataLoader(
+        config,
+        input_dir=settings["input_dir"],
+        plants_file=settings["plants_file"],
+        forecasts_file=settings["forecasts_file"],
+    )
+    try:
+        plants = loader.load_plants()
+        charges = loader.load_additional_charges(plants)
+    except Exception:
+        return None
+
+    if not charges:
+        return None
+
+    plant_charges = next(iter(charges.values()))
+    try:
+        reg = build_grid_fee_regulation(config.country, plant_charges)
+    except Exception:
+        return None
+
+    options = reg.tier_prompt_options()
+    if not options:
+        return None
+
+    print()
+    print("Tiered grid energy charge detected in additional_charges.csv:")
+    for i, opt in enumerate(options, start=1):
+        print(f"  [{i}] {opt['key']:5s}  {opt['label']:15s}  {opt['rate']}")
+    print()
+    while True:
+        raw = input(f"Which tier to assume for this run? [1-{len(options)}]: ").strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            chosen = options[int(raw) - 1]
+            print(f"Using tier: {chosen['key']} ({chosen['label']}, {chosen['rate']})")
+            print()
+            return chosen["key"]
+        print(f"  Please enter a number between 1 and {len(options)}.")
 
 
 def _report_additional_charges(
