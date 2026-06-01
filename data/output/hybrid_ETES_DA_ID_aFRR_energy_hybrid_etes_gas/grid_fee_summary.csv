@@ -1,0 +1,2 @@
+plant_name,grid_annual_energy_MWh,grid_annual_peak_MW,grid_high_load_window_peak_MW,grid_billed_peak_MW,grid_full_load_hours,grid_assumed_tier,grid_realized_tier,grid_tier_assumption_held,grid_fee_energy_charge_EUR,grid_fee_capacity_charge_EUR,grid_fee_special_network_use_EUR,grid_fee_levies_EUR,grid_fee_total_EUR,grid_fee_ex_post_addition_EUR,warnings
+plant_1,10027.081662105698,16.000000000000014,0.0,0.0,626.6926038816056,low,low,True,457234.92379201984,0.0,20093.54083105285,125639.33322618439,602967.7978492571,15080.0,

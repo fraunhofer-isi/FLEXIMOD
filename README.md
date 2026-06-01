@@ -96,35 +96,55 @@ CO2 cost is currently disabled in the active MVP objective and benchmark, so
 
 Heat demand is interpreted as average MW_th over the time step and is converted internally to MWh_th using `case.timestep_minutes`.
 
-### Optional Electricity Consumption Charges
+### Electricity Network Charges (Netzentgelte)
 
-Industrial electricity use may face additional energy charges on top of the
-market energy price, for example network consumption charges, metering and
-operation, concession fees, surcharges, levies, and electricity tax.
+Industrial electricity use faces network charges and levies on top of the market
+energy price. When the selected `cases.<case_name>` entry sets
+`additional_charges: true`, `additional_charges.csv` is interpreted by the
+network-tariff **regulation** selected from `case.country`
+(`src/flexi_mod/regulations.py`). For Germany (`country: DE`) the regulation
+models:
 
-Enable them in `config.yaml` with:
+- flat levies and taxes (CHP, offshore grid levy, concession, electricity tax);
+- the grid **energy** charge, tiered by annual full-load hours (`>=`/`< 2500 h/a`);
+- the grid **capacity** charge (`EUR/MW.a x peak`), tiered the same way;
+- the **special network use** group A/B split (group A on the first 1 GWh); and
+- §19(2) StromNEV **atypical grid use**: the capacity charge is billed on the
+  maximum load inside the DSO high-load windows, not the annual peak.
 
-```yaml
-cases:
-  hybrid_ETES_ID_buy:
-    additional_charges: true
-```
-
-Then provide `additional_charges.csv` in the case input folder:
+Provide the rates in `additional_charges.csv` (one row per component, units
+`EUR/MWh` or `EUR/MW.a`):
 
 ```text
 component,unit,plant_1
-Network consumption price,EUR/MWh,6.9
-Metering and operation,EUR/MWh,2.0
+Grid energy charge >=2500 h/a,EUR/MWh,36.9
+Grid energy charge <2500 h/a,EUR/MWh,45.6
+Grid capacity charge >=2500 h/a,EUR/MW.a,66570
+Grid capacity charge <2500 h/a,EUR/MW.a,44850
+CHP surcharge,EUR/MWh,2.77
+Surcharge for special network use (group A),EUR/MWh,15.58
+Surcharge for special network use (group B),EUR/MWh,0.5
 ```
 
-FLEXIMOD sums the component rows per plant and adds the result to DA, IDC, and
-aFRR energy prices before the strategy compares electricity against the
-gas-based benchmark. The same adder enters the plant dispatch objective and
-storage cost ledger as an electricity consumption charge.
+During dispatch the strategy adds a **marginal per-MWh charge**
+(`levies + grid energy[assumed tier] + special-use group B`) to DA, IDC, and aFRR
+energy prices. The capacity charge, the group-A premium, and any full-load-hour
+tier true-up are settled **ex-post** into `grid_fee_summary.csv`, and
+`net_operating_cost_incl_grid_fees_EUR` is added to the summary indicators.
 
-These charges apply only to consumed energy. They do not apply to aFRR capacity
-reservation or capacity revenue.
+**Atypical grid use** is driven by a `high_load_window` (`0/1`) column in
+`forecasts_df.csv`: where it is `1`, grid charging is blocked (and aFRR-down
+capacity is not reserved in overlapping blocks), so the billed window peak — and
+the capacity charge — go to zero. Generate the column from the regulation's
+`compute_high_load_window(...)` helper.
+
+The assumed full-load-hour tier defaults to `>=2500 h/a`; override with
+`--assumed-grid-tier {high,low}`. If the realized tier differs, the bill is
+corrected ex-post and a warning suggests re-running. Adding another country is
+one `GridFeeRegulation` subclass in `regulations.py`.
+
+These charges apply only to consumed electricity. aFRR capacity *revenue* is
+unaffected.
 
 ## Run The First Case
 

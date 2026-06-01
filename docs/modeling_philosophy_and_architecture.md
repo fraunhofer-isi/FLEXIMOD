@@ -246,11 +246,24 @@ column may still exist in input files for later use, but it is not required for
 the current MVP.
 
 If the selected `cases.<case_name>` entry sets `additional_charges: true`,
-`additional_charges.csv` is loaded as plant-specific electricity consumption
-charge adders in `EUR/MWh_el`. These charges are added to DA, IDC, and aFRR
-energy prices for strategy decisions, dispatch costs, and stored-heat cost
-accounting. They apply only to consumed electricity energy and not to aFRR
-capacity reservation revenue.
+`additional_charges.csv` is interpreted by the network-tariff regulation selected
+from `case.country` (`src/flexi_mod/regulations.py`). The regulation is the single
+seam between national network rules and the engine, exposing a small
+country-agnostic interface:
+
+- a **marginal per-MWh charge** added to DA, IDC, and aFRR energy prices for
+  strategy decisions, dispatch costs, and stored-heat cost accounting;
+- a **high-load-window block mask** that disables grid charging during DSO
+  high-load windows (atypical grid use); and
+- an **ex-post settlement** producing the authoritative annual network bill
+  (tiered grid energy and capacity charges, special network use, levies) written
+  to `grid_fee_summary.csv`.
+
+For Germany the regulation implements full-load-hour tiers, the special network
+use A/B split, and §19(2) StromNEV atypical grid use (capacity billed on the
+high-load-window peak). These charges apply only to consumed electricity, not to
+aFRR capacity reservation revenue. Adding a country is one `GridFeeRegulation`
+subclass plus one registry entry.
 
 ## Plant And Technology Layer
 

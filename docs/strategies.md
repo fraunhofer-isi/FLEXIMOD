@@ -160,17 +160,26 @@ So a delivered day-ahead electricity price of `40 EUR/MWh_el` corresponds to:
 40 / 0.8464 = 47.26 EUR/MWh_th
 ```
 
-The delivered electricity price is the market energy price plus optional
-industrial electricity consumption charges:
+The delivered electricity price is the market energy price plus the marginal
+per-MWh network charge from the case's grid-fee regulation:
 
 ```text
-delivered_price = market_price + additional_electricity_charges
+delivered_price = market_price + marginal_network_charge
 ```
 
-Additional charges are loaded from `additional_charges.csv` only when the
-selected `cases.<case_name>` entry sets `additional_charges: true`. They apply
-to consumed electricity energy in DA, IDC, and aFRR energy stages. They do not
-apply to aFRR capacity reservation or capacity revenue.
+The marginal charge is loaded from `additional_charges.csv` (interpreted per
+`case.country`; see `regulations.py`) only when `additional_charges: true`. For
+Germany it is `flat levies + grid energy charge (assumed full-load-hour tier) +
+special network use group B`, applied to consumed electricity in the DA, IDC, and
+aFRR energy stages. The tiered capacity charge, group-A premium, and any tier
+true-up are settled ex-post, not in the per-step price. None of these apply to
+aFRR capacity reservation or capacity revenue.
+
+Under §19(2) StromNEV atypical grid use, the strategy additionally blocks grid
+charging during DSO high-load windows (the `high_load_window` column in
+`forecasts_df.csv`) and skips aFRR-down capacity reservation in blocks that
+overlap a window, driving the billed capacity peak — and the capacity charge — to
+zero.
 
 ## Charging Rule
 

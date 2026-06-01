@@ -1,2 +1,2 @@
 aFRR_down_total_rows,aFRR_down_valid_activation_rows,aFRR_down_zero_activation_rows,aFRR_down_missing_price_rows,aFRR_down_missing_quantity_rows,aFRR_down_activation_without_price_rows,aFRR_down_skipped_activation_MWh_due_to_missing_price,aFRR_down_used_system_activation_MWh,aFRR_down_negative_quantity_rows,aFRR_down_price_zero_with_activation_rows
-35040,22982,12058,8128,3,490,633.97,86715.822,0,2
+35040,25004,10036,8128,0,798,3490.831,410670.675,0,3
