@@ -32,8 +32,16 @@ def full_charges() -> pd.DataFrame:
                 "Electricity tax",
             ],
             "unit": [
-                "EUR/MWh", "EUR/MWh", "EUR/MW.a", "EUR/MW.a", "EUR/MWh",
-                "EUR/MWh", "EUR/MWh", "EUR/MWh", "EUR/MWh", "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MW.a",
+                "EUR/MW.a",
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MWh",
             ],
             "value": [36.9, 45.6, 66570, 44850, 2.77, 8.16, 15.58, 0.5, 1.1, 0.5],
         }

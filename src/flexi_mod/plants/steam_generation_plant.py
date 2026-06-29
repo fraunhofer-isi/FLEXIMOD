@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib.util
 import shutil
 from dataclasses import dataclass, field
+from typing import Any
 
 import pandas as pd
 import pyomo.environ as pyo
@@ -1362,7 +1363,7 @@ class SteamGenerationPlant(BasePlant):
         return frame
 
     @staticmethod
-    def _available_solvers(config: CaseConfig) -> list[tuple[str, pyo.SolverFactory]]:
+    def _available_solvers(config: CaseConfig) -> list[tuple[str, Any]]:
         configured = [config.solver_name, *config.solver_fallbacks]
         expanded: list[str] = []
         for candidate in configured:
@@ -1372,7 +1373,7 @@ class SteamGenerationPlant(BasePlant):
                 expanded.append(candidate)
 
         seen: set[str] = set()
-        solvers: list[tuple[str, pyo.SolverFactory]] = []
+        solvers: list[tuple[str, Any]] = []
         for candidate in expanded:
             if candidate in seen:
                 continue

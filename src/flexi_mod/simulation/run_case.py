@@ -46,7 +46,6 @@ available_examples: dict[str, dict[str, str]] = {
         "study_case": "hybrid_ETES_DA_ID_aFRR_energy_capacity",
     },
 }
-2
 
 # Select the example to run from the available examples above.
 example = "hybrid_ETES_DA"

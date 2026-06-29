@@ -130,7 +130,10 @@ class GermanGridFeeRegulation(GridFeeRegulation):
     _WINTER_MONTHS = (1, 2, 12)
     _AUTUMN_MONTHS = (9, 10, 11)
     _WINTER_WINDOW = (9 * 60 + 45, 19 * 60 + 30)  # 09:45–19:30
-    _AUTUMN_WINDOWS = ((11 * 60 + 15, 13 * 60 + 45), (15 * 60, 19 * 60 + 15))  # 11:15–13:45, 15:00–19:15
+    _AUTUMN_WINDOWS = (
+        (11 * 60 + 15, 13 * 60 + 45),
+        (15 * 60, 19 * 60 + 15),
+    )  # 11:15–13:45, 15:00–19:15
 
     def __init__(
         self,
@@ -260,12 +263,16 @@ class GermanGridFeeRegulation(GridFeeRegulation):
             full_load_hours = 0.0
             realized_tier = self._assumed_tier
         tier_held = realized_tier == self._assumed_tier
-        billed_peak = window_peak if self._capacity_peak_basis == "high_load_window" else annual_peak
+        billed_peak = (
+            window_peak if self._capacity_peak_basis == "high_load_window" else annual_peak
+        )
 
         thr = self.SPECIAL_USE_THRESHOLD_MWH
         energy_charge = grid_energy * self._energy[realized_tier]
         capacity_charge = self._capacity[realized_tier] * billed_peak
-        special = min(grid_energy, thr) * self._special_a + max(0.0, grid_energy - thr) * self._special_b
+        special = (
+            min(grid_energy, thr) * self._special_a + max(0.0, grid_energy - thr) * self._special_b
+        )
         levies = self._levies * grid_energy
         total = energy_charge + capacity_charge + special + levies
 
@@ -277,10 +284,10 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         if not tier_held:
             result_warnings.append(
                 f"Assumed {self._assumed_tier} full-load-hour tier did not hold "
-                f"(realized {full_load_hours:.0f} h/a -> '{realized_tier}'). The dispatch used the "
-                f"'{self._assumed_tier}'-tier energy rate; the bill is corrected ex-post, but re-run "
-                "with --assumed-grid-tier "
-                f"{realized_tier} for a fully self-consistent dispatch."
+                f"(realized {full_load_hours:.0f} h/a -> '{realized_tier}'). The dispatch used "
+                f"the '{self._assumed_tier}'-tier energy rate; the bill is corrected ex-post, "
+                f"but re-run with --assumed-grid-tier {realized_tier} for a fully "
+                "self-consistent dispatch."
             )
 
         return GridFeeResult(
