@@ -25,7 +25,7 @@ FLEXIMOD targets Python 3.13 or newer. From a fresh checkout, open PowerShell in
 the repository folder and run:
 
 ```powershell
-git clone https://github.com/Manish-Khanra/FLEXIMOD.git
+git clone https://github.com/fraunhofer-isi/FLEXIMOD.git
 cd FLEXIMOD
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
