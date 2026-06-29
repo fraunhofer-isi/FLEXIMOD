@@ -11,5 +11,5 @@
 *.zip binary
 *.7z binary
 
-# Exclude only the very large notebook JSON from GitHub language statistics.
-notebooks/fleximod_report_analysis.ipynb linguist-generated=true
+# Exclude bulky notebook JSON from GitHub language statistics.
+notebooks/*.ipynb linguist-generated=true
