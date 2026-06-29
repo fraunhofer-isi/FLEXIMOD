@@ -141,8 +141,10 @@ class HybridETESGasStrategy(BaseStrategy):
 
         grid_block = self._grid_charging_block(plant, forecasts)
         buy_allowed = (
-            delivered_idc_price < (electricity_benchmark - IDC_MARGIN_EUR_PER_MWH)
-        ) & ~missing_price & ~grid_block
+            (delivered_idc_price < (electricity_benchmark - IDC_MARGIN_EUR_PER_MWH))
+            & ~missing_price
+            & ~grid_block
+        )
         sell_allowed = (
             delivered_idc_price > (electricity_benchmark + IDC_MARGIN_EUR_PER_MWH)
         ) & ~missing_price

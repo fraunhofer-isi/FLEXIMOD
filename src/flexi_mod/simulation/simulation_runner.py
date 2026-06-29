@@ -13,12 +13,12 @@ import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataLoader
-from flexi_mod.regulations import GridFeeResult, build_grid_fee_regulation
 from flexi_mod.ledgers.market_ledger import MarketLedger
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.markets import BaseMarket, build_markets
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
 from flexi_mod.plants.steam_generation_plant import DispatchSignals, SteamGenerationPlant
+from flexi_mod.regulations import GridFeeResult, build_grid_fee_regulation
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.visualisation.analytics import calculate_summary_indicators
 from flexi_mod.visualisation.plots import create_case_plots
