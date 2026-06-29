@@ -451,7 +451,7 @@ def test_cheap_afrr_down_creates_proxy_activation(
     _write_forecasts(
         afrr_case / "forecasts_df.csv",
         da_prices=[120.0] * 8,
-        idc_prices=[75.0] * 8,
+        idc_prices=[90.0] * 8,
         afrr_prices=[20.0] * 8,
         afrr_quantities=[2.0] * 8,
         heat_demand=[2.0] * 8,
@@ -501,7 +501,7 @@ def test_afrr_down_uses_zero_margin_benchmark_bid_price(
     _write_forecasts(
         afrr_case / "forecasts_df.csv",
         da_prices=[120.0] * 8,
-        idc_prices=[75.0] * 8,
+        idc_prices=[90.0] * 8,
         afrr_prices=[72.0] * 8,
         afrr_quantities=[2.0] * 8,
         heat_demand=[2.0] * 8,
@@ -720,11 +720,11 @@ def test_afrr_capacity_allows_profitable_free_energy_bid_above_reserved_capacity
     _write_forecasts(
         case_dir / "forecasts_df.csv",
         da_prices=[120.0] * 8,
-        idc_prices=[75.0] * 8,
+        idc_prices=[90.0] * 8,
         afrr_prices=[20.0] * 8,
         afrr_quantities=[10.0] * 8,
         afrr_capacity_prices=[100.0] * 8,
-        heat_demand=[5.0] * 8,
+        heat_demand=[4.0] * 8,
     )
 
     results = _run_case(case_dir, tmp_path)

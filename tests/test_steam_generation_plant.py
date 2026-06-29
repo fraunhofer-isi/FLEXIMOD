@@ -28,7 +28,7 @@ def test_steam_generation_plant_builds_from_plants_csv() -> None:
     assert len(plants) == 1
     assert set(plants[0].components) == {"thermal_storage", "boiler"}
     assert plants[0].etes.max_capacity_mwh > 0
-    assert plants[0].gas_boiler.efficiency == 0.9
+    assert plants[0].gas_boiler.efficiency == 0.85
 
 
 def test_steam_generation_plant_short_horizon_solves() -> None:
@@ -183,7 +183,7 @@ def test_steam_generation_plant_fails_when_real_heat_supply_is_insufficient() ->
     index = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
     forecasts = pd.DataFrame(
         {
-            "plant_1_heat_demand": [10.0] * 4,
+            "plant_1_heat_demand": [20.0] * 4,
             "DE_DA_price": [120.0] * 4,
             "natural_gas_price": [80.0] * 4,
             "co2_price": [0.0] * 4,
