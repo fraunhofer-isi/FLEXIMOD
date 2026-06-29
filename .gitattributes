@@ -10,3 +10,6 @@
 *.jpeg binary
 *.zip binary
 *.7z binary
+
+# Exclude bulky notebook JSON from GitHub language statistics.
+notebooks/*.ipynb linguist-generated=true
