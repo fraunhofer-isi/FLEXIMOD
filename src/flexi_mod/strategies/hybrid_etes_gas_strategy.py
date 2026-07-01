@@ -300,6 +300,9 @@ class HybridETESGasStrategy(BaseStrategy):
         # TODO: Enforce strict bid increments using integer or discretised variables
         # if exact market-compliant bid granularity is required later.
 
+        system_activation_for_bid = clean_afrr["afrr_system_activation_MWh"].where(
+            price_allowed, 0.0
+        )
         if capacity_reservation is not None and not capacity_reservation.empty:
             capacity_backed_bid = reserved_capacity.clip(lower=0.0)
             bid_upper_bound, activated, split = self._strict_afrr_down_offer_and_activation_split(
@@ -308,7 +311,7 @@ class HybridETESGasStrategy(BaseStrategy):
                 final_planned=final_planned,
                 capacity_backed_bid=capacity_backed_bid,
                 free_bid_upper_bound=free_bid_upper_bound,
-                system_activation_mwh=clean_afrr["afrr_system_activation_MWh"],
+                system_activation_mwh=system_activation_for_bid,
                 baseline_storage_soc=baseline_storage_soc,
                 baseline_gas_heat=baseline_gas_heat,
                 min_bid_mw=min_bid_mw,
@@ -322,7 +325,7 @@ class HybridETESGasStrategy(BaseStrategy):
                 final_planned=final_planned,
                 capacity_backed_bid=zero_capacity,
                 free_bid_upper_bound=free_bid_upper_bound,
-                system_activation_mwh=clean_afrr["afrr_system_activation_MWh"],
+                system_activation_mwh=system_activation_for_bid,
                 baseline_storage_soc=baseline_storage_soc,
                 baseline_gas_heat=baseline_gas_heat,
                 min_bid_mw=min_bid_mw,
@@ -406,18 +409,18 @@ class HybridETESGasStrategy(BaseStrategy):
 
         for timestamp in forecasts.index:
             planned_charge = max(0.0, float(final_planned.loc[timestamp]))
-            useful_extra_heat_outlet = max(0.0, float(baseline_gas_heat.loc[timestamp]))
+            # useful_extra_heat_outlet = max(0.0, float(baseline_gas_heat.loc[timestamp]))
             baseline_soc = max(0.0, float(baseline_storage_soc.loc[timestamp]))
             storage_capacity_offer = max(0.0, plant.etes.max_capacity_mwh - baseline_soc) / (
                 plant.etes.efficiency_charge
             )
             power_offer = max_charge_mwh - planned_charge
-            immediate_use_offer = useful_extra_heat_outlet / (
-                plant.etes.efficiency_charge * plant.etes.efficiency_discharge
-            )
+            # immediate_use_offer = useful_extra_heat_outlet / (
+            # plant.etes.efficiency_charge * plant.etes.efficiency_discharge
+            # )
             physical_activation_cap = max(
                 0.0,
-                min(power_offer, storage_capacity_offer, immediate_use_offer),
+                min(power_offer, storage_capacity_offer),
             )
 
             capacity_bid = max(0.0, float(capacity_backed_bid.loc[timestamp]))
