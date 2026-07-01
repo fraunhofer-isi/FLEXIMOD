@@ -323,11 +323,12 @@ markets -> afrr_energy -> signals -> price
 markets -> afrr_energy -> signals -> system_activation
 ```
 
-The input quantity is interpreted as a system-level/proxy activation magnitude
-for aFRR down, not plant-specific activation. Positive quantities are used
-directly. Negative quantities are converted to absolute magnitude and flagged in
-the data-quality summary. Missing prices always block bidding, even if
-activation quantity is zero. Price values of zero are valid.
+The input quantity is treated as the activation request for the representative
+plant. The model has no separate system-wide allocation or merit-order award
+step. Positive quantities are used directly. Negative quantities are converted
+to absolute magnitude and flagged in the data-quality summary. Missing prices
+always block bidding, even if activation quantity is zero. Price values of zero
+are valid.
 
 The strategy calculates feasible bid potential before Pyomo. The bid potential
 uses:
@@ -336,10 +337,13 @@ uses:
 charge-power headroom after DA + IDC
 storage-capacity headroom
 minimum bid eligibility in MW
+bid increments in MW
 ```
 
-The 1 MW minimum bid rule applies to bid potential, not realised activation.
-Actual proxy activation is calculated before the plant solve:
+Bid potential is rounded down to the configured increment and set to zero below
+the configured minimum. These rules apply to bids, not realised activation. A
+bid that passes the price, technical and product-rule checks is treated as
+accepted. Actual activation is calculated before the plant solve:
 
 ```text
 afrr_energy_activated_MWh =
@@ -387,6 +391,10 @@ afrr_energy_cost_EUR =
 If the aFRR energy price is negative, this settlement becomes a credit. The
 net plant value after charges is reported separately from this settlement.
 
+Activated energy may be used immediately or stored in ETES for later gas
+replacement. It is limited by charge-power and storage-capacity headroom, not by
+same-timestep gas consumption.
+
 Pyomo receives the activated volume as a fixed parameter. It does not decide TSO
 activation. For the current hybrid ETES + gas plant:
 
@@ -431,10 +439,16 @@ conservative rule:
 
 ```text
 reserve capacity only if:
+    positive activation is forecast in the block
     capacity revenue covers estimated opportunity cost
     possible activation energy is economically safe versus the gas benchmark
     ETES charge-power and storage-capacity headroom are sufficient
 ```
+
+Activation forecast magnitude does not size the capacity bid. Capacity is sized
+from technical capability and rounded down to the configured market increment.
+For example, a 0.5 MW activation forecast can support a 1 MW capacity bid when
+the plant can physically provide the full 1 MW product.
 
 Capacity reservation itself does not add energy to storage. It only reserves
 charging headroom and earns capacity revenue. If aFRR energy is also enabled,
@@ -453,8 +467,7 @@ The current DA + IDC + aFRR down strategy is deliberately simple:
 - there is no explicit multi-step bid curve;
 - there is no market clearing uncertainty;
 - IDC is an index-based adjustment, not an order-book model;
-- aFRR down activation is proxy/scenario activation, not plant-specific TSO
-  activation;
+- aFRR down activation is treated as a representative-plant request;
 - day-ahead positions are fixed before IDC adjustments;
 - DA and IDC positions are fixed before aFRR down activation;
 - CO2 cost is disabled for the active MVP objective and benchmark;
@@ -469,9 +482,8 @@ realistic market mechanisms.
 The next strategy extensions should improve market realism around the existing
 stages:
 
-1. Strict bid increments and bid granularity.
-2. Bid acceptance probability or merit-order award modelling.
-3. Forecast-based or stochastic price expectations.
+1. Bid acceptance probability or merit-order award modelling.
+2. Forecast-based or stochastic price expectations.
 
 The key rule for all future stages:
 

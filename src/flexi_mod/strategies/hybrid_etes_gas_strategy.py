@@ -211,6 +211,8 @@ class HybridETESGasStrategy(BaseStrategy):
         afrr_market = AFRRDownEnergyMarket("afrr_energy", self.config.market("afrr_energy"))
         product_rules = afrr_market.product_rules
         min_bid_mw = float(product_rules.get("min_bid_mw", 0.0))
+        bid_increment_mw = float(product_rules.get("bid_increment_mw", 1.0))
+        _validate_bid_rules("afrr_energy", min_bid_mw, bid_increment_mw)
 
         cleaned = self._prepare_afrr_down_energy_data(forecasts, timestep_hours)
         clean_afrr = cleaned.frame
@@ -294,11 +296,17 @@ class HybridETESGasStrategy(BaseStrategy):
             axis=1,
         ).min(axis=1)
         free_bid_potential = free_bid_potential.where(price_allowed, 0.0).clip(lower=0.0)
-        remaining_headroom_mw = free_bid_potential / timestep_hours
-        free_bid_upper_bound = free_bid_potential.where(remaining_headroom_mw >= min_bid_mw, 0.0)
-        free_bid_upper_bound = free_bid_upper_bound.clip(lower=0.0)
-        # TODO: Enforce strict bid increments using integer or discretised variables
-        # if exact market-compliant bid granularity is required later.
+        free_bid_upper_bound = (
+            free_bid_potential.div(timestep_hours)
+            .map(
+                lambda feasible_mw: _round_bid_down_to_increment(
+                    feasible_mw,
+                    min_bid_mw=min_bid_mw,
+                    bid_increment_mw=bid_increment_mw,
+                )
+            )
+            .mul(timestep_hours)
+        )
 
         system_activation_for_bid = clean_afrr["afrr_system_activation_MWh"].where(
             price_allowed, 0.0
@@ -315,6 +323,7 @@ class HybridETESGasStrategy(BaseStrategy):
                 baseline_storage_soc=baseline_storage_soc,
                 baseline_gas_heat=baseline_gas_heat,
                 min_bid_mw=min_bid_mw,
+                bid_increment_mw=bid_increment_mw,
                 timestep_hours=timestep_hours,
             )
         else:
@@ -329,10 +338,11 @@ class HybridETESGasStrategy(BaseStrategy):
                 baseline_storage_soc=baseline_storage_soc,
                 baseline_gas_heat=baseline_gas_heat,
                 min_bid_mw=min_bid_mw,
+                bid_increment_mw=bid_increment_mw,
                 timestep_hours=timestep_hours,
             )
-        useful_heat_cap_binding = split["useful_heat_cap_binding"]
-        curtailed_activation = split["curtailed_proxy_activation_due_to_heat_cap_MWh"]
+        headroom_binding = split["afrr_headroom_binding"]
+        curtailed_activation = split["afrr_curtailment_MWh"]
 
         signals = AFRRDownSignals(
             da_price_col=da_price_col,
@@ -353,8 +363,8 @@ class HybridETESGasStrategy(BaseStrategy):
                 "afrr_energy_capacity_backed_activated_MWh"
             ],
             afrr_energy_free_activated_mwh=split["afrr_energy_free_activated_MWh"],
-            useful_heat_cap_binding=useful_heat_cap_binding,
-            curtailed_proxy_activation_due_to_heat_cap_mwh=curtailed_activation,
+            afrr_headroom_binding=headroom_binding,
+            afrr_curtailment_mwh=curtailed_activation,
             gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
             additional_electricity_charge_eur_per_mwh=(
@@ -387,9 +397,10 @@ class HybridETESGasStrategy(BaseStrategy):
         baseline_storage_soc: pd.Series,
         baseline_gas_heat: pd.Series,
         min_bid_mw: float,
+        bid_increment_mw: float,
         timestep_hours: float,
     ) -> tuple[pd.Series, pd.Series, dict[str, pd.Series]]:
-        """Limit aFRR down bids and activation to useful heat trajectories.
+        """Limit aFRR down bids and activation to market and ETES headroom.
 
         Capacity-backed bid volume is the mandatory energy bid behind awarded
         capacity. Free bid volume is optional and enters only after the strategy
@@ -406,18 +417,24 @@ class HybridETESGasStrategy(BaseStrategy):
         binding_values: list[bool] = []
         curtailed_values: list[float] = []
         max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours
+        additional_soc_mwh = 0.0
 
         for timestamp in forecasts.index:
             planned_charge = max(0.0, float(final_planned.loc[timestamp]))
-            # useful_extra_heat_outlet = max(0.0, float(baseline_gas_heat.loc[timestamp]))
             baseline_soc = max(0.0, float(baseline_storage_soc.loc[timestamp]))
-            storage_capacity_offer = max(0.0, plant.etes.max_capacity_mwh - baseline_soc) / (
-                plant.etes.efficiency_charge
+            additional_soc_mwh *= 1.0 - plant.etes.storage_loss_rate
+            replaceable_gas_heat = max(0.0, float(baseline_gas_heat.loc[timestamp]))
+            storage_capacity_offer = (
+                max(
+                    0.0,
+                    plant.etes.max_capacity_mwh
+                    - baseline_soc
+                    - additional_soc_mwh
+                    + replaceable_gas_heat / plant.etes.efficiency_discharge,
+                )
+                / plant.etes.efficiency_charge
             )
             power_offer = max_charge_mwh - planned_charge
-            # immediate_use_offer = useful_extra_heat_outlet / (
-            # plant.etes.efficiency_charge * plant.etes.efficiency_discharge
-            # )
             physical_activation_cap = max(
                 0.0,
                 min(power_offer, storage_capacity_offer),
@@ -426,9 +443,15 @@ class HybridETESGasStrategy(BaseStrategy):
             capacity_bid = max(0.0, float(capacity_backed_bid.loc[timestamp]))
             free_bid = max(0.0, float(free_bid_upper_bound.loc[timestamp]))
             free_room_after_capacity = max(0.0, physical_activation_cap - capacity_bid)
-            free_bid = min(free_bid, free_room_after_capacity)
-            if timestep_hours <= 0 or free_bid / timestep_hours < min_bid_mw:
-                free_bid = 0.0
+            feasible_free_bid_mwh = min(free_bid, free_room_after_capacity)
+            free_bid = (
+                _round_bid_down_to_increment(
+                    feasible_free_bid_mwh / timestep_hours,
+                    min_bid_mw=min_bid_mw,
+                    bid_increment_mw=bid_increment_mw,
+                )
+                * timestep_hours
+            )
 
             total_bid = capacity_bid + free_bid
             system_activation = max(0.0, float(system_activation_mwh.loc[timestamp]))
@@ -438,6 +461,13 @@ class HybridETESGasStrategy(BaseStrategy):
             free_activated = min(free_bid, max(0.0, feasible_activation - capacity_activated))
             total_activated = capacity_activated + free_activated
             curtailment = max(0.0, proxy_activation - total_activated)
+
+            additional_soc_mwh += total_activated * plant.etes.efficiency_charge
+            additional_discharge_heat = min(
+                replaceable_gas_heat,
+                additional_soc_mwh * plant.etes.efficiency_discharge,
+            )
+            additional_soc_mwh -= additional_discharge_heat / plant.etes.efficiency_discharge
 
             capacity_bid_values.append(capacity_bid)
             free_bid_values.append(free_bid)
@@ -461,10 +491,8 @@ class HybridETESGasStrategy(BaseStrategy):
             "afrr_energy_free_activated_MWh": pd.Series(
                 free_activated_values, index=forecasts.index
             ),
-            "useful_heat_cap_binding": pd.Series(binding_values, index=forecasts.index),
-            "curtailed_proxy_activation_due_to_heat_cap_MWh": pd.Series(
-                curtailed_values, index=forecasts.index
-            ),
+            "afrr_headroom_binding": pd.Series(binding_values, index=forecasts.index),
+            "afrr_curtailment_MWh": pd.Series(curtailed_values, index=forecasts.index),
         }
         return (
             pd.Series(total_bid_values, index=forecasts.index, name="afrr_energy_bid_MWh"),
@@ -534,8 +562,7 @@ class HybridETESGasStrategy(BaseStrategy):
         max_charge_power_mw = plant.etes.max_power_charge_mw
         min_bid_mw = float(capacity_market.product_rules.get("min_bid_mw", 0.0))
         bid_increment_mw = float(capacity_market.product_rules.get("bid_increment_mw", 1.0))
-        if bid_increment_mw <= 0:
-            raise ValueError("afrr_capacity.product_rules.bid_increment_mw must be positive")
+        _validate_bid_rules("afrr_capacity", min_bid_mw, bid_increment_mw)
         expected_soc = plant.etes.initial_soc_mwh if initial_soc_mwh is None else initial_soc_mwh
         # Under atypical grid use, do not commit aFRR-down capacity in blocks that overlap a
         # high-load window: a mandatory capacity-backed activation there would raise the billed
@@ -555,7 +582,8 @@ class HybridETESGasStrategy(BaseStrategy):
             relevant_timesteps = int(block_relevant.sum())
             activation_without_price_timesteps = int(block_without_price.sum())
             price_failed_timesteps = int((block_relevant & ~block_price_allowed).sum())
-            activation_safety_allowed = price_failed_timesteps == 0
+            activation_expected = relevant_timesteps > 0
+            activation_profitable = price_failed_timesteps == 0
             relevant_with_price = block_relevant & afrr_energy["afrr_price_available"].loc[mask]
             if relevant_with_price.any():
                 activation_price_margin = (
@@ -578,61 +606,53 @@ class HybridETESGasStrategy(BaseStrategy):
                 max_activation_need_mwh / timestep_hours if timestep_hours > 0 else 0.0
             )
             technical_capacity = min(max_charge_power_mw, storage_capacity_mw)
-            raw_feasible_capacity = min(technical_capacity, max_activation_need_mw)
-            market_compliant_capacity = _round_capacity_down_to_increment(
-                raw_feasible_capacity,
+            compliant_capacity = _round_bid_down_to_increment(
+                technical_capacity,
                 min_bid_mw=min_bid_mw,
                 bid_increment_mw=bid_increment_mw,
             )
-            activation_need_cap_binding = max_activation_need_mw + 1e-12 < technical_capacity
-            capacity_limited_by_activation_need = max(
-                0.0,
-                technical_capacity - raw_feasible_capacity,
-            )
-            capacity_profitability_allowed = (
+            capacity_profitable = (
                 not bool(block["missing_capacity_price_flag"])
                 and float(block["capacity_price_EUR_per_MW_h"])
                 >= opportunity_cost_block + AFRR_CAPACITY_MARGIN_EUR_PER_MW_H
             )
-            physical_feasibility_allowed = market_compliant_capacity >= min_bid_mw
+            technically_feasible = compliant_capacity > 1e-12 and compliant_capacity >= min_bid_mw
             block_overlaps_high_load_window = bool(grid_block.loc[mask].any())
-            economic_allowed = (
-                capacity_profitability_allowed
-                and activation_safety_allowed
-                and physical_feasibility_allowed
+            bid_eligible = (
+                activation_expected
+                and capacity_profitable
+                and activation_profitable
+                and technically_feasible
                 and not block_overlaps_high_load_window
             )
-            if not economic_allowed:
+            if not bid_eligible:
                 reserved_mw = 0.0
             else:
-                reserved_mw = market_compliant_capacity
+                reserved_mw = compliant_capacity
             revenue = reserved_mw * float(block["capacity_price_EUR_per_MW_h"]) * block_duration_h
             records.append(
                 {
                     **block.to_dict(),
                     "opportunity_cost_EUR_per_MW_h": opportunity_cost_block,
-                    "capacity_profitability_check_passed": bool(capacity_profitability_allowed),
-                    "activation_safety_check_passed": bool(activation_safety_allowed),
-                    "activation_relevant_timesteps": relevant_timesteps,
-                    "activation_price_check_failed_timesteps": price_failed_timesteps,
-                    "activation_without_price_timesteps": activation_without_price_timesteps,
-                    "min_activation_price_margin_EUR_per_MWh": min_activation_price_margin,
-                    "physical_feasibility_check_passed": bool(physical_feasibility_allowed),
-                    "economic_bid_allowed": bool(economic_allowed),
-                    "max_afrr_down_activation_need_MWh_in_block": max_activation_need_mwh,
-                    "max_afrr_down_activation_need_MW_in_block": max_activation_need_mw,
-                    "raw_feasible_capacity_potential_MW": raw_feasible_capacity,
-                    "market_compliant_capacity_potential_MW": market_compliant_capacity,
-                    "activation_need_cap_binding": bool(activation_need_cap_binding),
-                    "capacity_limited_by_activation_need_MW": capacity_limited_by_activation_need,
-                    "bid_increment_mw": bid_increment_mw,
-                    "feasible_capacity_potential_MW": market_compliant_capacity,
+                    "activation_expected": bool(activation_expected),
+                    "capacity_profitable": bool(capacity_profitable),
+                    "activation_profitable": bool(activation_profitable),
+                    "technically_feasible": bool(technically_feasible),
+                    "bid_eligible": bool(bid_eligible),
+                    "activation_steps": relevant_timesteps,
+                    "price_fail_steps": price_failed_timesteps,
+                    "missing_price_steps": activation_without_price_timesteps,
+                    "min_price_margin_EUR_per_MWh": min_activation_price_margin,
+                    "peak_activation_MW": max_activation_need_mw,
+                    "technical_capacity_MW": technical_capacity,
+                    "compliant_capacity_MW": compliant_capacity,
+                    "bid_increment_MW": bid_increment_mw,
                     "reserved_capacity_MW": reserved_mw,
                     "capacity_revenue_EUR": revenue,
-                    "min_final_planned_headroom_MW": reserved_mw,
-                    "min_storage_headroom_MW": storage_capacity_mw,
-                    "total_afrr_energy_activated_MWh_in_block": 0.0,
-                    "total_afrr_energy_cost_EUR_in_block": 0.0,
+                    "charge_headroom_MW": max_charge_power_mw,
+                    "storage_headroom_MW": storage_capacity_mw,
+                    "activated_energy_MWh": 0.0,
+                    "activation_cost_EUR": 0.0,
                 }
             )
 
@@ -641,8 +661,8 @@ class HybridETESGasStrategy(BaseStrategy):
             self.afrr_capacity_block_summary.set_index("block_id")[
                 [
                     "opportunity_cost_EUR_per_MW_h",
-                    "economic_bid_allowed",
-                    "feasible_capacity_potential_MW",
+                    "bid_eligible",
+                    "compliant_capacity_MW",
                     "reserved_capacity_MW",
                     "capacity_revenue_EUR",
                 ]
@@ -821,16 +841,23 @@ def _capacity_signal_kwargs(
     }
 
 
-def _round_capacity_down_to_increment(
-    capacity_mw: float,
+def _validate_bid_rules(market_name: str, min_bid_mw: float, bid_increment_mw: float) -> None:
+    if min_bid_mw < 0:
+        raise ValueError(f"{market_name}.product_rules.min_bid_mw cannot be negative")
+    if bid_increment_mw <= 0:
+        raise ValueError(f"{market_name}.product_rules.bid_increment_mw must be positive")
+
+
+def _round_bid_down_to_increment(
+    feasible_bid_mw: float,
     min_bid_mw: float,
     bid_increment_mw: float,
 ) -> float:
-    """Return the largest market-compliant bid not exceeding available capacity."""
+    """Return the largest market-compliant bid not exceeding physical capability."""
 
-    if capacity_mw < min_bid_mw:
+    if feasible_bid_mw < min_bid_mw:
         return 0.0
-    rounded = math.floor((capacity_mw + 1e-12) / bid_increment_mw) * bid_increment_mw
+    rounded = math.floor((feasible_bid_mw + 1e-12) / bid_increment_mw) * bid_increment_mw
     if rounded < min_bid_mw:
         return 0.0
     return float(rounded)

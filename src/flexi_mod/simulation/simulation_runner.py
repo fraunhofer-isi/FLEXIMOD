@@ -147,6 +147,7 @@ class SimulationRunner:
             strategy.afrr_capacity_block_summary = _update_capacity_block_summary(
                 strategy.afrr_capacity_block_summary,
                 dispatch_results,
+                timestep_hours=self.config.timestep_minutes / 60.0,
             )
         if self.output_options.save_summary_indicators:
             path = output_dir / "summary_indicators.csv"
@@ -723,6 +724,7 @@ def _day_relation_timestamp(
 def _update_capacity_block_summary(
     block_summary: pd.DataFrame,
     dispatch_results: pd.DataFrame,
+    timestep_hours: float,
 ) -> pd.DataFrame:
     if "afrr_capacity_block_id" not in dispatch_results.columns:
         return block_summary
@@ -733,14 +735,14 @@ def _update_capacity_block_summary(
     min_charge_headroom = grouped["available_charge_headroom_after_schedule_MWh"].min()
     min_storage_headroom = grouped["available_storage_headroom_after_schedule_MWh"].min()
     summary = summary.set_index("block_id")
-    summary["total_afrr_energy_activated_MWh_in_block"] = activated.reindex(summary.index).fillna(
-        0.0
+    summary["activated_energy_MWh"] = activated.reindex(summary.index).fillna(0.0)
+    summary["activation_cost_EUR"] = energy_cost.reindex(summary.index).fillna(0.0)
+    summary["charge_headroom_MW"] = (
+        min_charge_headroom.reindex(summary.index).fillna(0.0) / timestep_hours
     )
-    summary["total_afrr_energy_cost_EUR_in_block"] = energy_cost.reindex(summary.index).fillna(0.0)
-    summary["min_final_planned_headroom_MW"] = min_charge_headroom.reindex(summary.index).fillna(
-        0.0
+    summary["storage_headroom_MW"] = (
+        min_storage_headroom.reindex(summary.index).fillna(0.0) / timestep_hours
     )
-    summary["min_storage_headroom_MW"] = min_storage_headroom.reindex(summary.index).fillna(0.0)
     return summary.reset_index()
 
 
