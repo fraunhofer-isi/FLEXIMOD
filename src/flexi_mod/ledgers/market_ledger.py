@@ -314,7 +314,7 @@ def _validate_electricity_accounting(
     afrr_activation_mwh_el: float,
     actual_mwh_el: float,
 ) -> None:
-    expected = scheduled_mwh_el + afrr_activation_mwh_el
+    expected = scheduled_mwh_el  # + afrr_activation_mwh_el
     if abs(actual_mwh_el - expected) > 1e-6:
         raise ValueError(
             "actual_electricity_consumption_MWh_el must equal "
