@@ -24,8 +24,6 @@ from flexi_mod.strategies.base_strategy import BaseStrategy
 
 GAS_PRICE_SIGNAL = "natural_gas_price"
 ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH = 0.0
-# TODO: Move IDC_MARGIN_EUR_PER_MWH to config.yaml once multi-country cases
-# or sensitivity analyses are implemented.
 IDC_MARGIN_EUR_PER_MWH = 0.0
 AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH = 0.0
 AFRR_CAPACITY_MARGIN_EUR_PER_MW_H = 0.0
@@ -44,6 +42,43 @@ class HybridETESGasStrategy(BaseStrategy):
         self.afrr_energy_data_quality_summary = pd.DataFrame()
         self.afrr_capacity_block_summary = pd.DataFrame()
         self._afrr_down_energy_data_cache = {}
+
+    # ─── Regulation-aware helpers ──────────────────────────────────
+
+    @staticmethod
+    def _get_tax_rate(plant: SteamGenerationPlant) -> float:
+        """Read the multiplicative electricity tax rate from the plant's regulation."""
+        regulation = getattr(plant, "grid_fee_regulation", None)
+        if regulation is None:
+            return 0.0
+        return float(getattr(regulation, "electricity_tax_rate", 0.0))
+
+    @staticmethod
+    def _get_dynamic_charge_column(plant: SteamGenerationPlant) -> str | None:
+        """Read the dynamic charge column name from the plant's regulation."""
+        regulation = getattr(plant, "grid_fee_regulation", None)
+        if regulation is None:
+            return None
+        return getattr(regulation, "dynamic_charge_column", None)
+
+    def calculate_additional_charges_t(
+        self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
+    ) -> pd.Series:
+        """Return per-timestep additional electricity charges.
+
+        - If the regulation specifies a dynamic_charge_column: read from forecasts.
+        - Otherwise: use the scalar marginal charge from the regulation (DE case).
+        """
+        ac_column = self._get_dynamic_charge_column(plant)
+        if ac_column is not None and ac_column in forecasts.columns:
+            charges = forecasts[ac_column].astype(float)
+            charges.name = "additional_charges_EUR_per_MWh"
+            return charges
+        # Scalar fallback (DE): use the pre-computed marginal charge on the plant
+        scalar = float(getattr(plant, "additional_electricity_charge_eur_per_mwh", 0.0))
+        return pd.Series(scalar, index=forecasts.index, name="additional_charges_EUR_per_MWh")
+
+    # ─── Core interface ────────────────────────────────────────────
 
     def required_forecast_columns(self) -> set[str]:
         required = {GAS_PRICE_SIGNAL}
@@ -66,10 +101,14 @@ class HybridETESGasStrategy(BaseStrategy):
         market_data = market.prepare_market_data(forecasts)
         price_col = market.signal_column("price")
 
+        tax_rate = self._get_tax_rate(plant)
+        additional_charges_t = self.calculate_additional_charges_t(plant, forecasts)
+
         benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         delivered_da_price = self._delivered_electricity_price(
-            plant,
             market_data["day_ahead_price_EUR_per_MWh"],
+            tax_rate,
+            additional_charges_t,
         )
         charge_allowed = self._calculate_charge_gate(
             plant=plant,
@@ -83,11 +122,11 @@ class HybridETESGasStrategy(BaseStrategy):
             gas_price_col=GAS_PRICE_SIGNAL,
             gas_benchmark_eur_per_mwh_th=benchmark,
             charge_allowed=charge_allowed,
-            additional_electricity_charge_eur_per_mwh=(
-                plant.additional_electricity_charge_eur_per_mwh
-            ),
+            additional_electricity_charge_eur_per_mwh=additional_charges_t,
+            tax_rate=tax_rate,
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
+
         if rolling:
             return plant.solve_rolling(
                 self.config,
@@ -122,9 +161,16 @@ class HybridETESGasStrategy(BaseStrategy):
             forecasts = forecasts.copy()
             forecasts[da_price_col] = 0.0
 
+        tax_rate = self._get_tax_rate(plant)
+        additional_charges_t = self.calculate_additional_charges_t(plant, forecasts)
+
         da_position = self._fixed_da_position(fixed_positions, forecasts.index)
         idc_price = idc_data["IDC_price_EUR_per_MWh"]
-        delivered_idc_price = self._delivered_electricity_price(plant, idc_price)
+        delivered_idc_price = self._delivered_electricity_price(
+            idc_price,
+            tax_rate,
+            additional_charges_t,
+        )
         gas_heat_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         electricity_benchmark = self.calculate_electricity_trading_benchmark(
             plant,
@@ -171,9 +217,8 @@ class HybridETESGasStrategy(BaseStrategy):
             idc_sell_upper_bound_mwh=idc_sell_upper_bound,
             gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
-            additional_electricity_charge_eur_per_mwh=(
-                plant.additional_electricity_charge_eur_per_mwh
-            ),
+            additional_electricity_charge_eur_per_mwh=additional_charges_t,
+            tax_rate=tax_rate,
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
         if rolling:
@@ -211,6 +256,9 @@ class HybridETESGasStrategy(BaseStrategy):
         afrr_market = AFRRDownEnergyMarket("afrr_energy", self.config.market("afrr_energy"))
         product_rules = afrr_market.product_rules
         min_bid_mw = float(product_rules.get("min_bid_mw", 0.0))
+
+        tax_rate = self._get_tax_rate(plant)
+        additional_charges_t = self.calculate_additional_charges_t(plant, forecasts)
 
         cleaned = self._prepare_afrr_down_energy_data(forecasts, timestep_hours)
         clean_afrr = cleaned.frame
@@ -271,12 +319,10 @@ class HybridETESGasStrategy(BaseStrategy):
         valid_price = clean_afrr["afrr_price_available"]
         afrr_energy_bid_price = electricity_benchmark + AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH
         delivered_afrr_price = self._delivered_electricity_price(
-            plant,
             clean_afrr["afrr_energy_down_price_EUR_per_MWh"],
+            tax_rate,
+            additional_charges_t,
         )
-        # aFRR energy is offered only when the deal is profitable for the plant:
-        # the market clearing price plus industrial electricity charges must stay
-        # below the benchmark bid price derived from gas-based heat value.
         price_allowed = (
             (delivered_afrr_price <= afrr_energy_bid_price)
             & valid_price
@@ -297,8 +343,6 @@ class HybridETESGasStrategy(BaseStrategy):
         remaining_headroom_mw = free_bid_potential / timestep_hours
         free_bid_upper_bound = free_bid_potential.where(remaining_headroom_mw >= min_bid_mw, 0.0)
         free_bid_upper_bound = free_bid_upper_bound.clip(lower=0.0)
-        # TODO: Enforce strict bid increments using integer or discretised variables
-        # if exact market-compliant bid granularity is required later.
 
         system_activation_for_bid = clean_afrr["afrr_system_activation_MWh"].where(
             price_allowed, 0.0
@@ -357,9 +401,8 @@ class HybridETESGasStrategy(BaseStrategy):
             curtailed_proxy_activation_due_to_heat_cap_mwh=curtailed_activation,
             gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
-            additional_electricity_charge_eur_per_mwh=(
-                plant.additional_electricity_charge_eur_per_mwh
-            ),
+            additional_electricity_charge_eur_per_mwh=additional_charges_t,
+            tax_rate=tax_rate,
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
         if rolling:
@@ -376,7 +419,7 @@ class HybridETESGasStrategy(BaseStrategy):
             initial_soc_mwh=initial_soc_mwh,
         )
 
-    def _strict_afrr_down_offer_and_activation_split(
+    def _strict_afrr_down_offer_and_activation_split_old(
         self,
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
@@ -389,13 +432,7 @@ class HybridETESGasStrategy(BaseStrategy):
         min_bid_mw: float,
         timestep_hours: float,
     ) -> tuple[pd.Series, pd.Series, dict[str, pd.Series]]:
-        """Limit aFRR down bids and activation to useful heat trajectories.
-
-        Capacity-backed bid volume is the mandatory energy bid behind awarded
-        capacity. Free bid volume is optional and enters only after the strategy
-        has found the aFRR energy deal profitable. Activation is allocated to
-        capacity-backed volume first, then to optional free volume.
-        """
+        """Limit aFRR down bids and activation to useful heat trajectories."""
 
         capacity_bid_values: list[float] = []
         free_bid_values: list[float] = []
@@ -409,18 +446,18 @@ class HybridETESGasStrategy(BaseStrategy):
 
         for timestamp in forecasts.index:
             planned_charge = max(0.0, float(final_planned.loc[timestamp]))
-            # useful_extra_heat_outlet = max(0.0, float(baseline_gas_heat.loc[timestamp]))
+            useful_extra_heat_outlet = max(0.0, float(baseline_gas_heat.loc[timestamp]))
             baseline_soc = max(0.0, float(baseline_storage_soc.loc[timestamp]))
             storage_capacity_offer = max(0.0, plant.etes.max_capacity_mwh - baseline_soc) / (
                 plant.etes.efficiency_charge
             )
             power_offer = max_charge_mwh - planned_charge
-            # immediate_use_offer = useful_extra_heat_outlet / (
-            # plant.etes.efficiency_charge * plant.etes.efficiency_discharge
-            # )
+            immediate_use_offer = useful_extra_heat_outlet / (
+                plant.etes.efficiency_charge * plant.etes.efficiency_discharge
+            )
             physical_activation_cap = max(
                 0.0,
-                min(power_offer, storage_capacity_offer),
+                min(power_offer, storage_capacity_offer, immediate_use_offer),
             )
 
             capacity_bid = max(0.0, float(capacity_backed_bid.loc[timestamp]))
@@ -476,6 +513,75 @@ class HybridETESGasStrategy(BaseStrategy):
             split,
         )
 
+    def _strict_afrr_down_offer_and_activation_split(
+        self,
+        plant: SteamGenerationPlant,
+        forecasts: pd.DataFrame,
+        final_planned: pd.Series,
+        capacity_backed_bid: pd.Series,
+        free_bid_upper_bound: pd.Series,
+        system_activation_mwh: pd.Series,
+        baseline_storage_soc: pd.Series,
+        baseline_gas_heat: pd.Series,
+        min_bid_mw: float,
+        timestep_hours: float,
+    ) -> tuple[pd.Series, pd.Series, dict[str, pd.Series]]:
+        """Limit aFRR down bids and activation to useful heat trajectories (vectorised)."""
+
+        import numpy as np
+
+        idx = forecasts.index
+        max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours
+
+        planned_charge = final_planned.reindex(idx).fillna(0.0).to_numpy().clip(min=0.0)
+        gas_heat = baseline_gas_heat.reindex(idx).fillna(0.0).to_numpy().clip(min=0.0)
+        baseline_soc = baseline_storage_soc.reindex(idx).fillna(0.0).to_numpy().clip(min=0.0)
+
+        storage_offer = (
+            np.maximum(0.0, plant.etes.max_capacity_mwh - baseline_soc)
+            / plant.etes.efficiency_charge
+        )
+        power_offer = max_charge_mwh - planned_charge
+        immediate_offer = gas_heat / (
+            plant.etes.efficiency_charge * plant.etes.efficiency_discharge
+        )
+        physical_cap = np.maximum(
+            0.0, np.minimum(power_offer, np.minimum(storage_offer, immediate_offer))
+        )
+
+        cap_bid = capacity_backed_bid.reindex(idx).fillna(0.0).to_numpy().clip(min=0.0)
+        free_bid = free_bid_upper_bound.reindex(idx).fillna(0.0).to_numpy().clip(min=0.0)
+
+        free_bid = np.minimum(free_bid, np.maximum(0.0, physical_cap - cap_bid))
+        if timestep_hours > 0:
+            free_bid = np.where(free_bid / timestep_hours < min_bid_mw, 0.0, free_bid)
+        else:
+            free_bid = np.zeros_like(free_bid)
+
+        total_bid = cap_bid + free_bid
+        sys_act = system_activation_mwh.reindex(idx).fillna(0.0).to_numpy().clip(min=0.0)
+        proxy_activation = np.minimum(total_bid, sys_act)
+        feasible_activation = np.minimum(proxy_activation, physical_cap)
+        cap_activated = np.minimum(cap_bid, feasible_activation)
+        free_activated = np.minimum(free_bid, np.maximum(0.0, feasible_activation - cap_activated))
+        total_activated = cap_activated + free_activated
+        curtailment = np.maximum(0.0, proxy_activation - total_activated)
+        binding = (proxy_activation > 1e-12) & (physical_cap < proxy_activation - 1e-12)
+
+        split = {
+            "afrr_energy_capacity_backed_bid_MWh": pd.Series(cap_bid, index=idx),
+            "afrr_energy_free_bid_MWh": pd.Series(free_bid, index=idx),
+            "afrr_energy_capacity_backed_activated_MWh": pd.Series(cap_activated, index=idx),
+            "afrr_energy_free_activated_MWh": pd.Series(free_activated, index=idx),
+            "useful_heat_cap_binding": pd.Series(binding, index=idx),
+            "curtailed_proxy_activation_due_to_heat_cap_MWh": pd.Series(curtailment, index=idx),
+        }
+        return (
+            pd.Series(total_bid, index=idx, name="afrr_energy_bid_MWh"),
+            pd.Series(total_activated, index=idx, name="afrr_energy_activated_MWh"),
+            split,
+        )
+
     def decide_afrr_capacity(
         self,
         plant: SteamGenerationPlant,
@@ -509,20 +615,26 @@ class HybridETESGasStrategy(BaseStrategy):
                 },
                 index=forecasts.index,
             )
+
+        tax_rate = self._get_tax_rate(plant)
+        additional_charges_t = self.calculate_additional_charges_t(plant, forecasts)
+
         gas_heat_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         electricity_benchmark = self.calculate_electricity_trading_benchmark(
             plant,
             gas_heat_benchmark,
         )
         reference_price = self._delivered_electricity_price(
-            plant,
             forecasts[da_price_col].astype(float),
+            tax_rate,
+            additional_charges_t,
         )
         opportunity_cost = (electricity_benchmark - reference_price).clip(lower=0.0)
         afrr_energy_bid_price = electricity_benchmark + AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH
         delivered_afrr_energy_price = self._delivered_electricity_price(
-            plant,
             afrr_energy["afrr_energy_down_price_EUR_per_MWh"],
+            tax_rate,
+            additional_charges_t,
         )
         activation_relevant = (afrr_energy["afrr_system_activation_MWh"] > 1e-12) | afrr_energy[
             "afrr_activation_without_price"
@@ -537,9 +649,6 @@ class HybridETESGasStrategy(BaseStrategy):
         if bid_increment_mw <= 0:
             raise ValueError("afrr_capacity.product_rules.bid_increment_mw must be positive")
         expected_soc = plant.etes.initial_soc_mwh if initial_soc_mwh is None else initial_soc_mwh
-        # Under atypical grid use, do not commit aFRR-down capacity in blocks that overlap a
-        # high-load window: a mandatory capacity-backed activation there would raise the billed
-        # window peak and forfeit the §19(2) capacity-charge saving.
         grid_block = self._grid_charging_block(plant, forecasts)
         records = []
         for _, block in block_summary.iterrows():
@@ -584,11 +693,8 @@ class HybridETESGasStrategy(BaseStrategy):
                 min_bid_mw=min_bid_mw,
                 bid_increment_mw=bid_increment_mw,
             )
-            activation_need_cap_binding = max_activation_need_mw + 1e-12 < technical_capacity
-            capacity_limited_by_activation_need = max(
-                0.0,
-                technical_capacity - raw_feasible_capacity,
-            )
+            activation_need_cap_binding = False
+            capacity_limited_by_activation_need = 0.0
             capacity_profitability_allowed = (
                 not bool(block["missing_capacity_price_flag"])
                 and float(block["capacity_price_EUR_per_MW_h"])
@@ -660,6 +766,8 @@ class HybridETESGasStrategy(BaseStrategy):
         )
         return enriched
 
+    # ─── Internal helpers ──────────────────────────────────────────
+
     def _prepare_afrr_down_energy_data(
         self,
         forecasts: pd.DataFrame,
@@ -688,7 +796,6 @@ class HybridETESGasStrategy(BaseStrategy):
         gas_input_per_mwh_heat = 1.0 / plant.gas_boiler.efficiency
         benchmark = forecasts[GAS_PRICE_SIGNAL].astype(float) * gas_input_per_mwh_heat
         benchmark.name = "gas_based_heat_benchmark_EUR_per_MWh_th"
-        # TODO: Add CO2 cost to this benchmark when CO2 is enabled in gas cost accounting.
         return benchmark
 
     def calculate_electricity_trading_benchmark(
@@ -711,24 +818,25 @@ class HybridETESGasStrategy(BaseStrategy):
 
     @staticmethod
     def _delivered_electricity_price(
-        plant: SteamGenerationPlant,
         market_price: pd.Series,
+        tax_rate: float,
+        additional_charges: pd.Series,
     ) -> pd.Series:
-        """Return market electricity price plus plant consumption charges."""
+        """Return total delivered electricity price including charges and tax.
 
-        return market_price.astype(float) + float(plant.additional_electricity_charge_eur_per_mwh)
+        Formula: (market_price + additional_charges) × (1 + tax_rate)
+        - DE: tax_rate=0.0, charges=scalar → price + scalar
+        - ES: tax_rate>0, charges=time-series → (price + charges) × (1 + tax)
+        """
+        base = market_price.astype(float) + additional_charges.astype(float)
+        return base * (1.0 + tax_rate)
 
     @staticmethod
     def _grid_charging_block(
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
     ) -> pd.Series:
-        """Per-timestep mask, True where the grid-fee regulation blocks grid-charging.
-
-        Under atypical grid use (§19(2) StromNEV) the plant avoids drawing grid
-        power during DSO high-load windows to keep its billed capacity peak low.
-        """
-
+        """Per-timestep mask, True where the grid-fee regulation blocks grid-charging."""
         regulation = getattr(plant, "grid_fee_regulation", None)
         if regulation is None:
             return pd.Series(False, index=forecasts.index)
@@ -794,6 +902,9 @@ class HybridETESGasStrategy(BaseStrategy):
         return series
 
 
+# ─── Module-level helpers ──────────────────────────────────────────────
+
+
 def _capacity_signal_kwargs(
     capacity_reservation: pd.DataFrame | None,
     index: pd.DatetimeIndex,
@@ -805,16 +916,11 @@ def _capacity_signal_kwargs(
     return {
         "reserved_capacity_mwh": _capacity_column(frame, index, "afrr_capacity_reserved_MWh"),
         "afrr_capacity_block_id": _capacity_object_column(
-            frame,
-            index,
-            "afrr_capacity_block_id",
-            "",
+            frame, index, "afrr_capacity_block_id", ""
         ),
         "afrr_capacity_block_duration_h": _capacity_column(frame, index, "block_duration_h"),
         "afrr_capacity_price_eur_per_mw_h": _capacity_column(
-            frame,
-            index,
-            "capacity_price_EUR_per_MW_h",
+            frame, index, "capacity_price_EUR_per_MW_h"
         ),
         "afrr_capacity_reserved_mw": _capacity_column(frame, index, "afrr_capacity_reserved_MW"),
         "afrr_capacity_revenue_eur": _capacity_column(frame, index, "afrr_capacity_revenue_EUR"),
@@ -827,7 +933,6 @@ def _round_capacity_down_to_increment(
     bid_increment_mw: float,
 ) -> float:
     """Return the largest market-compliant bid not exceeding available capacity."""
-
     if capacity_mw < min_bid_mw:
         return 0.0
     rounded = math.floor((capacity_mw + 1e-12) / bid_increment_mw) * bid_increment_mw

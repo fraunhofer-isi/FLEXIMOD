@@ -9,6 +9,7 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import pyomo.environ as pyo
 from pyomo.common.errors import ApplicationError
@@ -33,7 +34,8 @@ class DispatchSignals:
     gas_price_col: str
     gas_benchmark_eur_per_mwh_th: pd.Series
     charge_allowed: pd.Series
-    additional_electricity_charge_eur_per_mwh: float = 0.0
+    additional_electricity_charge_eur_per_mwh: pd.Series | None = None
+    tax_rate: float = 0.0
     reserved_capacity_mwh: pd.Series | None = None
     afrr_capacity_block_id: pd.Series | None = None
     afrr_capacity_block_duration_h: pd.Series | None = None
@@ -54,7 +56,8 @@ class IDCAdjustmentSignals:
     idc_sell_upper_bound_mwh: pd.Series
     gas_benchmark_eur_per_mwh_th: pd.Series
     electricity_trading_benchmark_eur_per_mwh_el: pd.Series
-    additional_electricity_charge_eur_per_mwh: float = 0.0
+    additional_electricity_charge_eur_per_mwh: pd.Series | None = None
+    tax_rate: float = 0.0
     reserved_capacity_mwh: pd.Series | None = None
     afrr_capacity_block_id: pd.Series | None = None
     afrr_capacity_block_duration_h: pd.Series | None = None
@@ -85,7 +88,8 @@ class AFRRDownSignals:
     afrr_energy_free_bid_mwh: pd.Series | None = None
     afrr_energy_capacity_backed_activated_mwh: pd.Series | None = None
     afrr_energy_free_activated_mwh: pd.Series | None = None
-    additional_electricity_charge_eur_per_mwh: float = 0.0
+    additional_electricity_charge_eur_per_mwh: pd.Series | None = None
+    tax_rate: float = 0.0
     useful_heat_cap_binding: pd.Series | None = None
     curtailed_proxy_activation_due_to_heat_cap_mwh: pd.Series | None = None
     reserved_capacity_mwh: pd.Series | None = None
@@ -202,6 +206,7 @@ class SteamGenerationPlant(BasePlant):
                     signals.afrr_capacity_revenue_eur, horizon.index
                 ),
                 co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
+                tax_rate=signals.tax_rate,
             )
             horizon_result = self.solve_horizon(
                 config=config,
@@ -269,6 +274,7 @@ class SteamGenerationPlant(BasePlant):
                     signals.afrr_capacity_revenue_eur, horizon.index
                 ),
                 co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
+                tax_rate=signals.tax_rate,
             )
             horizon_result = self.solve_intraday_adjustment_horizon(
                 config=config,
@@ -363,6 +369,7 @@ class SteamGenerationPlant(BasePlant):
                     signals.afrr_capacity_revenue_eur, horizon.index
                 ),
                 co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
+                tax_rate=signals.tax_rate,
             )
             horizon_result = self.solve_afrr_down_horizon(
                 config=config,
@@ -547,9 +554,14 @@ class SteamGenerationPlant(BasePlant):
 
         heat_demand_mwh = forecasts[self.heat_demand_column].astype(float).to_numpy() * dt_hours
         market_electricity_price = forecasts[signals.electricity_price_col].astype(float).to_numpy()
-        additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
+        additional_charge = (
+            signals.additional_electricity_charge_eur_per_mwh.astype(float).to_numpy()
+            if signals.additional_electricity_charge_eur_per_mwh is not None
+            else np.zeros(len(steps))
+        )
         electricity_price = market_electricity_price + additional_charge
         gas_price = forecasts[signals.gas_price_col].astype(float).to_numpy()
+        tax_rate = float(signals.tax_rate)
         if signals.co2_price_col and signals.co2_price_col in forecasts.columns:
             co2_price = forecasts[signals.co2_price_col].astype(float).to_numpy()
         else:
@@ -562,7 +574,9 @@ class SteamGenerationPlant(BasePlant):
             m.T,
             initialize={t: market_electricity_price[t] for t in steps},
         )
-        m.additional_electricity_charge = pyo.Param(initialize=additional_charge)
+        m.additional_electricity_charge = pyo.Param(
+            m.T, initialize={t: additional_charge[t] for t in steps}
+        )
         m.electricity_price = pyo.Param(m.T, initialize={t: electricity_price[t] for t in steps})
         m.gas_price = pyo.Param(m.T, initialize={t: gas_price[t] for t in steps})
         m.co2_price = pyo.Param(m.T, initialize={t: co2_price[t] for t in steps})
@@ -625,11 +639,15 @@ class SteamGenerationPlant(BasePlant):
             mm: pyo.ConcreteModel,
             t: int,
         ) -> pyo.Expression:
-            return mm.electricity_consumption[t] * mm.additional_electricity_charge
+            return mm.electricity_consumption[t] * mm.additional_electricity_charge[t]
 
         @m.Expression(m.T)
         def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return mm.technology_blocks["thermal_storage"].electricity_cost[t]
+
+        @m.Expression(m.T)
+        def tax_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.electricity_cost[t] * tax_rate
 
         @m.Expression(m.T)
         def gas_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
@@ -643,7 +661,7 @@ class SteamGenerationPlant(BasePlant):
         def objective(mm: pyo.ConcreteModel) -> pyo.Expression:
             return pyo.quicksum(
                 # CO2 cost is disabled for the first MVP and kept as a zero output column.
-                mm.electricity_cost[t] + mm.gas_cost[t]
+                mm.electricity_cost[t] + mm.gas_cost[t] + mm.tax_cost[t]
                 for t in mm.T
             )
 
@@ -664,8 +682,13 @@ class SteamGenerationPlant(BasePlant):
         heat_demand_mwh = forecasts[self.heat_demand_column].astype(float).to_numpy() * dt_hours
         da_price = forecasts[signals.da_price_col].astype(float).to_numpy()
         idc_price = forecasts[signals.idc_price_col].astype(float).fillna(0.0).to_numpy()
-        additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
+        additional_charge = (
+            signals.additional_electricity_charge_eur_per_mwh.astype(float).to_numpy()
+            if signals.additional_electricity_charge_eur_per_mwh is not None
+            else np.zeros(len(steps))
+        )
         gas_price = forecasts[signals.gas_price_col].astype(float).to_numpy()
+        tax_rate = float(signals.tax_rate)
         if signals.co2_price_col and signals.co2_price_col in forecasts.columns:
             co2_price = forecasts[signals.co2_price_col].astype(float).to_numpy()
         else:
@@ -693,10 +716,12 @@ class SteamGenerationPlant(BasePlant):
         m.heat_demand = pyo.Param(m.T, initialize={t: heat_demand_mwh[t] for t in steps})
         m.da_price = pyo.Param(m.T, initialize={t: da_price[t] for t in steps})
         m.idc_price = pyo.Param(m.T, initialize={t: idc_price[t] for t in steps})
-        m.additional_electricity_charge = pyo.Param(initialize=additional_charge)
+        m.additional_electricity_charge = pyo.Param(
+            m.T, initialize={t: additional_charge[t] for t in steps}
+        )
         m.electricity_price = pyo.Param(
             m.T,
-            initialize={t: idc_price[t] + additional_charge for t in steps},
+            initialize={t: idc_price[t] + additional_charge[t] for t in steps},
         )
         m.gas_price = pyo.Param(m.T, initialize={t: gas_price[t] for t in steps})
         m.co2_price = pyo.Param(m.T, initialize={t: co2_price[t] for t in steps})
@@ -804,11 +829,15 @@ class SteamGenerationPlant(BasePlant):
             mm: pyo.ConcreteModel,
             t: int,
         ) -> pyo.Expression:
-            return mm.final_planned_electricity_mwh[t] * mm.additional_electricity_charge
+            return mm.final_planned_electricity_mwh[t] * mm.additional_electricity_charge[t]
 
         @m.Expression(m.T)
         def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return mm.electricity_market_cost[t] + mm.additional_electricity_charges_cost[t]
+
+        @m.Expression(m.T)
+        def tax_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.electricity_cost[t] * tax_rate
 
         @m.Expression(m.T)
         def gas_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
@@ -822,7 +851,7 @@ class SteamGenerationPlant(BasePlant):
         def objective(mm: pyo.ConcreteModel) -> pyo.Expression:
             return pyo.quicksum(
                 # TODO: Add CO2 cost consistently to the gas benchmark and plant objective.
-                mm.electricity_cost[t] + mm.gas_cost[t]
+                mm.electricity_cost[t] + mm.gas_cost[t] + mm.tax_cost[t]
                 for t in mm.T
             )
 
@@ -840,16 +869,20 @@ class SteamGenerationPlant(BasePlant):
         steps = list(range(len(forecasts)))
         m.T = pyo.Set(initialize=steps, ordered=True)
 
+        tax_rate = float(signals.tax_rate)
         heat_demand_mwh = forecasts[self.heat_demand_column].astype(float).to_numpy() * dt_hours
         da_price = forecasts[signals.da_price_col].astype(float).to_numpy()
         idc_price = forecasts[signals.idc_price_col].astype(float).fillna(0.0).to_numpy()
-        additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
+        additional_charge = (
+            signals.additional_electricity_charge_eur_per_mwh.astype(float).to_numpy()
+            if signals.additional_electricity_charge_eur_per_mwh is not None
+            else np.zeros(len(steps))
+        )
         gas_price = forecasts[signals.gas_price_col].astype(float).to_numpy()
         if signals.co2_price_col and signals.co2_price_col in forecasts.columns:
             co2_price = forecasts[signals.co2_price_col].astype(float).to_numpy()
         else:
             co2_price = [0.0 for _ in steps]
-
         da_position = signals.da_position_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
         idc_buy = signals.idc_buy_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
         idc_sell = signals.idc_sell_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
@@ -873,9 +906,11 @@ class SteamGenerationPlant(BasePlant):
         m.afrr_energy_price = pyo.Param(
             m.T, initialize={t: float(afrr_price.iloc[t]) for t in steps}
         )
-        m.additional_electricity_charge = pyo.Param(initialize=additional_charge)
+        m.additional_electricity_charge = pyo.Param(
+            m.T, initialize={t: additional_charge[t] for t in steps}
+        )
         m.electricity_price = pyo.Param(
-            m.T, initialize={t: float(afrr_price.iloc[t]) + additional_charge for t in steps}
+            m.T, initialize={t: float(afrr_price.iloc[t]) + additional_charge[t] for t in steps}
         )
         m.gas_price = pyo.Param(m.T, initialize={t: gas_price[t] for t in steps})
         m.co2_price = pyo.Param(m.T, initialize={t: co2_price[t] for t in steps})
@@ -977,11 +1012,15 @@ class SteamGenerationPlant(BasePlant):
             mm: pyo.ConcreteModel,
             t: int,
         ) -> pyo.Expression:
-            return mm.electricity_consumption[t] * mm.additional_electricity_charge
+            return mm.electricity_consumption[t] * mm.additional_electricity_charge[t]
 
         @m.Expression(m.T)
         def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return mm.electricity_market_cost[t] + mm.additional_electricity_charges_cost[t]
+
+        @m.Expression(m.T)
+        def tax_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return mm.electricity_cost[t] * tax_rate
 
         @m.Expression(m.T)
         def final_planned_electricity_mwh(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
@@ -1004,7 +1043,7 @@ class SteamGenerationPlant(BasePlant):
         def objective(mm: pyo.ConcreteModel) -> pyo.Expression:
             return pyo.quicksum(
                 # TODO: Add CO2 cost consistently to the gas benchmark and plant objective.
-                mm.electricity_cost[t] + mm.gas_cost[t]
+                mm.electricity_cost[t] + mm.gas_cost[t] + mm.tax_cost[t]
                 for t in mm.T
             )
 
@@ -1029,7 +1068,7 @@ class SteamGenerationPlant(BasePlant):
             additional_charges_cost = _value(model.additional_electricity_charges_cost[t])
             gas_cost = _value(model.gas_cost[t])
             co2_cost = _value(model.co2_cost[t])
-            additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
+            additional_charge = _value(model.additional_electricity_charge[t])
             day_ahead_price = float(forecasts[signals.electricity_price_col].iloc[t])
             co2_price = (
                 float(forecasts[signals.co2_price_col].iloc[t])
@@ -1138,7 +1177,7 @@ class SteamGenerationPlant(BasePlant):
             idc_buy = _value(model.idc_buy_mwh[t])
             idc_sell = _value(model.idc_sell_mwh[t])
             final_planned = _value(model.final_planned_electricity_mwh[t])
-            additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
+            additional_charge = _value(model.additional_electricity_charge[t])
             day_ahead_price = float(forecasts[signals.da_price_col].iloc[t])
             idc_price = float(forecasts[signals.idc_price_col].iloc[t])
             co2_price = (
@@ -1260,7 +1299,7 @@ class SteamGenerationPlant(BasePlant):
             afrr_activation = _value(model.afrr_energy_activated_mwh[t])
             actual_electricity = _value(model.electricity_consumption[t])
             afrr_price_clean = _value(model.afrr_energy_price[t])
-            additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
+            additional_charge = _value(model.additional_electricity_charge[t])
             benchmark = float(signals.electricity_trading_benchmark_eur_per_mwh_el.iloc[t])
             afrr_bid_price = float(
                 _series_value(signals.afrr_energy_bid_price, timestamp, benchmark)

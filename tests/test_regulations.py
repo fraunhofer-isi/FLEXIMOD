@@ -193,7 +193,7 @@ def test_null_regulation_when_charges_none():
 
 def test_factory_unknown_country_raises():
     with pytest.raises(GridFeeConfigError, match="No grid-fee regulation"):
-        build_grid_fee_regulation("FR", full_charges())
+        build_grid_fee_regulation("NL", full_charges())
 
 
 def test_incomplete_tier_raises():

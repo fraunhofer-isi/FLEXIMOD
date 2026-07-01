@@ -552,7 +552,11 @@ def _run_zero_electricity_dispatch(
         gas_price_col=gas_price_col,
         gas_benchmark_eur_per_mwh_th=gas_benchmark,
         charge_allowed=pd.Series(False, index=dispatch_forecasts.index),
-        additional_electricity_charge_eur_per_mwh=(plant.additional_electricity_charge_eur_per_mwh),
+        additional_electricity_charge_eur_per_mwh=pd.Series(
+            float(getattr(plant, "additional_electricity_charge_eur_per_mwh", 0.0)),
+            index=dispatch_forecasts.index,
+        ),
+        tax_rate=getattr(plant.grid_fee_regulation, "electricity_tax_rate", 0.0),
         **_capacity_signal_kwargs(capacity_reservation, dispatch_forecasts.index),
     )
     result = plant.solve_horizon(

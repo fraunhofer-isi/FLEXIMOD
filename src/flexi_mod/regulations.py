@@ -101,6 +101,16 @@ class GridFeeRegulation(ABC):
         """
         return []
 
+    @property
+    def electricity_tax_rate(self) -> float:
+        """Multiplicative tax applied on (market_price + charges). Default 0."""
+        return 0.0
+
+    @property
+    def dynamic_charge_column(self) -> str | None:
+        """Forecasts column with time-varying charges, or None for scalar-only."""
+        return None
+
 
 class NullGridFeeRegulation(GridFeeRegulation):
     """No-op regulation used when ``additional_charges`` is disabled for the case."""
@@ -336,10 +346,304 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         return pd.Series(flag.astype(int), index=idx)
 
 
+# --------------------------------------------------------------------- Spain
+class SpanishGridFeeRegulation(GridFeeRegulation):
+    """Spain: 6.xTD access tariff (peajes) + IEE + capacity charge.
+
+    Spanish industrial electricity cost:
+    1. Market price (OMIE day-ahead / intraday)
+    2. Access tariff (peajes de acceso) — time-varying by period (punta, llano, valle)
+       → provided as a column in forecasts_df.csv
+    3. Impuesto Eléctrico (IEE) — multiplicative tax on (market + peajes)
+       → rate = 5.11269632%
+    4. Grid capacity charge (potencia contratada) — EUR/MW.a based on annual peak
+
+    Delivered price for strategy decisions:
+        (market_price + peajes) × (1 + IEE_rate)
+
+    The capacity charge is not marginal (depends on peak, not energy) and is
+    settled ex-post only.
+    """
+
+    # Impuesto Especial sobre la Electricidad (IEE)
+    ELECTRICITY_TAX_RATE = 0.007669044  # = 0.05112696 × 0.15
+
+    # Column in forecasts_df.csv containing the time-varying access tariff
+    DYNAMIC_CHARGE_COLUMN = "arbeit_6_2TD_eur_per_mwh"
+
+    def __init__(
+        self,
+        plant_charges: pd.DataFrame,
+        assumed_tier: str = "high",
+        avoid_high_load_window: bool = False,
+        high_load_window_column: str = "high_load_window",
+        capacity_peak_basis: str = "annual",
+        **kwargs,
+    ):
+        self._capacity_peak_basis = capacity_peak_basis
+        self._parse_charges(plant_charges)
+
+    def _parse_charges(self, plant_charges: pd.DataFrame) -> None:
+        """Extract capacity charge and any static levies from additional_charges.csv."""
+        capacity = 0.0
+        levies = 0.0
+
+        for _, row in plant_charges.iterrows():
+            component = str(row["component"]).strip().lower()
+            unit = str(row["unit"]).strip()
+            value = float(row["value"])
+
+            if "grid capacity" in component:
+                # EUR/MW.a — use the first non-zero value found
+                if value > 0 and capacity == 0.0:
+                    capacity = value
+            elif unit == "EUR/MWh" and value != 0.0:
+                # Any other EUR/MWh components (CHP, offshore, concession, etc.)
+                levies += value
+
+        self._capacity_eur_per_mw_a = capacity
+        self._levies_eur_per_mwh = levies
+
+    # ─── Properties for strategy access ───────────────────────────
+
+    @property
+    def electricity_tax_rate(self) -> float:
+        return self.ELECTRICITY_TAX_RATE
+
+    @property
+    def dynamic_charge_column(self) -> str | None:
+        return self.DYNAMIC_CHARGE_COLUMN
+
+    # ─── Interface (A): dispatch-time ─────────────────────────────
+
+    def marginal_charge_eur_per_mwh(self) -> float:
+        """Per-MWh adder for the Pyomo objective.
+
+        For Spain, the dynamic peajes are passed as a time-series directly into
+        the Pyomo model via DispatchSignals. Only static EUR/MWh levies (if any)
+        enter here. The capacity charge is non-marginal (peak-based) and settled
+        ex-post only.
+        """
+        return self._levies_eur_per_mwh
+
+    def charging_block_mask(self, forecasts: pd.DataFrame) -> pd.Series:
+        """Spain has no high-load-window avoidance mechanism."""
+        return pd.Series(False, index=forecasts.index)
+
+    # ─── Interface (B): ex-post settlement ────────────────────────
+
+    def settle(self, dispatch_results: pd.DataFrame, timestep_minutes: int) -> GridFeeResult:
+        """Compute the authoritative annual Spanish grid-fee bill.
+
+        Components:
+        - Energy charges (peajes): already in dispatch as additional_electricity_charges_cost
+        - Capacity charge: peak MW × EUR/MW.a (prorated to simulation period)
+        - IEE tax: applied on total electricity cost (market + peajes + levies)
+        - Static levies: EUR/MWh × total energy
+        """
+        dt_h = timestep_minutes / 60.0
+        consumption = pd.to_numeric(
+            dispatch_results.get("actual_electricity_consumption_MWh"), errors="coerce"
+        ).fillna(0.0)
+        grid_energy = float(consumption.sum())
+        power = consumption / dt_h if dt_h > 0 else consumption * 0.0
+        annual_peak = float(power.max()) if len(power) else 0.0
+        full_load_hours = grid_energy / annual_peak if annual_peak > 0 else 0.0
+
+        # Energy charges (dynamic peajes already computed in dispatch)
+        charges_col = "additional_electricity_charges_cost_EUR"
+        if charges_col in dispatch_results.columns:
+            energy_charge = float(
+                pd.to_numeric(dispatch_results[charges_col], errors="coerce").fillna(0.0).sum()
+            )
+        else:
+            energy_charge = 0.0
+
+        # Capacity charge (based on annual peak, prorated)
+        simulation_hours = len(dispatch_results) * dt_h
+        hours_per_year = 8760.0
+        proration_factor = simulation_hours / hours_per_year if hours_per_year > 0 else 1.0
+        capacity_charge = self._capacity_eur_per_mw_a * annual_peak * proration_factor
+
+        # Static levies
+        levies_energy = self._levies_eur_per_mwh * grid_energy
+
+        # IEE tax on total electricity cost (market + peajes + levies)
+        market_cost_col = "electricity_market_cost_EUR"
+        if market_cost_col in dispatch_results.columns:
+            market_cost = float(
+                pd.to_numeric(dispatch_results[market_cost_col], errors="coerce").fillna(0.0).sum()
+            )
+        else:
+            market_cost = 0.0
+        taxable_base = market_cost + energy_charge + levies_energy
+        iee_tax = taxable_base * self.ELECTRICITY_TAX_RATE
+
+        total = energy_charge + capacity_charge + levies_energy + iee_tax
+
+        # ex_post_addition: costs not captured in the per-timestep marginal dispatch
+        # = capacity charge + IEE tax (both are non-marginal / ex-post)
+        ex_post_addition = capacity_charge + iee_tax
+
+        return GridFeeResult(
+            grid_energy_MWh=grid_energy,
+            annual_peak_MW=annual_peak,
+            window_peak_MW=0.0,
+            billed_peak_MW=annual_peak,
+            full_load_hours=full_load_hours,
+            assumed_tier="n/a",
+            realized_tier="n/a",
+            tier_assumption_held=True,
+            energy_charge_EUR=energy_charge,
+            capacity_charge_EUR=capacity_charge,
+            special_network_use_EUR=0.0,
+            levies_EUR=levies_energy + iee_tax,
+            grid_fee_total_EUR=total,
+            ex_post_addition_EUR=ex_post_addition,
+        )
+
+    def tier_prompt_options(self) -> list[dict[str, str]]:
+        """Spain has no tiered energy charges — no prompt needed."""
+        return []
+
+
+# --------------------------------------------------------------------- France
+class FrenchGridFeeRegulation(GridFeeRegulation):
+    """France: TURPE + accise (dynamic, from forecasts) + Capacity Obligation (ex-post).
+
+    French industrial electricity cost structure:
+    1. Market price (EPEX SPOT day-ahead / intraday)
+    2. TURPE (Tarif d'Utilisation des Réseaux Publics d'Électricité)
+       — time-varying by period, provided as column in forecasts_df.csv
+    3. Accise sur l'électricité (formerly CSPE/TICFE)
+       — time-varying, provided as column in forecasts_df.csv
+    4. Capacity Obligation (Obligation de Capacité)
+       — EUR/MW.a × realized annual peak, settled ex-post
+
+    TURPE and accise are pre-summed into a single forecasts column
+    ``FR_total_dynamic_charges``.
+
+    Delivered price for strategy decisions:
+        market_price + FR_total_dynamic_charges
+    (all additive, no multiplicative tax for industrial consumers)
+    """
+
+    DYNAMIC_CHARGE_COLUMN = "FR_total_dynamic_charges"
+
+    def __init__(
+        self,
+        plant_charges: pd.DataFrame,
+        assumed_tier: str = "high",
+        avoid_high_load_window: bool = False,
+        high_load_window_column: str = "high_load_window",
+        capacity_peak_basis: str = "annual",
+        **kwargs,
+    ):
+        self._parse_charges(plant_charges)
+
+    def _parse_charges(self, plant_charges: pd.DataFrame) -> None:
+        """Extract capacity obligation rate from additional_charges.csv."""
+        capacity_eur_per_mw_a = 0.0
+
+        for _, row in plant_charges.iterrows():
+            component = str(row["component"]).strip().lower()
+            value = float(row["value"])
+
+            if "capacity obligation" in component:
+                capacity_eur_per_mw_a = value
+
+        self._capacity_eur_per_mw_a = capacity_eur_per_mw_a
+
+    # ─── Properties for strategy access ───────────────────────────
+
+    @property
+    def electricity_tax_rate(self) -> float:
+        return 0.0
+
+    @property
+    def dynamic_charge_column(self) -> str | None:
+        return self.DYNAMIC_CHARGE_COLUMN
+
+    # ─── Interface (A): dispatch-time ─────────────────────────────
+
+    def marginal_charge_eur_per_mwh(self) -> float:
+        """Per-MWh adder for the Pyomo objective.
+
+        For France, the dynamic charges (TURPE + accise) are passed as a
+        time-series via DispatchSignals. No scalar adder needed here.
+        The capacity obligation is non-marginal and settled ex-post only.
+        """
+        return 0.0
+
+    def charging_block_mask(self, forecasts: pd.DataFrame) -> pd.Series:
+        """France has no high-load-window avoidance mechanism."""
+        return pd.Series(False, index=forecasts.index)
+
+    # ─── Interface (B): ex-post settlement ────────────────────────
+
+    def settle(self, dispatch_results: pd.DataFrame, timestep_minutes: int) -> GridFeeResult:
+        """Compute the authoritative annual French grid-fee bill.
+
+        Components:
+        - Energy charges (TURPE + accise): already in dispatch as
+          additional_electricity_charges_cost_EUR
+        - Capacity Obligation: EUR/MW.a × realized annual peak (prorated)
+        """
+        dt_h = timestep_minutes / 60.0
+        consumption = pd.to_numeric(
+            dispatch_results.get("actual_electricity_consumption_MWh"), errors="coerce"
+        ).fillna(0.0)
+        grid_energy = float(consumption.sum())
+        power = consumption / dt_h if dt_h > 0 else consumption * 0.0
+        annual_peak = float(power.max()) if len(power) else 0.0
+        full_load_hours = grid_energy / annual_peak if annual_peak > 0 else 0.0
+
+        # Energy charges (dynamic TURPE + accise already computed in dispatch)
+        charges_col = "additional_electricity_charges_cost_EUR"
+        if charges_col in dispatch_results.columns:
+            energy_charge = float(
+                pd.to_numeric(dispatch_results[charges_col], errors="coerce").fillna(0.0).sum()
+            )
+        else:
+            energy_charge = 0.0
+
+        # Capacity Obligation: EUR/MW.a × realized annual peak, prorated to sim period
+        simulation_hours = len(dispatch_results) * dt_h
+        hours_per_year = 8760.0
+        proration_factor = simulation_hours / hours_per_year if hours_per_year > 0 else 1.0
+        capacity_charge = self._capacity_eur_per_mw_a * annual_peak * proration_factor
+
+        total = energy_charge + capacity_charge
+        ex_post_addition = capacity_charge
+
+        return GridFeeResult(
+            grid_energy_MWh=grid_energy,
+            annual_peak_MW=annual_peak,
+            window_peak_MW=0.0,
+            billed_peak_MW=annual_peak,
+            full_load_hours=full_load_hours,
+            assumed_tier="n/a",
+            realized_tier="n/a",
+            tier_assumption_held=True,
+            energy_charge_EUR=energy_charge,
+            capacity_charge_EUR=capacity_charge,
+            special_network_use_EUR=0.0,
+            levies_EUR=0.0,
+            grid_fee_total_EUR=total,
+            ex_post_addition_EUR=ex_post_addition,
+        )
+
+    def tier_prompt_options(self) -> list[dict[str, str]]:
+        """France has no tiered energy charges — no prompt needed."""
+        return []
+
+
 # --------------------------------------------------------------------- factory
 # Register one regulation per ISO country code. Adding a country is a one-line change.
 _REGISTRY: dict[str, type[GridFeeRegulation]] = {
     "DE": GermanGridFeeRegulation,
+    "ES": SpanishGridFeeRegulation,
+    "FR": FrenchGridFeeRegulation,
 }
 
 

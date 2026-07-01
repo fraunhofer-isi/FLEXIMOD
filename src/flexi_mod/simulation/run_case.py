@@ -45,10 +45,18 @@ available_examples: dict[str, dict[str, str]] = {
         "scenario": "hybrid_ETES_DA_ID_aFRR_energy_capacity",
         "study_case": "hybrid_ETES_DA_ID_aFRR_energy_capacity",
     },
+    "hybrid_ETES_ES": {
+        "scenario": "hybrid_ETES_ES",
+        "study_case": "hybrid_ETES_ES",
+    },
+    "hybrid_ETES_FR": {
+        "scenario": "hybrid_ETES_FR",
+        "study_case": "hybrid_ETES_FR",
+    },
 }
 
 # Select the example to run from the available examples above.
-example = "hybrid_ETES_DA_ID_aFRR_energy_capacity"
+example = "hybrid_ETES_ES"
 
 
 def resolve_example_paths(example: str) -> dict[str, Path | str]:
