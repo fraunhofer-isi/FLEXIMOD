@@ -861,6 +861,9 @@ class SteamGenerationPlant(BasePlant):
         afrr_activation = (
             signals.afrr_energy_activated_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
         )
+        affr_market_activation_limit_mwh = (
+            signals.afrr_system_activation_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
+        )
         actual_electricity = final_planned + afrr_activation
         reserved_capacity_mwh = _series_or_zero(signals.reserved_capacity_mwh, forecasts.index)
 
@@ -881,15 +884,15 @@ class SteamGenerationPlant(BasePlant):
         )
         m.idc_buy_mwh = pyo.Param(m.T, initialize={t: float(idc_buy.iloc[t]) for t in steps})
         m.idc_sell_mwh = pyo.Param(m.T, initialize={t: float(idc_sell.iloc[t]) for t in steps})
-        m.final_planned_electricity_mwh = pyo.Param(
-            m.T, initialize={t: float(final_planned.iloc[t]) for t in steps}
-        )
+        # m.final_planned_electricity_mwh = pyo.Param(
+        # m.T, initialize={t: float(final_planned.iloc[t]) for t in steps}
+        # )
         m.afrr_energy_bid_mwh = pyo.Param(
             m.T, initialize={t: float(afrr_bid.iloc[t]) for t in steps}
         )
-        m.afrr_energy_activated_mwh = pyo.Param(
-            m.T, initialize={t: float(afrr_activation.iloc[t]) for t in steps}
-        )
+        # m.afrr_energy_activated_mwh = pyo.Param(
+        # m.T, initialize={t: float(afrr_activation.iloc[t]) for t in steps}
+        # )
         m.actual_electricity_consumption_mwh = pyo.Param(
             m.T, initialize={t: float(actual_electricity.iloc[t]) for t in steps}
         )
@@ -898,6 +901,10 @@ class SteamGenerationPlant(BasePlant):
         )
         m.co2_emission_factor = pyo.Param(
             initialize=float(signals.co2_emission_factor_t_per_mwh_fuel)
+        )
+
+        m.affr_market_activation_limit_mwh = pyo.Param(
+            m.T, initialize={t: float(affr_market_activation_limit_mwh.iloc[t]) for t in steps}
         )
 
         m.technology_blocks = pyo.Block(list(self.components.keys()))
@@ -909,6 +916,7 @@ class SteamGenerationPlant(BasePlant):
             component.add_to_model(m, m.technology_blocks[technology], m.T, context)
 
         m.electricity_consumption = pyo.Var(m.T, within=pyo.NonNegativeReals)
+        m.afrr_energy_activated_mwh = pyo.Var(m.T, within=pyo.NonNegativeReals)
 
         @m.Constraint(m.T)
         def etes_charge_matches_actual_electricity(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
@@ -916,12 +924,22 @@ class SteamGenerationPlant(BasePlant):
             # For the current hybrid ETES + gas plant, activated aFRR down energy maps
             # directly to additional ETES charging. TODO: Generalise this for industrial
             # plants with multiple electric processes behind one market position.
-            return storage.electric_charge_to_storage[t] == mm.actual_electricity_consumption_mwh[t]
+            return (
+                storage.electric_charge_to_storage[t]
+                == mm.da_position_mwh[t]
+                + mm.idc_buy_mwh[t]
+                - mm.idc_sell_mwh[t]
+                + mm.afrr_energy_activated_mwh[t]
+            )
 
         @m.Constraint(m.T)
         def electricity_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
             storage = mm.technology_blocks["thermal_storage"]
             return mm.electricity_consumption[t] == storage.electricity_consumption[t]
+
+        @m.Constraint(m.T)
+        def affr_market_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            return mm.afrr_energy_activated_mwh[t] <= mm.affr_market_activation_limit_mwh[t]
 
         @m.Constraint(m.T)
         def heat_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
@@ -959,11 +977,20 @@ class SteamGenerationPlant(BasePlant):
             mm: pyo.ConcreteModel,
             t: int,
         ) -> pyo.Expression:
-            return mm.actual_electricity_consumption_mwh[t] * mm.additional_electricity_charge
+            return mm.electricity_consumption[t] * mm.additional_electricity_charge
 
         @m.Expression(m.T)
         def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return mm.electricity_market_cost[t] + mm.additional_electricity_charges_cost[t]
+
+        @m.Expression(m.T)
+        def final_planned_electricity_mwh(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
+            return (
+                mm.da_position_mwh[t]
+                + mm.idc_buy_mwh[t]
+                - mm.idc_sell_mwh[t]
+                + mm.afrr_energy_activated_mwh[t]
+            )
 
         @m.Expression(m.T)
         def gas_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
@@ -1231,7 +1258,7 @@ class SteamGenerationPlant(BasePlant):
             final_planned = _value(model.final_planned_electricity_mwh[t])
             afrr_bid = _value(model.afrr_energy_bid_mwh[t])
             afrr_activation = _value(model.afrr_energy_activated_mwh[t])
-            actual_electricity = _value(model.actual_electricity_consumption_mwh[t])
+            actual_electricity = _value(model.electricity_consumption[t])
             afrr_price_clean = _value(model.afrr_energy_price[t])
             additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
             benchmark = float(signals.electricity_trading_benchmark_eur_per_mwh_el.iloc[t])
