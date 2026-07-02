@@ -38,8 +38,14 @@ class DispatchSignals:
     afrr_capacity_block_id: pd.Series | None = None
     afrr_capacity_block_duration_h: pd.Series | None = None
     afrr_capacity_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_pricing_rule: pd.Series | None = None
+    afrr_capacity_bid_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_settlement_price_eur_per_mw_h: pd.Series | None = None
     afrr_capacity_reserved_mw: pd.Series | None = None
     afrr_capacity_revenue_eur: pd.Series | None = None
+    afrr_capacity_opportunity_cost_eur: pd.Series | None = None
+    afrr_capacity_market_surplus_eur: pd.Series | None = None
+    afrr_capacity_net_value_eur: pd.Series | None = None
     co2_price_col: str | None = None
     co2_emission_factor_t_per_mwh_fuel: float = DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL
 
@@ -59,8 +65,14 @@ class IDCAdjustmentSignals:
     afrr_capacity_block_id: pd.Series | None = None
     afrr_capacity_block_duration_h: pd.Series | None = None
     afrr_capacity_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_pricing_rule: pd.Series | None = None
+    afrr_capacity_bid_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_settlement_price_eur_per_mw_h: pd.Series | None = None
     afrr_capacity_reserved_mw: pd.Series | None = None
     afrr_capacity_revenue_eur: pd.Series | None = None
+    afrr_capacity_opportunity_cost_eur: pd.Series | None = None
+    afrr_capacity_market_surplus_eur: pd.Series | None = None
+    afrr_capacity_net_value_eur: pd.Series | None = None
     co2_price_col: str | None = None
     co2_emission_factor_t_per_mwh_fuel: float = DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL
 
@@ -92,8 +104,14 @@ class AFRRDownSignals:
     afrr_capacity_block_id: pd.Series | None = None
     afrr_capacity_block_duration_h: pd.Series | None = None
     afrr_capacity_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_pricing_rule: pd.Series | None = None
+    afrr_capacity_bid_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_settlement_price_eur_per_mw_h: pd.Series | None = None
     afrr_capacity_reserved_mw: pd.Series | None = None
     afrr_capacity_revenue_eur: pd.Series | None = None
+    afrr_capacity_opportunity_cost_eur: pd.Series | None = None
+    afrr_capacity_market_surplus_eur: pd.Series | None = None
+    afrr_capacity_net_value_eur: pd.Series | None = None
     co2_price_col: str | None = None
     co2_emission_factor_t_per_mwh_fuel: float = DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL
 
@@ -195,11 +213,29 @@ class SteamGenerationPlant(BasePlant):
                 afrr_capacity_price_eur_per_mw_h=_optional_loc(
                     signals.afrr_capacity_price_eur_per_mw_h, horizon.index
                 ),
+                afrr_capacity_pricing_rule=_optional_loc(
+                    signals.afrr_capacity_pricing_rule, horizon.index
+                ),
+                afrr_capacity_bid_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_bid_price_eur_per_mw_h, horizon.index
+                ),
+                afrr_capacity_settlement_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_settlement_price_eur_per_mw_h, horizon.index
+                ),
                 afrr_capacity_reserved_mw=_optional_loc(
                     signals.afrr_capacity_reserved_mw, horizon.index
                 ),
                 afrr_capacity_revenue_eur=_optional_loc(
                     signals.afrr_capacity_revenue_eur, horizon.index
+                ),
+                afrr_capacity_opportunity_cost_eur=_optional_loc(
+                    signals.afrr_capacity_opportunity_cost_eur, horizon.index
+                ),
+                afrr_capacity_market_surplus_eur=_optional_loc(
+                    signals.afrr_capacity_market_surplus_eur, horizon.index
+                ),
+                afrr_capacity_net_value_eur=_optional_loc(
+                    signals.afrr_capacity_net_value_eur, horizon.index
                 ),
                 co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
             )
@@ -262,11 +298,29 @@ class SteamGenerationPlant(BasePlant):
                 afrr_capacity_price_eur_per_mw_h=_optional_loc(
                     signals.afrr_capacity_price_eur_per_mw_h, horizon.index
                 ),
+                afrr_capacity_pricing_rule=_optional_loc(
+                    signals.afrr_capacity_pricing_rule, horizon.index
+                ),
+                afrr_capacity_bid_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_bid_price_eur_per_mw_h, horizon.index
+                ),
+                afrr_capacity_settlement_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_settlement_price_eur_per_mw_h, horizon.index
+                ),
                 afrr_capacity_reserved_mw=_optional_loc(
                     signals.afrr_capacity_reserved_mw, horizon.index
                 ),
                 afrr_capacity_revenue_eur=_optional_loc(
                     signals.afrr_capacity_revenue_eur, horizon.index
+                ),
+                afrr_capacity_opportunity_cost_eur=_optional_loc(
+                    signals.afrr_capacity_opportunity_cost_eur, horizon.index
+                ),
+                afrr_capacity_market_surplus_eur=_optional_loc(
+                    signals.afrr_capacity_market_surplus_eur, horizon.index
+                ),
+                afrr_capacity_net_value_eur=_optional_loc(
+                    signals.afrr_capacity_net_value_eur, horizon.index
                 ),
                 co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
             )
@@ -354,11 +408,29 @@ class SteamGenerationPlant(BasePlant):
                 afrr_capacity_price_eur_per_mw_h=_optional_loc(
                     signals.afrr_capacity_price_eur_per_mw_h, horizon.index
                 ),
+                afrr_capacity_pricing_rule=_optional_loc(
+                    signals.afrr_capacity_pricing_rule, horizon.index
+                ),
+                afrr_capacity_bid_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_bid_price_eur_per_mw_h, horizon.index
+                ),
+                afrr_capacity_settlement_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_settlement_price_eur_per_mw_h, horizon.index
+                ),
                 afrr_capacity_reserved_mw=_optional_loc(
                     signals.afrr_capacity_reserved_mw, horizon.index
                 ),
                 afrr_capacity_revenue_eur=_optional_loc(
                     signals.afrr_capacity_revenue_eur, horizon.index
+                ),
+                afrr_capacity_opportunity_cost_eur=_optional_loc(
+                    signals.afrr_capacity_opportunity_cost_eur, horizon.index
+                ),
+                afrr_capacity_market_surplus_eur=_optional_loc(
+                    signals.afrr_capacity_market_surplus_eur, horizon.index
+                ),
+                afrr_capacity_net_value_eur=_optional_loc(
+                    signals.afrr_capacity_net_value_eur, horizon.index
                 ),
                 co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
             )
@@ -1436,18 +1508,35 @@ def _capacity_result_fields(
         reserved_mw = reserved_mwh / timestep_hours if timestep_hours > 0 else 0.0
     block_id = str(_series_value(signals.afrr_capacity_block_id, timestamp, ""))
     block_duration = float(_series_value(signals.afrr_capacity_block_duration_h, timestamp, 0.0))
-    price = float(_series_value(signals.afrr_capacity_price_eur_per_mw_h, timestamp, 0.0))
+    clearing_price = float(_series_value(signals.afrr_capacity_price_eur_per_mw_h, timestamp, 0.0))
+    pricing_rule = str(_series_value(signals.afrr_capacity_pricing_rule, timestamp, ""))
+    bid_price = float(_series_value(signals.afrr_capacity_bid_price_eur_per_mw_h, timestamp, 0.0))
+    settlement_price = float(
+        _series_value(signals.afrr_capacity_settlement_price_eur_per_mw_h, timestamp, 0.0)
+    )
     revenue = float(_series_value(signals.afrr_capacity_revenue_eur, timestamp, 0.0))
+    opportunity_cost = float(
+        _series_value(signals.afrr_capacity_opportunity_cost_eur, timestamp, 0.0)
+    )
+    market_surplus = float(_series_value(signals.afrr_capacity_market_surplus_eur, timestamp, 0.0))
+    net_value = float(_series_value(signals.afrr_capacity_net_value_eur, timestamp, 0.0))
     max_charge_mwh = etes.max_power_charge_mw * timestep_hours
     charge_headroom = max(0.0, max_charge_mwh - float(final_planned_mwh))
     storage_headroom = max(0.0, etes.max_capacity_mwh - float(soc_mwh)) / etes.efficiency_charge
     return {
         "afrr_capacity_block_id": block_id,
         "afrr_capacity_block_duration_h": block_duration,
-        "afrr_capacity_down_price_EUR_per_MW_h": price,
+        "afrr_capacity_pricing_rule": pricing_rule,
+        "afrr_capacity_bid_price_EUR_per_MW_h": bid_price,
+        "afrr_capacity_clearing_price_EUR_per_MW_h": clearing_price,
+        "afrr_capacity_settlement_price_EUR_per_MW_h": settlement_price,
+        "afrr_capacity_down_price_EUR_per_MW_h": clearing_price,
         "afrr_capacity_reserved_MW": reserved_mw,
         "afrr_capacity_reserved_MWh": reserved_mwh,
         "afrr_capacity_revenue_EUR": revenue,
+        "afrr_capacity_opportunity_cost_EUR": opportunity_cost,
+        "afrr_capacity_market_surplus_EUR": market_surplus,
+        "afrr_capacity_net_value_EUR": net_value,
         "reserved_capacity_headroom_MWh": reserved_mwh,
         "available_charge_headroom_after_schedule_MWh": charge_headroom,
         "available_storage_headroom_after_schedule_MWh": storage_headroom,

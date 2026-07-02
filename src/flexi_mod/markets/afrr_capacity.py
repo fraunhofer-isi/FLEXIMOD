@@ -20,6 +20,7 @@ import pandas as pd
 from flexi_mod.markets.base_market import BaseMarket, MarketConfigError
 
 PRICE_CONSISTENCY_TOLERANCE = 1e-6
+SUPPORTED_PRICE_UNITS = {"EUR_per_MW_per_h", "EUR_per_MW_per_product"}
 
 
 @dataclass(frozen=True)
@@ -53,9 +54,10 @@ class AFRRCapacityMarket(BaseMarket):
             return
         if str(self.config.get("direction", "down")).lower() not in {"down", "negative"}:
             raise MarketConfigError("afrr_capacity.direction must be 'down' or 'negative'")
-        if self.price_unit != "EUR_per_MW_per_h":
+        if self.price_unit not in SUPPORTED_PRICE_UNITS:
             raise MarketConfigError(
-                "afrr_capacity.price_unit must be 'EUR_per_MW_per_h' in this implementation"
+                "afrr_capacity.price_unit must be one of: "
+                + ", ".join(sorted(SUPPORTED_PRICE_UNITS))
             )
         product_length_minutes = _duration_to_minutes(self.product_length)
         if timestep_minutes is not None and product_length_minutes < timestep_minutes:
@@ -83,6 +85,7 @@ class AFRRCapacityMarket(BaseMarket):
             price_col=self.signal_column("price"),
             product_length_minutes=product_length_minutes,
             timestep_hours=timestep_hours,
+            price_unit=self.price_unit,
         )
 
 
@@ -91,6 +94,7 @@ def prepare_afrr_capacity_blocks(
     price_col: str,
     product_length_minutes: int,
     timestep_hours: float,
+    price_unit: str = "EUR_per_MW_per_h",
 ) -> AFRRCapacityData:
     """Generate midnight-anchored capacity blocks and extract block prices."""
 
@@ -98,6 +102,10 @@ def prepare_afrr_capacity_blocks(
         raise MarketConfigError("aFRR capacity block generation requires a DatetimeIndex")
     if product_length_minutes <= 0:
         raise MarketConfigError("aFRR capacity product_length must be positive")
+    if price_unit not in SUPPORTED_PRICE_UNITS:
+        raise MarketConfigError(
+            "aFRR capacity price_unit must be one of: " + ", ".join(sorted(SUPPORTED_PRICE_UNITS))
+        )
 
     price = pd.to_numeric(forecasts[price_col].replace("", pd.NA), errors="coerce")
     block_ids = []
@@ -115,22 +123,23 @@ def prepare_afrr_capacity_blocks(
             "afrr_capacity_block_id": block_ids,
             "afrr_capacity_block_start": block_starts,
             "afrr_capacity_block_end": block_ends,
-            "afrr_capacity_price_raw_EUR_per_MW_h": price,
+            "afrr_capacity_price_raw": price,
+            "afrr_capacity_price_input_unit": price_unit,
         },
         index=forecasts.index,
     )
 
     block_records = []
     for block_id, block_frame in frame.groupby("afrr_capacity_block_id", sort=False):
-        non_missing_prices = block_frame["afrr_capacity_price_raw_EUR_per_MW_h"].dropna()
+        non_missing_prices = block_frame["afrr_capacity_price_raw"].dropna()
         missing_price = non_missing_prices.empty
         inconsistent = False
         if missing_price:
             block_price = 0.0
         else:
-            block_price = float(non_missing_prices.iloc[0])
+            raw_block_price = float(non_missing_prices.iloc[0])
             inconsistent = bool(
-                (non_missing_prices - block_price).abs().gt(PRICE_CONSISTENCY_TOLERANCE).any()
+                (non_missing_prices - raw_block_price).abs().gt(PRICE_CONSISTENCY_TOLERANCE).any()
             )
             if inconsistent:
                 warnings.warn(
@@ -138,6 +147,12 @@ def prepare_afrr_capacity_blocks(
                     "Using the first non-missing price.",
                     stacklevel=2,
                 )
+            product_duration_h = product_length_minutes / 60.0
+            block_price = (
+                raw_block_price
+                if price_unit == "EUR_per_MW_per_h"
+                else raw_block_price / product_duration_h
+            )
 
         block_start = pd.Timestamp(block_frame["afrr_capacity_block_start"].iloc[0])
         block_end = pd.Timestamp(block_frame["afrr_capacity_block_end"].iloc[0])
@@ -148,6 +163,8 @@ def prepare_afrr_capacity_blocks(
                 "block_start": block_start,
                 "block_end": block_end,
                 "block_duration_h": block_duration_h,
+                "capacity_price_input_unit": price_unit,
+                "capacity_price_raw": 0.0 if missing_price else raw_block_price,
                 "capacity_price_EUR_per_MW_h": block_price,
                 "missing_capacity_price_flag": bool(missing_price),
                 "price_inconsistency_flag": bool(inconsistent),

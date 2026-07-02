@@ -48,10 +48,17 @@ MARKET_LEDGER_COLUMNS = [
     "afrr_curtailment_MWh",
     "afrr_capacity_block_id",
     "afrr_capacity_block_duration_h",
+    "afrr_capacity_pricing_rule",
+    "afrr_capacity_bid_price_EUR_per_MW_h",
+    "afrr_capacity_clearing_price_EUR_per_MW_h",
+    "afrr_capacity_settlement_price_EUR_per_MW_h",
     "afrr_capacity_down_price_EUR_per_MW_h",
     "afrr_capacity_reserved_MW",
     "afrr_capacity_reserved_MWh",
     "afrr_capacity_revenue_EUR",
+    "afrr_capacity_opportunity_cost_EUR",
+    "afrr_capacity_market_surplus_EUR",
+    "afrr_capacity_net_value_EUR",
     "reserved_capacity_headroom_MWh",
     "available_charge_headroom_after_schedule_MWh",
     "available_storage_headroom_after_schedule_MWh",
@@ -83,10 +90,16 @@ ZERO_COLUMNS = [
     "afrr_headroom_binding",
     "afrr_curtailment_MWh",
     "afrr_capacity_block_duration_h",
+    "afrr_capacity_bid_price_EUR_per_MW_h",
+    "afrr_capacity_clearing_price_EUR_per_MW_h",
+    "afrr_capacity_settlement_price_EUR_per_MW_h",
     "afrr_capacity_down_price_EUR_per_MW_h",
     "afrr_capacity_reserved_MW",
     "afrr_capacity_reserved_MWh",
     "afrr_capacity_revenue_EUR",
+    "afrr_capacity_opportunity_cost_EUR",
+    "afrr_capacity_market_surplus_EUR",
+    "afrr_capacity_net_value_EUR",
     "reserved_capacity_headroom_MWh",
     "available_charge_headroom_after_schedule_MWh",
     "available_storage_headroom_after_schedule_MWh",
@@ -150,7 +163,12 @@ class MarketLedger:
         if frame.empty:
             return frame
         for column in MARKET_LEDGER_COLUMNS:
-            if column not in {"datetime", "plant_name", "afrr_capacity_block_id"}:
+            if column not in {
+                "datetime",
+                "plant_name",
+                "afrr_capacity_block_id",
+                "afrr_capacity_pricing_rule",
+            }:
                 frame[column] = pd.to_numeric(frame[column], errors="coerce")
         return frame.sort_values(["plant_name", "datetime"]).reset_index(drop=True)
 
@@ -260,12 +278,29 @@ def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[s
             row["afrr_capacity_block_id"] if "afrr_capacity_block_id" in row.index else ""
         ),
         "afrr_capacity_block_duration_h": _value(row, "afrr_capacity_block_duration_h", 0.0),
+        "afrr_capacity_pricing_rule": str(
+            row["afrr_capacity_pricing_rule"] if "afrr_capacity_pricing_rule" in row.index else ""
+        ),
+        "afrr_capacity_bid_price_EUR_per_MW_h": _value(
+            row, "afrr_capacity_bid_price_EUR_per_MW_h", 0.0
+        ),
+        "afrr_capacity_clearing_price_EUR_per_MW_h": _value(
+            row, "afrr_capacity_clearing_price_EUR_per_MW_h", 0.0
+        ),
+        "afrr_capacity_settlement_price_EUR_per_MW_h": _value(
+            row, "afrr_capacity_settlement_price_EUR_per_MW_h", 0.0
+        ),
         "afrr_capacity_down_price_EUR_per_MW_h": _value(
             row, "afrr_capacity_down_price_EUR_per_MW_h", 0.0
         ),
         "afrr_capacity_reserved_MW": _value(row, "afrr_capacity_reserved_MW", 0.0),
         "afrr_capacity_reserved_MWh": _value(row, "afrr_capacity_reserved_MWh", 0.0),
         "afrr_capacity_revenue_EUR": _value(row, "afrr_capacity_revenue_EUR", 0.0),
+        "afrr_capacity_opportunity_cost_EUR": _value(
+            row, "afrr_capacity_opportunity_cost_EUR", 0.0
+        ),
+        "afrr_capacity_market_surplus_EUR": _value(row, "afrr_capacity_market_surplus_EUR", 0.0),
+        "afrr_capacity_net_value_EUR": _value(row, "afrr_capacity_net_value_EUR", 0.0),
         "reserved_capacity_headroom_MWh": _value(row, "reserved_capacity_headroom_MWh", 0.0),
         "available_charge_headroom_after_schedule_MWh": _value(
             row, "available_charge_headroom_after_schedule_MWh", 0.0

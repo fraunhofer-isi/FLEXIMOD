@@ -45,6 +45,36 @@ class HybridETESGasStrategy(BaseStrategy):
         self.afrr_capacity_block_summary = pd.DataFrame()
         self._afrr_down_energy_data_cache = {}
 
+    @property
+    def capacity_pricing_rule(self) -> str:
+        """Return the aFRR-capacity pricing rule implemented by this strategy."""
+
+        return "pay_as_bid"
+
+    def capacity_settlement_price(
+        self,
+        capacity_bid_price_eur_per_mw_h: float,
+        clearing_price_eur_per_mw_h: float,
+    ) -> float:
+        """Return the awarded-capacity settlement price in EUR/MW/h."""
+
+        del clearing_price_eur_per_mw_h
+        return capacity_bid_price_eur_per_mw_h
+
+    def capacity_bid_price(
+        self,
+        minimum_acceptable_price_eur_per_mw_h: float,
+        market_reference_price_eur_per_mw_h: float,
+    ) -> float:
+        """Return the submitted bid price for the capacity product.
+
+        The existing pay-as-bid strategy interprets its configured capacity-price
+        signal as the submitted and awarded bid price, preserving prior behaviour.
+        """
+
+        del minimum_acceptable_price_eur_per_mw_h
+        return market_reference_price_eur_per_mw_h
+
     def required_forecast_columns(self) -> set[str]:
         required = {GAS_PRICE_SIGNAL}
         if "intraday_continuous" in self.config.enabled_markets:
@@ -645,10 +675,16 @@ class HybridETESGasStrategy(BaseStrategy):
                 min_bid_mw=min_bid_mw,
                 bid_increment_mw=bid_increment_mw,
             )
+            minimum_acceptable_price = opportunity_cost_block + AFRR_CAPACITY_MARGIN_EUR_PER_MW_H
+            clearing_price = float(block["capacity_price_EUR_per_MW_h"])
+            capacity_bid_price = self.capacity_bid_price(
+                minimum_acceptable_price,
+                clearing_price,
+            )
             capacity_profitable = (
                 not bool(block["missing_capacity_price_flag"])
-                and float(block["capacity_price_EUR_per_MW_h"])
-                >= opportunity_cost_block + AFRR_CAPACITY_MARGIN_EUR_PER_MW_H
+                and clearing_price >= minimum_acceptable_price
+                and clearing_price >= capacity_bid_price
             )
             technically_feasible = compliant_capacity > 1e-12 and compliant_capacity >= min_bid_mw
             block_overlaps_high_load_window = bool(grid_block.loc[mask].any())
@@ -663,11 +699,24 @@ class HybridETESGasStrategy(BaseStrategy):
                 reserved_mw = 0.0
             else:
                 reserved_mw = compliant_capacity
-            revenue = reserved_mw * float(block["capacity_price_EUR_per_MW_h"]) * block_duration_h
+            settlement_price = self.capacity_settlement_price(
+                capacity_bid_price,
+                clearing_price,
+            )
+            revenue = reserved_mw * settlement_price * block_duration_h
+            opportunity_cost_total = reserved_mw * opportunity_cost_block * block_duration_h
+            market_surplus = (
+                reserved_mw * (settlement_price - capacity_bid_price) * block_duration_h
+            )
+            net_value = revenue - opportunity_cost_total
             records.append(
                 {
                     **block.to_dict(),
+                    "capacity_pricing_rule": self.capacity_pricing_rule,
                     "opportunity_cost_EUR_per_MW_h": opportunity_cost_block,
+                    "capacity_bid_price_EUR_per_MW_h": capacity_bid_price,
+                    "capacity_clearing_price_EUR_per_MW_h": clearing_price,
+                    "capacity_settlement_price_EUR_per_MW_h": settlement_price,
                     "activation_expected": bool(activation_expected),
                     "capacity_profitable": bool(capacity_profitable),
                     "activation_profitable": bool(activation_profitable),
@@ -683,6 +732,9 @@ class HybridETESGasStrategy(BaseStrategy):
                     "bid_increment_MW": bid_increment_mw,
                     "reserved_capacity_MW": reserved_mw,
                     "capacity_revenue_EUR": revenue,
+                    "capacity_opportunity_cost_EUR": opportunity_cost_total,
+                    "capacity_market_surplus_EUR": market_surplus,
+                    "capacity_net_value_EUR": net_value,
                     "charge_headroom_MW": max_charge_power_mw,
                     "storage_headroom_MW": storage_capacity_mw,
                     "activated_energy_MWh": 0.0,
@@ -695,10 +747,17 @@ class HybridETESGasStrategy(BaseStrategy):
             self.afrr_capacity_block_summary.set_index("block_id")[
                 [
                     "opportunity_cost_EUR_per_MW_h",
+                    "capacity_pricing_rule",
+                    "capacity_bid_price_EUR_per_MW_h",
+                    "capacity_clearing_price_EUR_per_MW_h",
+                    "capacity_settlement_price_EUR_per_MW_h",
                     "bid_eligible",
                     "compliant_capacity_MW",
                     "reserved_capacity_MW",
                     "capacity_revenue_EUR",
+                    "capacity_opportunity_cost_EUR",
+                    "capacity_market_surplus_EUR",
+                    "capacity_net_value_EUR",
                 ]
             ],
             on="afrr_capacity_block_id",
@@ -709,8 +768,24 @@ class HybridETESGasStrategy(BaseStrategy):
         )
         enriched["afrr_capacity_revenue_EUR"] = (
             enriched["afrr_capacity_reserved_MW"]
-            * enriched["capacity_price_EUR_per_MW_h"]
+            * enriched["capacity_settlement_price_EUR_per_MW_h"]
             * timestep_hours
+        )
+        enriched["afrr_capacity_opportunity_cost_EUR"] = (
+            enriched["afrr_capacity_reserved_MW"]
+            * enriched["opportunity_cost_EUR_per_MW_h"]
+            * timestep_hours
+        )
+        enriched["afrr_capacity_market_surplus_EUR"] = (
+            enriched["afrr_capacity_reserved_MW"]
+            * (
+                enriched["capacity_settlement_price_EUR_per_MW_h"]
+                - enriched["capacity_bid_price_EUR_per_MW_h"]
+            )
+            * timestep_hours
+        )
+        enriched["afrr_capacity_net_value_EUR"] = (
+            enriched["afrr_capacity_revenue_EUR"] - enriched["afrr_capacity_opportunity_cost_EUR"]
         )
         return enriched
 
@@ -868,10 +943,41 @@ def _capacity_signal_kwargs(
         "afrr_capacity_price_eur_per_mw_h": _capacity_column(
             frame,
             index,
-            "capacity_price_EUR_per_MW_h",
+            "capacity_clearing_price_EUR_per_MW_h",
+        ),
+        "afrr_capacity_pricing_rule": _capacity_object_column(
+            frame,
+            index,
+            "capacity_pricing_rule",
+            "",
+        ),
+        "afrr_capacity_bid_price_eur_per_mw_h": _capacity_column(
+            frame,
+            index,
+            "capacity_bid_price_EUR_per_MW_h",
+        ),
+        "afrr_capacity_settlement_price_eur_per_mw_h": _capacity_column(
+            frame,
+            index,
+            "capacity_settlement_price_EUR_per_MW_h",
         ),
         "afrr_capacity_reserved_mw": _capacity_column(frame, index, "afrr_capacity_reserved_MW"),
         "afrr_capacity_revenue_eur": _capacity_column(frame, index, "afrr_capacity_revenue_EUR"),
+        "afrr_capacity_opportunity_cost_eur": _capacity_column(
+            frame,
+            index,
+            "afrr_capacity_opportunity_cost_EUR",
+        ),
+        "afrr_capacity_market_surplus_eur": _capacity_column(
+            frame,
+            index,
+            "afrr_capacity_market_surplus_EUR",
+        ),
+        "afrr_capacity_net_value_eur": _capacity_column(
+            frame,
+            index,
+            "afrr_capacity_net_value_EUR",
+        ),
     }
 
 
