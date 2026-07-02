@@ -38,8 +38,7 @@ def test_spanish_pay_as_cleared_example_runs(tmp_path: Path) -> None:
     )
     assert blocks["capacity_bid_price_EUR_per_MW_h"].gt(0.0).all()
     assert (
-        blocks["capacity_clearing_price_EUR_per_MW_h"]
-        > blocks["capacity_bid_price_EUR_per_MW_h"]
+        blocks["capacity_clearing_price_EUR_per_MW_h"] > blocks["capacity_bid_price_EUR_per_MW_h"]
     ).all()
     assert market["afrr_capacity_revenue_EUR"].to_numpy() == pytest.approx(
         (
@@ -49,8 +48,7 @@ def test_spanish_pay_as_cleared_example_runs(tmp_path: Path) -> None:
         ).to_numpy()
     )
     assert (
-        market["afrr_energy_activated_MWh_el"]
-        <= market["afrr_capacity_reserved_MWh"] + 1e-8
+        market["afrr_energy_activated_MWh_el"] <= market["afrr_capacity_reserved_MWh"] + 1e-8
     ).all()
     assert market["actual_electricity_consumption_MWh_el"].to_numpy() == pytest.approx(
         (
