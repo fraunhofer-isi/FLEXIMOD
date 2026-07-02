@@ -86,8 +86,8 @@ class AFRRDownSignals:
     afrr_energy_capacity_backed_activated_mwh: pd.Series | None = None
     afrr_energy_free_activated_mwh: pd.Series | None = None
     additional_electricity_charge_eur_per_mwh: float = 0.0
-    useful_heat_cap_binding: pd.Series | None = None
-    curtailed_proxy_activation_due_to_heat_cap_mwh: pd.Series | None = None
+    afrr_headroom_binding: pd.Series | None = None
+    afrr_curtailment_mwh: pd.Series | None = None
     reserved_capacity_mwh: pd.Series | None = None
     afrr_capacity_block_id: pd.Series | None = None
     afrr_capacity_block_duration_h: pd.Series | None = None
@@ -341,11 +341,9 @@ class SteamGenerationPlant(BasePlant):
                 additional_electricity_charge_eur_per_mwh=(
                     signals.additional_electricity_charge_eur_per_mwh
                 ),
-                useful_heat_cap_binding=_optional_loc(
-                    signals.useful_heat_cap_binding, horizon.index
-                ),
-                curtailed_proxy_activation_due_to_heat_cap_mwh=_optional_loc(
-                    signals.curtailed_proxy_activation_due_to_heat_cap_mwh,
+                afrr_headroom_binding=_optional_loc(signals.afrr_headroom_binding, horizon.index),
+                afrr_curtailment_mwh=_optional_loc(
+                    signals.afrr_curtailment_mwh,
                     horizon.index,
                 ),
                 reserved_capacity_mwh=_optional_loc(signals.reserved_capacity_mwh, horizon.index),
@@ -861,7 +859,6 @@ class SteamGenerationPlant(BasePlant):
         afrr_activation = (
             signals.afrr_energy_activated_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
         )
-        actual_electricity = final_planned + afrr_activation
         reserved_capacity_mwh = _series_or_zero(signals.reserved_capacity_mwh, forecasts.index)
 
         m.heat_demand = pyo.Param(m.T, initialize={t: heat_demand_mwh[t] for t in steps})
@@ -890,9 +887,6 @@ class SteamGenerationPlant(BasePlant):
         m.afrr_energy_activated_mwh = pyo.Param(
             m.T, initialize={t: float(afrr_activation.iloc[t]) for t in steps}
         )
-        m.actual_electricity_consumption_mwh = pyo.Param(
-            m.T, initialize={t: float(actual_electricity.iloc[t]) for t in steps}
-        )
         m.reserved_capacity_mwh = pyo.Param(
             m.T, initialize={t: float(reserved_capacity_mwh.iloc[t]) for t in steps}
         )
@@ -909,6 +903,13 @@ class SteamGenerationPlant(BasePlant):
             component.add_to_model(m, m.technology_blocks[technology], m.T, context)
 
         m.electricity_consumption = pyo.Var(m.T, within=pyo.NonNegativeReals)
+
+        @m.Expression(m.T)
+        def actual_electricity_consumption_mwh(
+            mm: pyo.ConcreteModel,
+            t: int,
+        ) -> pyo.Expression:
+            return mm.final_planned_electricity_mwh[t] + mm.afrr_energy_activated_mwh[t]
 
         @m.Constraint(m.T)
         def etes_charge_matches_actual_electricity(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
@@ -959,7 +960,7 @@ class SteamGenerationPlant(BasePlant):
             mm: pyo.ConcreteModel,
             t: int,
         ) -> pyo.Expression:
-            return mm.actual_electricity_consumption_mwh[t] * mm.additional_electricity_charge
+            return mm.electricity_consumption[t] * mm.additional_electricity_charge
 
         @m.Expression(m.T)
         def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
@@ -1231,7 +1232,7 @@ class SteamGenerationPlant(BasePlant):
             final_planned = _value(model.final_planned_electricity_mwh[t])
             afrr_bid = _value(model.afrr_energy_bid_mwh[t])
             afrr_activation = _value(model.afrr_energy_activated_mwh[t])
-            actual_electricity = _value(model.actual_electricity_consumption_mwh[t])
+            actual_electricity = _value(model.electricity_consumption[t])
             afrr_price_clean = _value(model.afrr_energy_price[t])
             additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
             benchmark = float(signals.electricity_trading_benchmark_eur_per_mwh_el.iloc[t])
@@ -1316,15 +1317,11 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_energy_free_activated_MWh": float(
                     _series_value(signals.afrr_energy_free_activated_mwh, timestamp, 0.0)
                 ),
-                "useful_heat_cap_binding": bool(
-                    _series_value(signals.useful_heat_cap_binding, timestamp, False)
+                "afrr_headroom_binding": bool(
+                    _series_value(signals.afrr_headroom_binding, timestamp, False)
                 ),
-                "curtailed_proxy_activation_due_to_heat_cap_MWh": float(
-                    _series_value(
-                        signals.curtailed_proxy_activation_due_to_heat_cap_mwh,
-                        timestamp,
-                        0.0,
-                    )
+                "afrr_curtailment_MWh": float(
+                    _series_value(signals.afrr_curtailment_mwh, timestamp, 0.0)
                 ),
                 "electricity_market_cost_EUR": electricity_market_cost,
                 "additional_electricity_charges_cost_EUR": additional_charges_cost,
