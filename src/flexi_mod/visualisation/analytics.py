@@ -425,6 +425,21 @@ def _economic_indicators(
         "afrr_capacity_revenue_EUR",
         fallback=_sum(dispatch, "afrr_capacity_revenue_EUR"),
     )
+    afrr_capacity_opportunity_cost = _sum(
+        market,
+        "afrr_capacity_opportunity_cost_EUR",
+        fallback=_sum(dispatch, "afrr_capacity_opportunity_cost_EUR"),
+    )
+    afrr_capacity_market_surplus = _sum(
+        market,
+        "afrr_capacity_market_surplus_EUR",
+        fallback=_sum(dispatch, "afrr_capacity_market_surplus_EUR"),
+    )
+    afrr_capacity_net_value = _sum(
+        market,
+        "afrr_capacity_net_value_EUR",
+        fallback=afrr_capacity_revenue - afrr_capacity_opportunity_cost,
+    )
     average_stored_heat_cost = _last_existing_non_missing(
         storage,
         ["weighted_average_inventory_cost_EUR_per_MWh_th"],
@@ -454,6 +469,9 @@ def _economic_indicators(
         "total_afrr_energy_pay_as_cleared_reward_EUR": afrr_reward,
         "total_afrr_energy_net_value_after_charges_EUR": afrr_net_value,
         "total_afrr_capacity_revenue_EUR": afrr_capacity_revenue,
+        "total_afrr_capacity_opportunity_cost_EUR": afrr_capacity_opportunity_cost,
+        "total_afrr_capacity_market_surplus_EUR": afrr_capacity_market_surplus,
+        "total_afrr_capacity_net_value_EUR": afrr_capacity_net_value,
         "gross_operating_cost_EUR": gross_operating_cost,
         "total_operating_cost_EUR": total_operating_cost,
         "total_net_operating_cost_EUR": total_net_operating_cost,

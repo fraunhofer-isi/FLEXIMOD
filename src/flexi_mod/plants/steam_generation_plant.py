@@ -40,8 +40,14 @@ class DispatchSignals:
     afrr_capacity_block_id: pd.Series | None = None
     afrr_capacity_block_duration_h: pd.Series | None = None
     afrr_capacity_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_pricing_rule: pd.Series | None = None
+    afrr_capacity_bid_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_settlement_price_eur_per_mw_h: pd.Series | None = None
     afrr_capacity_reserved_mw: pd.Series | None = None
     afrr_capacity_revenue_eur: pd.Series | None = None
+    afrr_capacity_opportunity_cost_eur: pd.Series | None = None
+    afrr_capacity_market_surplus_eur: pd.Series | None = None
+    afrr_capacity_net_value_eur: pd.Series | None = None
     co2_price_col: str | None = None
     co2_emission_factor_t_per_mwh_fuel: float = DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL
 
@@ -62,8 +68,14 @@ class IDCAdjustmentSignals:
     afrr_capacity_block_id: pd.Series | None = None
     afrr_capacity_block_duration_h: pd.Series | None = None
     afrr_capacity_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_pricing_rule: pd.Series | None = None
+    afrr_capacity_bid_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_settlement_price_eur_per_mw_h: pd.Series | None = None
     afrr_capacity_reserved_mw: pd.Series | None = None
     afrr_capacity_revenue_eur: pd.Series | None = None
+    afrr_capacity_opportunity_cost_eur: pd.Series | None = None
+    afrr_capacity_market_surplus_eur: pd.Series | None = None
+    afrr_capacity_net_value_eur: pd.Series | None = None
     co2_price_col: str | None = None
     co2_emission_factor_t_per_mwh_fuel: float = DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL
 
@@ -90,14 +102,20 @@ class AFRRDownSignals:
     afrr_energy_free_activated_mwh: pd.Series | None = None
     additional_electricity_charge_eur_per_mwh: pd.Series | None = None
     tax_rate: float = 0.0
-    useful_heat_cap_binding: pd.Series | None = None
-    curtailed_proxy_activation_due_to_heat_cap_mwh: pd.Series | None = None
+    afrr_headroom_binding: pd.Series | None = None
+    afrr_curtailment_mwh: pd.Series | None = None
     reserved_capacity_mwh: pd.Series | None = None
     afrr_capacity_block_id: pd.Series | None = None
     afrr_capacity_block_duration_h: pd.Series | None = None
     afrr_capacity_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_pricing_rule: pd.Series | None = None
+    afrr_capacity_bid_price_eur_per_mw_h: pd.Series | None = None
+    afrr_capacity_settlement_price_eur_per_mw_h: pd.Series | None = None
     afrr_capacity_reserved_mw: pd.Series | None = None
     afrr_capacity_revenue_eur: pd.Series | None = None
+    afrr_capacity_opportunity_cost_eur: pd.Series | None = None
+    afrr_capacity_market_surplus_eur: pd.Series | None = None
+    afrr_capacity_net_value_eur: pd.Series | None = None
     co2_price_col: str | None = None
     co2_emission_factor_t_per_mwh_fuel: float = DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL
 
@@ -199,11 +217,29 @@ class SteamGenerationPlant(BasePlant):
                 afrr_capacity_price_eur_per_mw_h=_optional_loc(
                     signals.afrr_capacity_price_eur_per_mw_h, horizon.index
                 ),
+                afrr_capacity_pricing_rule=_optional_loc(
+                    signals.afrr_capacity_pricing_rule, horizon.index
+                ),
+                afrr_capacity_bid_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_bid_price_eur_per_mw_h, horizon.index
+                ),
+                afrr_capacity_settlement_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_settlement_price_eur_per_mw_h, horizon.index
+                ),
                 afrr_capacity_reserved_mw=_optional_loc(
                     signals.afrr_capacity_reserved_mw, horizon.index
                 ),
                 afrr_capacity_revenue_eur=_optional_loc(
                     signals.afrr_capacity_revenue_eur, horizon.index
+                ),
+                afrr_capacity_opportunity_cost_eur=_optional_loc(
+                    signals.afrr_capacity_opportunity_cost_eur, horizon.index
+                ),
+                afrr_capacity_market_surplus_eur=_optional_loc(
+                    signals.afrr_capacity_market_surplus_eur, horizon.index
+                ),
+                afrr_capacity_net_value_eur=_optional_loc(
+                    signals.afrr_capacity_net_value_eur, horizon.index
                 ),
                 co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
                 tax_rate=signals.tax_rate,
@@ -267,11 +303,29 @@ class SteamGenerationPlant(BasePlant):
                 afrr_capacity_price_eur_per_mw_h=_optional_loc(
                     signals.afrr_capacity_price_eur_per_mw_h, horizon.index
                 ),
+                afrr_capacity_pricing_rule=_optional_loc(
+                    signals.afrr_capacity_pricing_rule, horizon.index
+                ),
+                afrr_capacity_bid_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_bid_price_eur_per_mw_h, horizon.index
+                ),
+                afrr_capacity_settlement_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_settlement_price_eur_per_mw_h, horizon.index
+                ),
                 afrr_capacity_reserved_mw=_optional_loc(
                     signals.afrr_capacity_reserved_mw, horizon.index
                 ),
                 afrr_capacity_revenue_eur=_optional_loc(
                     signals.afrr_capacity_revenue_eur, horizon.index
+                ),
+                afrr_capacity_opportunity_cost_eur=_optional_loc(
+                    signals.afrr_capacity_opportunity_cost_eur, horizon.index
+                ),
+                afrr_capacity_market_surplus_eur=_optional_loc(
+                    signals.afrr_capacity_market_surplus_eur, horizon.index
+                ),
+                afrr_capacity_net_value_eur=_optional_loc(
+                    signals.afrr_capacity_net_value_eur, horizon.index
                 ),
                 co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
                 tax_rate=signals.tax_rate,
@@ -347,11 +401,9 @@ class SteamGenerationPlant(BasePlant):
                 additional_electricity_charge_eur_per_mwh=(
                     signals.additional_electricity_charge_eur_per_mwh
                 ),
-                useful_heat_cap_binding=_optional_loc(
-                    signals.useful_heat_cap_binding, horizon.index
-                ),
-                curtailed_proxy_activation_due_to_heat_cap_mwh=_optional_loc(
-                    signals.curtailed_proxy_activation_due_to_heat_cap_mwh,
+                afrr_headroom_binding=_optional_loc(signals.afrr_headroom_binding, horizon.index),
+                afrr_curtailment_mwh=_optional_loc(
+                    signals.afrr_curtailment_mwh,
                     horizon.index,
                 ),
                 reserved_capacity_mwh=_optional_loc(signals.reserved_capacity_mwh, horizon.index),
@@ -362,11 +414,29 @@ class SteamGenerationPlant(BasePlant):
                 afrr_capacity_price_eur_per_mw_h=_optional_loc(
                     signals.afrr_capacity_price_eur_per_mw_h, horizon.index
                 ),
+                afrr_capacity_pricing_rule=_optional_loc(
+                    signals.afrr_capacity_pricing_rule, horizon.index
+                ),
+                afrr_capacity_bid_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_bid_price_eur_per_mw_h, horizon.index
+                ),
+                afrr_capacity_settlement_price_eur_per_mw_h=_optional_loc(
+                    signals.afrr_capacity_settlement_price_eur_per_mw_h, horizon.index
+                ),
                 afrr_capacity_reserved_mw=_optional_loc(
                     signals.afrr_capacity_reserved_mw, horizon.index
                 ),
                 afrr_capacity_revenue_eur=_optional_loc(
                     signals.afrr_capacity_revenue_eur, horizon.index
+                ),
+                afrr_capacity_opportunity_cost_eur=_optional_loc(
+                    signals.afrr_capacity_opportunity_cost_eur, horizon.index
+                ),
+                afrr_capacity_market_surplus_eur=_optional_loc(
+                    signals.afrr_capacity_market_surplus_eur, horizon.index
+                ),
+                afrr_capacity_net_value_eur=_optional_loc(
+                    signals.afrr_capacity_net_value_eur, horizon.index
                 ),
                 co2_emission_factor_t_per_mwh_fuel=signals.co2_emission_factor_t_per_mwh_fuel,
                 tax_rate=signals.tax_rate,
@@ -883,6 +953,7 @@ class SteamGenerationPlant(BasePlant):
             co2_price = forecasts[signals.co2_price_col].astype(float).to_numpy()
         else:
             co2_price = [0.0 for _ in steps]
+
         da_position = signals.da_position_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
         idc_buy = signals.idc_buy_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
         idc_sell = signals.idc_sell_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
@@ -893,9 +964,6 @@ class SteamGenerationPlant(BasePlant):
         afrr_bid = signals.afrr_energy_bid_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
         afrr_activation = (
             signals.afrr_energy_activated_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
-        )
-        affr_market_activation_limit_mwh = (
-            signals.afrr_system_activation_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
         )
         actual_electricity = final_planned + afrr_activation
         reserved_capacity_mwh = _series_or_zero(signals.reserved_capacity_mwh, forecasts.index)
@@ -919,15 +987,15 @@ class SteamGenerationPlant(BasePlant):
         )
         m.idc_buy_mwh = pyo.Param(m.T, initialize={t: float(idc_buy.iloc[t]) for t in steps})
         m.idc_sell_mwh = pyo.Param(m.T, initialize={t: float(idc_sell.iloc[t]) for t in steps})
-        # m.final_planned_electricity_mwh = pyo.Param(
-        # m.T, initialize={t: float(final_planned.iloc[t]) for t in steps}
-        # )
+        m.final_planned_electricity_mwh = pyo.Param(
+            m.T, initialize={t: float(final_planned.iloc[t]) for t in steps}
+        )
         m.afrr_energy_bid_mwh = pyo.Param(
             m.T, initialize={t: float(afrr_bid.iloc[t]) for t in steps}
         )
-        # m.afrr_energy_activated_mwh = pyo.Param(
-        # m.T, initialize={t: float(afrr_activation.iloc[t]) for t in steps}
-        # )
+        m.afrr_energy_activated_mwh = pyo.Param(
+            m.T, initialize={t: float(afrr_activation.iloc[t]) for t in steps}
+        )
         m.actual_electricity_consumption_mwh = pyo.Param(
             m.T, initialize={t: float(actual_electricity.iloc[t]) for t in steps}
         )
@@ -936,10 +1004,6 @@ class SteamGenerationPlant(BasePlant):
         )
         m.co2_emission_factor = pyo.Param(
             initialize=float(signals.co2_emission_factor_t_per_mwh_fuel)
-        )
-
-        m.affr_market_activation_limit_mwh = pyo.Param(
-            m.T, initialize={t: float(affr_market_activation_limit_mwh.iloc[t]) for t in steps}
         )
 
         m.technology_blocks = pyo.Block(list(self.components.keys()))
@@ -951,7 +1015,13 @@ class SteamGenerationPlant(BasePlant):
             component.add_to_model(m, m.technology_blocks[technology], m.T, context)
 
         m.electricity_consumption = pyo.Var(m.T, within=pyo.NonNegativeReals)
-        m.afrr_energy_activated_mwh = pyo.Var(m.T, within=pyo.NonNegativeReals)
+
+        @m.Expression(m.T)
+        def actual_electricity_consumption_mwh(
+            mm: pyo.ConcreteModel,
+            t: int,
+        ) -> pyo.Expression:
+            return mm.final_planned_electricity_mwh[t] + mm.afrr_energy_activated_mwh[t]
 
         @m.Constraint(m.T)
         def etes_charge_matches_actual_electricity(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
@@ -959,22 +1029,12 @@ class SteamGenerationPlant(BasePlant):
             # For the current hybrid ETES + gas plant, activated aFRR down energy maps
             # directly to additional ETES charging. TODO: Generalise this for industrial
             # plants with multiple electric processes behind one market position.
-            return (
-                storage.electric_charge_to_storage[t]
-                == mm.da_position_mwh[t]
-                + mm.idc_buy_mwh[t]
-                - mm.idc_sell_mwh[t]
-                + mm.afrr_energy_activated_mwh[t]
-            )
+            return storage.electric_charge_to_storage[t] == mm.actual_electricity_consumption_mwh[t]
 
         @m.Constraint(m.T)
         def electricity_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
             storage = mm.technology_blocks["thermal_storage"]
             return mm.electricity_consumption[t] == storage.electricity_consumption[t]
-
-        @m.Constraint(m.T)
-        def affr_market_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return mm.afrr_energy_activated_mwh[t] <= mm.affr_market_activation_limit_mwh[t]
 
         @m.Constraint(m.T)
         def heat_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
@@ -1012,7 +1072,7 @@ class SteamGenerationPlant(BasePlant):
             mm: pyo.ConcreteModel,
             t: int,
         ) -> pyo.Expression:
-            return mm.electricity_consumption[t] * mm.additional_electricity_charge[t]
+            return mm.actual_electricity_consumption_mwh[t] * mm.additional_electricity_charge[t]
 
         @m.Expression(m.T)
         def electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
@@ -1021,15 +1081,6 @@ class SteamGenerationPlant(BasePlant):
         @m.Expression(m.T)
         def tax_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return mm.electricity_cost[t] * tax_rate
-
-        @m.Expression(m.T)
-        def final_planned_electricity_mwh(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
-            return (
-                mm.da_position_mwh[t]
-                + mm.idc_buy_mwh[t]
-                - mm.idc_sell_mwh[t]
-                + mm.afrr_energy_activated_mwh[t]
-            )
 
         @m.Expression(m.T)
         def gas_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
@@ -1297,7 +1348,7 @@ class SteamGenerationPlant(BasePlant):
             final_planned = _value(model.final_planned_electricity_mwh[t])
             afrr_bid = _value(model.afrr_energy_bid_mwh[t])
             afrr_activation = _value(model.afrr_energy_activated_mwh[t])
-            actual_electricity = _value(model.electricity_consumption[t])
+            actual_electricity = _value(model.actual_electricity_consumption_mwh[t])
             afrr_price_clean = _value(model.afrr_energy_price[t])
             additional_charge = _value(model.additional_electricity_charge[t])
             benchmark = float(signals.electricity_trading_benchmark_eur_per_mwh_el.iloc[t])
@@ -1382,15 +1433,11 @@ class SteamGenerationPlant(BasePlant):
                 "afrr_energy_free_activated_MWh": float(
                     _series_value(signals.afrr_energy_free_activated_mwh, timestamp, 0.0)
                 ),
-                "useful_heat_cap_binding": bool(
-                    _series_value(signals.useful_heat_cap_binding, timestamp, False)
+                "afrr_headroom_binding": bool(
+                    _series_value(signals.afrr_headroom_binding, timestamp, False)
                 ),
-                "curtailed_proxy_activation_due_to_heat_cap_MWh": float(
-                    _series_value(
-                        signals.curtailed_proxy_activation_due_to_heat_cap_mwh,
-                        timestamp,
-                        0.0,
-                    )
+                "afrr_curtailment_MWh": float(
+                    _series_value(signals.afrr_curtailment_mwh, timestamp, 0.0)
                 ),
                 "electricity_market_cost_EUR": electricity_market_cost,
                 "additional_electricity_charges_cost_EUR": additional_charges_cost,
@@ -1505,18 +1552,35 @@ def _capacity_result_fields(
         reserved_mw = reserved_mwh / timestep_hours if timestep_hours > 0 else 0.0
     block_id = str(_series_value(signals.afrr_capacity_block_id, timestamp, ""))
     block_duration = float(_series_value(signals.afrr_capacity_block_duration_h, timestamp, 0.0))
-    price = float(_series_value(signals.afrr_capacity_price_eur_per_mw_h, timestamp, 0.0))
+    clearing_price = float(_series_value(signals.afrr_capacity_price_eur_per_mw_h, timestamp, 0.0))
+    pricing_rule = str(_series_value(signals.afrr_capacity_pricing_rule, timestamp, ""))
+    bid_price = float(_series_value(signals.afrr_capacity_bid_price_eur_per_mw_h, timestamp, 0.0))
+    settlement_price = float(
+        _series_value(signals.afrr_capacity_settlement_price_eur_per_mw_h, timestamp, 0.0)
+    )
     revenue = float(_series_value(signals.afrr_capacity_revenue_eur, timestamp, 0.0))
+    opportunity_cost = float(
+        _series_value(signals.afrr_capacity_opportunity_cost_eur, timestamp, 0.0)
+    )
+    market_surplus = float(_series_value(signals.afrr_capacity_market_surplus_eur, timestamp, 0.0))
+    net_value = float(_series_value(signals.afrr_capacity_net_value_eur, timestamp, 0.0))
     max_charge_mwh = etes.max_power_charge_mw * timestep_hours
     charge_headroom = max(0.0, max_charge_mwh - float(final_planned_mwh))
     storage_headroom = max(0.0, etes.max_capacity_mwh - float(soc_mwh)) / etes.efficiency_charge
     return {
         "afrr_capacity_block_id": block_id,
         "afrr_capacity_block_duration_h": block_duration,
-        "afrr_capacity_down_price_EUR_per_MW_h": price,
+        "afrr_capacity_pricing_rule": pricing_rule,
+        "afrr_capacity_bid_price_EUR_per_MW_h": bid_price,
+        "afrr_capacity_clearing_price_EUR_per_MW_h": clearing_price,
+        "afrr_capacity_settlement_price_EUR_per_MW_h": settlement_price,
+        "afrr_capacity_down_price_EUR_per_MW_h": clearing_price,
         "afrr_capacity_reserved_MW": reserved_mw,
         "afrr_capacity_reserved_MWh": reserved_mwh,
         "afrr_capacity_revenue_EUR": revenue,
+        "afrr_capacity_opportunity_cost_EUR": opportunity_cost,
+        "afrr_capacity_market_surplus_EUR": market_surplus,
+        "afrr_capacity_net_value_EUR": net_value,
         "reserved_capacity_headroom_MWh": reserved_mwh,
         "available_charge_headroom_after_schedule_MWh": charge_headroom,
         "available_storage_headroom_after_schedule_MWh": storage_headroom,

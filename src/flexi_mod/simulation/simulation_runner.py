@@ -19,6 +19,7 @@ from flexi_mod.markets import BaseMarket, build_markets
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
 from flexi_mod.plants.steam_generation_plant import DispatchSignals, SteamGenerationPlant
 from flexi_mod.regulations import GridFeeResult, build_grid_fee_regulation
+from flexi_mod.strategies import build_strategy
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.visualisation.analytics import calculate_summary_indicators
 from flexi_mod.visualisation.plots import create_case_plots
@@ -95,7 +96,7 @@ class SimulationRunner:
             plant.additional_electricity_charge_eur_per_mwh = (
                 regulation.marginal_charge_eur_per_mwh()
             )
-        strategy = HybridETESGasStrategy(self.config)
+        strategy = build_strategy(self.config.strategy_name, self.config)
         required_columns = self.loader.required_forecast_columns(
             plants_df,
             extra_required_columns=strategy.required_forecast_columns(),
@@ -147,6 +148,7 @@ class SimulationRunner:
             strategy.afrr_capacity_block_summary = _update_capacity_block_summary(
                 strategy.afrr_capacity_block_summary,
                 dispatch_results,
+                timestep_hours=self.config.timestep_minutes / 60.0,
             )
         if self.output_options.save_summary_indicators:
             path = output_dir / "summary_indicators.csv"
@@ -600,7 +602,23 @@ def _capacity_signal_kwargs(
         "afrr_capacity_price_eur_per_mw_h": _capacity_float_column(
             frame,
             index,
-            "capacity_price_EUR_per_MW_h",
+            "capacity_clearing_price_EUR_per_MW_h",
+        ),
+        "afrr_capacity_pricing_rule": _capacity_object_column(
+            frame,
+            index,
+            "capacity_pricing_rule",
+            "",
+        ),
+        "afrr_capacity_bid_price_eur_per_mw_h": _capacity_float_column(
+            frame,
+            index,
+            "capacity_bid_price_EUR_per_MW_h",
+        ),
+        "afrr_capacity_settlement_price_eur_per_mw_h": _capacity_float_column(
+            frame,
+            index,
+            "capacity_settlement_price_EUR_per_MW_h",
         ),
         "afrr_capacity_reserved_mw": _capacity_float_column(
             frame,
@@ -611,6 +629,21 @@ def _capacity_signal_kwargs(
             frame,
             index,
             "afrr_capacity_revenue_EUR",
+        ),
+        "afrr_capacity_opportunity_cost_eur": _capacity_float_column(
+            frame,
+            index,
+            "afrr_capacity_opportunity_cost_EUR",
+        ),
+        "afrr_capacity_market_surplus_eur": _capacity_float_column(
+            frame,
+            index,
+            "afrr_capacity_market_surplus_EUR",
+        ),
+        "afrr_capacity_net_value_eur": _capacity_float_column(
+            frame,
+            index,
+            "afrr_capacity_net_value_EUR",
         ),
     }
 
@@ -727,6 +760,7 @@ def _day_relation_timestamp(
 def _update_capacity_block_summary(
     block_summary: pd.DataFrame,
     dispatch_results: pd.DataFrame,
+    timestep_hours: float,
 ) -> pd.DataFrame:
     if "afrr_capacity_block_id" not in dispatch_results.columns:
         return block_summary
@@ -737,14 +771,14 @@ def _update_capacity_block_summary(
     min_charge_headroom = grouped["available_charge_headroom_after_schedule_MWh"].min()
     min_storage_headroom = grouped["available_storage_headroom_after_schedule_MWh"].min()
     summary = summary.set_index("block_id")
-    summary["total_afrr_energy_activated_MWh_in_block"] = activated.reindex(summary.index).fillna(
-        0.0
+    summary["activated_energy_MWh"] = activated.reindex(summary.index).fillna(0.0)
+    summary["activation_cost_EUR"] = energy_cost.reindex(summary.index).fillna(0.0)
+    summary["charge_headroom_MW"] = (
+        min_charge_headroom.reindex(summary.index).fillna(0.0) / timestep_hours
     )
-    summary["total_afrr_energy_cost_EUR_in_block"] = energy_cost.reindex(summary.index).fillna(0.0)
-    summary["min_final_planned_headroom_MW"] = min_charge_headroom.reindex(summary.index).fillna(
-        0.0
+    summary["storage_headroom_MW"] = (
+        min_storage_headroom.reindex(summary.index).fillna(0.0) / timestep_hours
     )
-    summary["min_storage_headroom_MW"] = min_storage_headroom.reindex(summary.index).fillna(0.0)
     return summary.reset_index()
 
 

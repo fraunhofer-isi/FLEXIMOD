@@ -272,7 +272,7 @@ electricity_trading_benchmark =
 The current IDC margin is embedded in the strategy code:
 
 ```text
-IDC_MARGIN_EUR_PER_MWH = 5.0
+IDC_MARGIN_EUR_PER_MWH = 0.0
 ```
 
 The rules are:
@@ -323,11 +323,12 @@ markets -> afrr_energy -> signals -> price
 markets -> afrr_energy -> signals -> system_activation
 ```
 
-The input quantity is interpreted as a system-level/proxy activation magnitude
-for aFRR down, not plant-specific activation. Positive quantities are used
-directly. Negative quantities are converted to absolute magnitude and flagged in
-the data-quality summary. Missing prices always block bidding, even if
-activation quantity is zero. Price values of zero are valid.
+The input quantity is treated as the activation request for the representative
+plant. The model has no separate system-wide allocation or merit-order award
+step. Positive quantities are used directly. Negative quantities are converted
+to absolute magnitude and flagged in the data-quality summary. Missing prices
+always block bidding, even if activation quantity is zero. Price values of zero
+are valid.
 
 The strategy calculates feasible bid potential before Pyomo. The bid potential
 uses:
@@ -336,10 +337,13 @@ uses:
 charge-power headroom after DA + IDC
 storage-capacity headroom
 minimum bid eligibility in MW
+bid increments in MW
 ```
 
-The 1 MW minimum bid rule applies to bid potential, not realised activation.
-Actual proxy activation is calculated before the plant solve:
+Bid potential is rounded down to the configured increment and set to zero below
+the configured minimum. These rules apply to bids, not realised activation. A
+bid that passes the price, technical and product-rule checks is treated as
+accepted. Actual activation is calculated before the plant solve:
 
 ```text
 afrr_energy_activated_MWh =
@@ -387,6 +391,11 @@ afrr_energy_cost_EUR =
 If the aFRR energy price is negative, this settlement becomes a credit. The
 net plant value after charges is reported separately from this settlement.
 
+Activated energy may be used immediately or stored in ETES for later gas
+replacement. It is limited by charge-power and storage-capacity headroom over
+the complete optimisation horizon, including space needed by already-contracted
+future DA and IDC charging. It is not limited by same-timestep gas consumption.
+
 Pyomo receives the activated volume as a fixed parameter. It does not decide TSO
 activation. For the current hybrid ETES + gas plant:
 
@@ -400,6 +409,130 @@ etes_charge_MWh =
 
 This ETES mapping is plant-specific and must be generalized for future
 industrial plants with multiple electric processes.
+
+## aFRR Variable and Parameter Glossary
+
+The suffixes identify both the physical quantity and its unit:
+
+```text
+MW      = power or capacity
+MWh_el  = electrical energy during one timestep
+MWh_th  = stored or delivered thermal energy
+EUR/MW/product = capacity price for one complete configured product
+[t]     = value for one timestep
+```
+
+Python `Series` values contain one value for every timestep. A "scalar at `t`"
+is the single value selected from such a series inside the timestep loop.
+
+### Configuration and Plant Parameters
+
+| Code name | Kind | Unit | Definition and use |
+|---|---|---:|---|
+| `timestep_hours` | Configuration-derived scalar | h | Timestep duration, for example `0.25` for 15 minutes. It converts between MW and MWh. |
+| `min_bid_mw` | Market configuration | MW | Smallest permitted aFRR bid. A smaller feasible offer becomes zero. |
+| `bid_increment_mw` | Market configuration | MW | Permitted bid step. Feasible bids are rounded down to a multiple of this value. |
+| `max_charge_mwh` | Derived plant parameter | MWh_el | Maximum ETES electricity intake in one timestep: `max_power_charge_mw * timestep_hours`. |
+| `max_discharge_mwh` | Derived plant parameter | MWh_th | Maximum useful heat ETES can discharge in one timestep: `max_power_discharge_mw * timestep_hours`. |
+| `efficiency_charge` | Plant parameter | MWh_th/MWh_el | Fraction of charging electricity entering thermal storage. |
+| `efficiency_discharge` | Plant parameter | MWh_th delivered/MWh_th stored | Fraction of withdrawn storage energy delivered as useful heat. |
+| `storage_loss_rate` | Plant parameter | fraction/timestep | Fraction of stored thermal energy lost between consecutive timesteps. |
+| `max_capacity_mwh` | Plant parameter | MWh_th | Maximum ETES thermal state of charge. |
+
+### Fixed Market and Baseline Quantities
+
+| Code name | Kind | Unit | Definition and use |
+|---|---|---:|---|
+| `da_position` | Series | MWh_el | Electricity already procured in the day-ahead market. |
+| `idc_buy` | Series | MWh_el | Additional electricity bought in intraday continuous trading. |
+| `idc_sell` | Series | MWh_el | DA electricity sold back or reduced through IDC. |
+| `final_planned` | Series | MWh_el | Fixed electricity schedule before aFRR: `DA + IDC buy - IDC sell`. |
+| `reserved_capacity` | Series | MWh_el | Capacity-backed aFRR-down energy headroom reserved for one timestep: `reserved_capacity_MW * timestep_hours`. Reservation itself is not electricity consumption. |
+| `baseline_storage_soc` | Series | MWh_th | ETES state of charge resulting from the fixed DA and IDC dispatch before aFRR activation. |
+| `baseline_storage_discharge` | Series | MWh_th | Useful heat discharged by ETES in the baseline dispatch. |
+| `baseline_gas_heat` | Series | MWh_th | Useful heat supplied by gas in the baseline dispatch. This is the maximum heat source that aFRR-charged storage could potentially replace. |
+| `afrr_energy_bid_price` | Series | EUR/MWh_el | Maximum economically acceptable delivered aFRR price, derived from the gas-replacement benchmark and margin. |
+| `delivered_afrr_price` | Series | EUR/MWh_el | aFRR energy price plus marginal electricity-consumption charges. |
+| `price_allowed` | Boolean Series | — | True only when price data exist, delivered aFRR energy is below the benchmark, and grid charging is not blocked. |
+| `system_activation_for_bid` | Series | MWh_el | Representative-plant activation request after blocked, missing-price, and uneconomic timesteps have been set to zero. |
+
+### Physical Headroom, Bids, and Activation
+
+| Code name | Kind | Unit | Definition and use |
+|---|---|---:|---|
+| `storage_capacity_headroom` | Series | MWh_el | Electricity that could enter the currently unused ETES capacity after charging efficiency. |
+| `charge_power_headroom_after_reserve` | Series | MWh_el | Remaining one-timestep charging-power capability after the fixed schedule and capacity reservation. |
+| `storage_headroom_after_reserve` | Series | MWh_el | Current storage-capacity headroom after the capacity-backed reservation. |
+| `free_bid_potential` | Series | MWh_el | Smaller of charge-power and storage-capacity headroom, before market-increment rounding. |
+| `free_bid_upper_bound` | Series | MWh_el | Price-qualified free bid after applying minimum bid and bid-increment rules. It may be reduced further by horizon feasibility. |
+| `planned_charge` | Scalar at `t` | MWh_el | Fixed DA plus IDC electricity charging ETES in the current timestep. |
+| `baseline_soc` | Scalar at `t` | MWh_th | Baseline ETES state of charge at the end of the current timestep. |
+| `replaceable_gas_heat` | Series | MWh_th | Gas heat that additional ETES discharge can physically replace: the smaller of baseline gas heat and remaining ETES discharge-power headroom. |
+| `replaceable_heat` | Scalar at `t` | MWh_th | Current-timestep value selected from `replaceable_gas_heat`. |
+| `additional_soc_mwh` | Running scalar | MWh_th | Thermal inventory attributable to earlier aFRR activation, after storage losses and gas replacement. |
+| `storage_capacity_offer` | Scalar at `t` | MWh_el | Immediate electrical activation that fits in storage, including current replaceable gas heat as a valid outlet. |
+| `power_offer` | Scalar at `t` | MWh_el | Immediate electrical activation permitted by charging power: `max_charge_mwh - planned_charge`. |
+| `physical_activation_cap` | Scalar at `t` | MWh_el | Immediate activation limit: `min(power_offer, storage_capacity_offer)`. It does not yet account for later contracted charging. |
+| `future_storage_input_headroom` | Series | MWh_th | Backward-calculated extra thermal inventory permitted before each timestep's heat outlet while preserving room for all later fixed charging. |
+| `future_storage_cap` | Scalar at `t` | MWh_el | Electrical activation possible now after subtracting thermal inventory carried from earlier activation from future headroom. |
+| `horizon_activation_cap` | Scalar at `t` | MWh_el | Final physical limit: `min(physical_activation_cap, future_storage_cap)`. This prevents activation now from overfilling ETES later. |
+| `capacity_bid` | Scalar at `t` | MWh_el | Capacity-backed aFRR energy bid. It receives priority over the optional free bid. |
+| `free_room_after_capacity` | Scalar at `t` | MWh_el | Horizon-feasible headroom remaining after the capacity-backed bid: `max(0, horizon_activation_cap - capacity_bid)`. |
+| `free_bid` | Scalar at `t` | MWh_el | Optional, profitable aFRR energy bid after physical limitation and a second market-increment rounding. |
+| `total_bid` | Scalar at `t` | MWh_el | Accepted-bid proxy: `capacity_bid + free_bid`. |
+| `system_activation` | Scalar at `t` | MWh_el | Current representative-plant activation request. It is not rounded to bid increments. |
+| `proxy_activation` | Scalar at `t` | MWh_el | Requested activation covered by the bid: `min(total_bid, system_activation)`. |
+| `feasible_activation` | Scalar at `t` | MWh_el | Requested activation after the final horizon headroom check. With a correctly limited free bid, it equals `proxy_activation`. |
+| `capacity_activated` | Scalar at `t` | MWh_el | Activated volume allocated to the capacity-backed bid first. |
+| `free_activated` | Scalar at `t` | MWh_el | Remaining activated volume allocated to the optional free bid. |
+| `total_activated` | Scalar at `t` | MWh_el | Fixed plant instruction: `capacity_activated + free_activated`. |
+| `curtailment` | Scalar at `t` | MWh_el | Requested bid-covered activation that physical headroom could not support. It is reported explicitly through `afrr_curtailment_MWh`. |
+
+### aFRR Capacity Pricing Quantities
+
+| Code/output name | Kind | Unit | Definition and use |
+|---|---|---:|---|
+| `capacity_price_input_unit` | Market configuration/output | — | Unit of the source capacity-price series: `EUR_per_MW_per_h` or `EUR_per_MW_per_product`. |
+| `capacity_price_raw` | Block input | Configured input unit | Unmodified capacity price read from the forecast column. |
+| `capacity_price_EUR_per_MW_h` | Normalised block price | EUR/MW/h | Internal hourly price. A per-product input is divided by the configured product duration in hours. |
+| `capacity_pricing_rule` | Strategy/output | — | `pay_as_bid` for `hybrid_etes_gas`, or `pay_as_cleared` for the new strategy variant. |
+| `opportunity_cost_block` / `opportunity_cost_EUR_per_MW_h` | Derived block value | EUR/MW/h | Estimated value forgone by reserving one MW of charging capability rather than using it in the energy market. |
+| `AFRR_CAPACITY_MARGIN_EUR_PER_MW_H` | Strategy constant | EUR/MW/h | Additional required margin above opportunity cost. It is currently zero. |
+| `minimum_acceptable_price` | Derived block value | EUR/MW/h | Lowest acceptable capacity payment: `opportunity cost + capacity margin`. |
+| `capacity_bid_price` / `capacity_bid_price_EUR_per_MW_h` | Strategy decision/output | EUR/MW/h | Submitted capacity bid. In the pay-as-cleared strategy it equals the minimum acceptable price. The existing pay-as-bid strategy preserves the configured price signal as its submitted bid. |
+| `clearing_price` / `capacity_clearing_price_EUR_per_MW_h` | Exogenous market input/output | EUR/MW/h | Market reference price. In the pay-as-cleared strategy this is the marginal clearing price used for award and settlement. FLEXIMOD does not calculate it from a system supply curve. |
+| `capacity_profitable` | Boolean block diagnostic | — | True when price data exist and the market reference price covers both the minimum acceptable price and submitted bid. |
+| `technical_capacity_MW` | Derived block value | MW | Smaller of ETES charging-power capability and storage-capacity capability. |
+| `compliant_capacity_MW` | Derived block value | MW | Technical capacity rounded down according to `min_bid_mw` and `bid_increment_mw`. |
+| `reserved_capacity_MW` / `afrr_capacity_reserved_MW` | Awarded capacity | MW | Compliant capacity treated as awarded when all eligibility conditions pass; otherwise zero. |
+| `capacity_settlement_price_EUR_per_MW_h` | Strategy output | EUR/MW/h | Payment rate: submitted bid price under pay-as-bid, marginal clearing price under pay-as-cleared. |
+| `capacity_revenue_EUR` / `afrr_capacity_revenue_EUR` | Settlement output | EUR | `awarded MW * settlement price * product duration`. |
+| `capacity_opportunity_cost_EUR` / `afrr_capacity_opportunity_cost_EUR` | Economic diagnostic | EUR | `awarded MW * opportunity cost * product duration`. This is a counterfactual value, not an additional cash payment. |
+| `capacity_market_surplus_EUR` / `afrr_capacity_market_surplus_EUR` | Economic diagnostic | EUR | `awarded MW * (settlement price - bid price) * product duration`. It is normally zero under pay-as-bid. |
+| `capacity_net_value_EUR` / `afrr_capacity_net_value_EUR` | Economic diagnostic | EUR | Capacity revenue minus estimated opportunity cost. |
+
+### Pyomo aFRR Quantities
+
+| Code name | Pyomo kind | Unit | Definition and use |
+|---|---|---:|---|
+| `m.final_planned_electricity_mwh[t]` | Fixed `Param` | MWh_el | DA plus IDC schedule passed unchanged to the aFRR plant solve. |
+| `m.afrr_energy_bid_mwh[t]` | Fixed `Param` | MWh_el | Submitted/accepted-bid proxy used for reporting and market accounting. |
+| `m.afrr_energy_activated_mwh[t]` | Fixed `Param` | MWh_el | Activation instruction calculated by the strategy. Pyomo cannot choose or reduce it. |
+| `m.actual_electricity_consumption_mwh[t]` | `Expression` | MWh_el | `final planned electricity + activated aFRR energy`. |
+| `storage.electric_charge_to_storage[t]` | Decision `Var` constrained to the expression | MWh_el | Physical ETES electricity intake; for this plant it must equal actual electricity consumption. |
+| `storage.discharge_heat[t]` | Decision `Var` | MWh_th | Useful heat discharged from ETES. |
+| `storage.soc[t]` | Decision `Var` | MWh_th | ETES state of charge after loss, charging, and discharge in timestep `t`. |
+| `boiler.heat_out[t]` | Decision `Var` | MWh_th | Gas-boiler useful heat, chosen with storage discharge to meet heat demand exactly. |
+| `m.electricity_consumption[t]` | Decision `Var` tied to ETES charge | MWh_el | Metered physical electricity consumption used for consumption charges and result extraction. |
+
+The core identities are therefore:
+
+```text
+final planned electricity = DA + IDC buy - IDC sell
+actual electricity = final planned electricity + aFRR activation
+ETES charge = actual electricity
+useful heat demand = ETES discharge + gas heat
+```
 
 ## What Pyomo Decides
 
@@ -420,21 +553,29 @@ The plant model decides:
 - gas boiler heat output;
 - electricity consumption.
 
-The strategy only decides when charging is economically allowed. The plant model
-decides how much charging is useful and feasible.
+For day-ahead, the strategy decides when charging is economically allowed. For
+IDC it creates feasible buy and sell bounds, and for aFRR it creates compliant
+bids and a fixed activation instruction. In every stage, the plant model still
+decides the physically feasible ETES discharge, state of charge, gas production,
+and exact useful-heat dispatch.
 
 ## aFRR Down Capacity Strategy Logic
 
 When enabled, aFRR down capacity is evaluated before day-ahead. The strategy
-uses 4-hour capacity blocks prepared by the market class and applies a
-conservative rule:
+uses the configured capacity-product duration and applies a conservative rule:
 
 ```text
 reserve capacity only if:
+    positive activation is forecast in the block
     capacity revenue covers estimated opportunity cost
     possible activation energy is economically safe versus the gas benchmark
     ETES charge-power and storage-capacity headroom are sufficient
 ```
+
+Activation forecast magnitude does not size the capacity bid. Capacity is sized
+from technical capability and rounded down to the configured market increment.
+For example, a 0.5 MW activation forecast can support a 1 MW capacity bid when
+the plant can physically provide the full 1 MW product.
 
 Capacity reservation itself does not add energy to storage. It only reserves
 charging headroom and earns capacity revenue. If aFRR energy is also enabled,
@@ -445,6 +586,92 @@ feasible. If aFRR capacity is enabled but aFRR energy is disabled, the runner
 logs this clearly: capacity revenue can be modelled, but activation energy is
 not modelled.
 
+The capacity-price safety margin is currently embedded in the strategy code and
+set to zero:
+
+```text
+AFRR_CAPACITY_MARGIN_EUR_PER_MW_H = 0.0
+```
+
+### Capacity Pricing Strategies
+
+FLEXIMOD provides two capacity-pricing strategy variants. They inherit the same
+physical feasibility, market-compliance, storage, activation, and sequencing
+logic. Only capacity bid and settlement pricing differ.
+
+| Behaviour | `hybrid_etes_gas` | `hybrid_etes_gas_pay_as_cleared_capacity` |
+|---|---|---|
+| Python class | `HybridETESGasStrategy` | `PayAsClearedCapacityHybridETESGasStrategy` |
+| Configured capacity-price meaning | Submitted/awarded bid-price proxy | Exogenous marginal clearing price |
+| Submitted bid | Configured price signal | Opportunity cost + capacity margin |
+| Award proxy | Price covers opportunity cost and all other eligibility checks pass | Clearing price covers bid and all other eligibility checks pass |
+| Settlement price | Submitted bid price | Marginal clearing price |
+| Market surplus | Normally zero | Clearing price minus bid price, multiplied by awarded capacity and duration |
+
+The new subclass is implemented in
+`src/flexi_mod/strategies/pay_as_cleared_capacity_strategy.py` and is selected
+through the strategy registry. Neither variant endogenously clears the full
+market; both use the configured deterministic price series.
+
+The existing strategy keeps its previous pay-as-bid interpretation:
+
+```yaml
+strategy:
+  name: hybrid_etes_gas
+```
+
+Its configured capacity-price signal is treated as the submitted bid price and
+the awarded capacity is settled at that price.
+
+The pay-as-cleared variant is selected with:
+
+```yaml
+strategy:
+  name: hybrid_etes_gas_pay_as_cleared_capacity
+```
+
+It calculates the minimum acceptable capacity bid from opportunity cost and the
+capacity margin:
+
+```text
+capacity bid price = opportunity cost + capacity margin
+```
+
+The configured price signal is interpreted as an exogenous marginal clearing
+price. Because FLEXIMOD does not model the complete market supply curve, the bid
+is treated as awarded when the clearing price covers the bid and all economic,
+technical, activation, and grid-window conditions pass.
+
+```text
+settlement price = marginal clearing price
+capacity revenue = awarded MW * settlement price * product duration
+market surplus = awarded MW * (settlement price - bid price) * product duration
+net value = capacity revenue - opportunity cost
+```
+
+The dispatch and market ledger report the pricing rule, bid price, clearing
+price, settlement price, revenue, opportunity cost, market surplus, and net
+value separately.
+
+For capacity prices supplied per product rather than per hour, configure:
+
+```yaml
+markets:
+  afrr_capacity:
+    product_length: 15min
+    price_unit: EUR_per_MW_per_product
+```
+
+The capacity market normalises these prices internally to `EUR/MW/h`. For
+example, `25 EUR/MW` for a 15-minute product becomes `100 EUR/MW/h`; multiplying
+by the `0.25 h` duration restores the correct `25 EUR/MW` settlement.
+
+A complete synthetic input example is available in:
+
+```text
+data/input/hybrid_ETES_DA_ID_aFRR_energy_capacity_spain/
+```
+
 ## Current Simplifications
 
 The current DA + IDC + aFRR down strategy is deliberately simple:
@@ -453,8 +680,7 @@ The current DA + IDC + aFRR down strategy is deliberately simple:
 - there is no explicit multi-step bid curve;
 - there is no market clearing uncertainty;
 - IDC is an index-based adjustment, not an order-book model;
-- aFRR down activation is proxy/scenario activation, not plant-specific TSO
-  activation;
+- aFRR down activation is treated as a representative-plant request;
 - day-ahead positions are fixed before IDC adjustments;
 - DA and IDC positions are fixed before aFRR down activation;
 - CO2 cost is disabled for the active MVP objective and benchmark;
@@ -469,9 +695,8 @@ realistic market mechanisms.
 The next strategy extensions should improve market realism around the existing
 stages:
 
-1. Strict bid increments and bid granularity.
-2. Bid acceptance probability or merit-order award modelling.
-3. Forecast-based or stochastic price expectations.
+1. Bid acceptance probability or merit-order award modelling.
+2. Forecast-based or stochastic price expectations.
 
 The key rule for all future stages:
 
