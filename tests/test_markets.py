@@ -172,6 +172,26 @@ def test_afrr_capacity_market_generates_blocks() -> None:
     assert data.block_summary["capacity_price_EUR_per_MW_h"].iloc[0] == pytest.approx(5.0)
 
 
+def test_afrr_capacity_market_normalises_per_product_price() -> None:
+    forecasts = _forecast_frame({"aFRR_capacity_down_price": [25.0] * 4})
+    market = AFRRCapacityMarket(
+        name="afrr_capacity",
+        config={
+            "enabled": True,
+            "direction": "down",
+            "product_length": "15min",
+            "price_unit": "EUR_per_MW_per_product",
+            "signals": {"price": "aFRR_capacity_down_price"},
+        },
+    )
+
+    data = market.prepare_market_data(forecasts, timestep_hours=0.25)
+
+    assert data.block_summary["block_duration_h"].eq(0.25).all()
+    assert data.block_summary["capacity_price_raw"].eq(25.0).all()
+    assert data.block_summary["capacity_price_EUR_per_MW_h"].eq(100.0).all()
+
+
 def test_afrr_capacity_market_warns_on_inconsistent_block_prices() -> None:
     forecasts = _forecast_frame({"aFRR_capacity_down_price": [5.0] * 15 + [6.0]})
     market = AFRRCapacityMarket(

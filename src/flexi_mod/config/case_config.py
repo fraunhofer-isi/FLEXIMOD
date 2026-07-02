@@ -173,8 +173,14 @@ class CaseConfig:
         ):
             raise ConfigError("cases.<case_name>.additional_charges must be true or false")
 
-        if self.case["strategy"].get("name") != "hybrid_etes_gas":
-            raise ConfigError("Only strategy.name='hybrid_etes_gas' is implemented in the MVP")
+        supported_strategies = {
+            "hybrid_etes_gas",
+            "hybrid_etes_gas_pay_as_cleared_capacity",
+        }
+        strategy_name = str(self.case["strategy"].get("name", ""))
+        if strategy_name not in supported_strategies:
+            options = ", ".join(sorted(supported_strategies))
+            raise ConfigError(f"strategy.name must be one of: {options}")
 
         dispatch = self.case["strategy"].get("dispatch", {})
         if dispatch.get("dispatch_method") != "pyomo":
@@ -212,8 +218,14 @@ class CaseConfig:
                 signals = market["signals"]
                 if "price" not in signals:
                     raise ConfigError("Enabled afrr_capacity market must define signals.price")
-                if str(market.get("price_unit", "EUR_per_MW_per_h")) != "EUR_per_MW_per_h":
-                    raise ConfigError("afrr_capacity.price_unit must be 'EUR_per_MW_per_h'")
+                supported_capacity_price_units = {
+                    "EUR_per_MW_per_h",
+                    "EUR_per_MW_per_product",
+                }
+                capacity_price_unit = str(market.get("price_unit", "EUR_per_MW_per_h"))
+                if capacity_price_unit not in supported_capacity_price_units:
+                    options = ", ".join(sorted(supported_capacity_price_units))
+                    raise ConfigError(f"afrr_capacity.price_unit must be one of: {options}")
         self._validate_market_order()
 
     def _validate_market_order(self) -> None:

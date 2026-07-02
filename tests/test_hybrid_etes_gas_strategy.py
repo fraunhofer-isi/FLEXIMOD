@@ -821,6 +821,101 @@ def test_afrr_capacity_reserves_headroom_and_caps_activation(
     assert block["reserved_capacity_MW"] == pytest.approx(block["compliant_capacity_MW"])
 
 
+def test_pay_as_cleared_capacity_strategy_uses_marginal_price(
+    tmp_path: Path,
+) -> None:
+    results_by_strategy: dict[str, dict[str, pd.DataFrame]] = {}
+    for strategy_name in [
+        "hybrid_etes_gas",
+        "hybrid_etes_gas_pay_as_cleared_capacity",
+    ]:
+        case_dir = tmp_path / strategy_name
+        case_dir.mkdir()
+        _write_config(
+            case_dir / "config.yaml",
+            strategy_name=strategy_name,
+            idc_enabled=True,
+            afrr_enabled=True,
+            afrr_capacity_enabled=True,
+        )
+        _write_plants(case_dir / "plants.csv", storage_capacity=24.0)
+        _write_forecasts(
+            case_dir / "forecasts_df.csv",
+            da_prices=[120.0] * 8,
+            idc_prices=[75.0] * 8,
+            afrr_prices=[20.0] * 8,
+            afrr_quantities=[2.0] * 8,
+            afrr_capacity_prices=[100.0] * 8,
+            heat_demand=[2.0] * 8,
+        )
+        results_by_strategy[strategy_name] = _run_case(case_dir, tmp_path / strategy_name)
+
+    pay_as_bid = results_by_strategy["hybrid_etes_gas"]["afrr_capacity_blocks"].iloc[0]
+    pay_as_cleared = results_by_strategy["hybrid_etes_gas_pay_as_cleared_capacity"][
+        "afrr_capacity_blocks"
+    ].iloc[0]
+    pay_as_cleared_market = results_by_strategy["hybrid_etes_gas_pay_as_cleared_capacity"]["market"]
+
+    assert pay_as_bid["capacity_pricing_rule"] == "pay_as_bid"
+    assert pay_as_bid["capacity_bid_price_EUR_per_MW_h"] == pytest.approx(100.0)
+    assert pay_as_bid["capacity_settlement_price_EUR_per_MW_h"] == pytest.approx(100.0)
+    assert pay_as_bid["capacity_market_surplus_EUR"] == pytest.approx(0.0)
+
+    assert pay_as_cleared["capacity_pricing_rule"] == "pay_as_cleared"
+    assert pay_as_cleared["capacity_bid_price_EUR_per_MW_h"] == pytest.approx(
+        pay_as_cleared["opportunity_cost_EUR_per_MW_h"]
+    )
+    assert pay_as_cleared["capacity_clearing_price_EUR_per_MW_h"] == pytest.approx(100.0)
+    assert pay_as_cleared["capacity_settlement_price_EUR_per_MW_h"] == pytest.approx(100.0)
+    assert pay_as_cleared["capacity_market_surplus_EUR"] > 0.0
+    assert pay_as_cleared["capacity_net_value_EUR"] == pytest.approx(
+        pay_as_cleared["capacity_revenue_EUR"] - pay_as_cleared["capacity_opportunity_cost_EUR"]
+    )
+    assert pay_as_cleared_market["afrr_capacity_pricing_rule"].eq("pay_as_cleared").all()
+    assert pay_as_cleared_market["afrr_capacity_settlement_price_EUR_per_MW_h"].eq(100.0).all()
+    assert pay_as_cleared_market["afrr_capacity_market_surplus_EUR"].sum() == pytest.approx(
+        pay_as_cleared["capacity_market_surplus_EUR"]
+    )
+
+
+def test_pay_as_cleared_capacity_strategy_supports_spanish_product_prices(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "spanish_capacity_case"
+    case_dir.mkdir()
+    _write_config(
+        case_dir / "config.yaml",
+        strategy_name="hybrid_etes_gas_pay_as_cleared_capacity",
+        idc_enabled=True,
+        afrr_enabled=True,
+        afrr_capacity_enabled=True,
+        afrr_capacity_product_length="15min",
+        afrr_capacity_price_unit="EUR_per_MW_per_product",
+    )
+    _write_plants(case_dir / "plants.csv", storage_capacity=24.0)
+    _write_forecasts(
+        case_dir / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[2.0] * 8,
+        afrr_capacity_prices=[25.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+
+    results = _run_case(case_dir, tmp_path)
+    blocks = results["afrr_capacity_blocks"]
+    market = results["market"]
+
+    assert blocks["capacity_price_input_unit"].eq("EUR_per_MW_per_product").all()
+    assert blocks["capacity_price_raw"].eq(25.0).all()
+    assert blocks["capacity_clearing_price_EUR_per_MW_h"].eq(100.0).all()
+    assert blocks["capacity_settlement_price_EUR_per_MW_h"].eq(100.0).all()
+    assert market["afrr_capacity_revenue_EUR"].to_numpy() == pytest.approx(
+        (market["afrr_capacity_reserved_MW"] * 25.0).to_numpy()
+    )
+
+
 def test_afrr_capacity_allows_profitable_free_energy_bid_above_reserved_capacity(
     tmp_path: Path,
 ) -> None:
@@ -1108,6 +1203,7 @@ def _assert_actual_electricity_with_afrr(market: pd.DataFrame) -> None:
 
 def _write_config(
     path: Path,
+    strategy_name: str = "hybrid_etes_gas",
     idc_enabled: bool = False,
     afrr_enabled: bool = False,
     idc_buy_enabled: bool = True,
@@ -1115,6 +1211,8 @@ def _write_config(
     afrr_capacity_enabled: bool = False,
     afrr_energy_bid_increment_mw: float = 1.0,
     afrr_capacity_bid_increment_mw: float = 1.0,
+    afrr_capacity_product_length: str = "4h",
+    afrr_capacity_price_unit: str = "EUR_per_MW_per_h",
     additional_charges: bool = False,
 ) -> None:
     path.write_text(
@@ -1131,7 +1229,7 @@ case:
   additional_charges: {str(additional_charges).lower()}
 
 strategy:
-  name: hybrid_etes_gas
+  name: {strategy_name}
   dispatch:
     dispatch_method: pyomo
     rolling_horizon_enabled: true
@@ -1191,8 +1289,8 @@ markets:
   afrr_capacity:
     enabled: {str(afrr_capacity_enabled).lower()}
     direction: "down"
-    product_length: "4h"
-    price_unit: "EUR_per_MW_per_h"
+    product_length: "{afrr_capacity_product_length}"
+    price_unit: "{afrr_capacity_price_unit}"
     gate_open:
       day_relation: "D-7"
       time: "10:00"
