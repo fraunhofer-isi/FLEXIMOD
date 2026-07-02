@@ -266,6 +266,12 @@ class HybridETESGasStrategy(BaseStrategy):
             forecasts.index,
             default=0.0,
         )
+        baseline_storage_discharge = self._series_from_fixed_positions(
+            fixed_positions,
+            "etes_discharge_MWh",
+            forecasts.index,
+            default=0.0,
+        )
         storage_capacity_headroom = (plant.etes.max_capacity_mwh - baseline_storage_soc).clip(
             lower=0.0
         ) / plant.etes.efficiency_charge
@@ -322,6 +328,7 @@ class HybridETESGasStrategy(BaseStrategy):
                 system_activation_mwh=system_activation_for_bid,
                 baseline_storage_soc=baseline_storage_soc,
                 baseline_gas_heat=baseline_gas_heat,
+                baseline_storage_discharge=baseline_storage_discharge,
                 min_bid_mw=min_bid_mw,
                 bid_increment_mw=bid_increment_mw,
                 timestep_hours=timestep_hours,
@@ -337,6 +344,7 @@ class HybridETESGasStrategy(BaseStrategy):
                 system_activation_mwh=system_activation_for_bid,
                 baseline_storage_soc=baseline_storage_soc,
                 baseline_gas_heat=baseline_gas_heat,
+                baseline_storage_discharge=baseline_storage_discharge,
                 min_bid_mw=min_bid_mw,
                 bid_increment_mw=bid_increment_mw,
                 timestep_hours=timestep_hours,
@@ -396,6 +404,7 @@ class HybridETESGasStrategy(BaseStrategy):
         system_activation_mwh: pd.Series,
         baseline_storage_soc: pd.Series,
         baseline_gas_heat: pd.Series,
+        baseline_storage_discharge: pd.Series,
         min_bid_mw: float,
         bid_increment_mw: float,
         timestep_hours: float,
@@ -417,20 +426,39 @@ class HybridETESGasStrategy(BaseStrategy):
         binding_values: list[bool] = []
         curtailed_values: list[float] = []
         max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours
+        max_discharge_mwh = plant.etes.max_power_discharge_mw * timestep_hours
+        baseline_soc_values = (
+            baseline_storage_soc.reindex(forecasts.index).fillna(0.0).clip(lower=0.0)
+        )
+        replaceable_gas_heat = pd.concat(
+            [
+                baseline_gas_heat.reindex(forecasts.index).fillna(0.0).clip(lower=0.0),
+                (
+                    max_discharge_mwh
+                    - baseline_storage_discharge.reindex(forecasts.index).fillna(0.0)
+                ).clip(lower=0.0),
+            ],
+            axis=1,
+        ).min(axis=1)
+        future_storage_input_headroom = _future_storage_input_headroom_mwh(
+            plant=plant,
+            baseline_soc=baseline_soc_values,
+            replaceable_gas_heat=replaceable_gas_heat,
+        )
         additional_soc_mwh = 0.0
 
-        for timestamp in forecasts.index:
+        for position, timestamp in enumerate(forecasts.index):
             planned_charge = max(0.0, float(final_planned.loc[timestamp]))
-            baseline_soc = max(0.0, float(baseline_storage_soc.loc[timestamp]))
+            baseline_soc = float(baseline_soc_values.loc[timestamp])
             additional_soc_mwh *= 1.0 - plant.etes.storage_loss_rate
-            replaceable_gas_heat = max(0.0, float(baseline_gas_heat.loc[timestamp]))
+            replaceable_heat = float(replaceable_gas_heat.loc[timestamp])
             storage_capacity_offer = (
                 max(
                     0.0,
                     plant.etes.max_capacity_mwh
                     - baseline_soc
                     - additional_soc_mwh
-                    + replaceable_gas_heat / plant.etes.efficiency_discharge,
+                    + replaceable_heat / plant.etes.efficiency_discharge,
                 )
                 / plant.etes.efficiency_charge
             )
@@ -439,10 +467,16 @@ class HybridETESGasStrategy(BaseStrategy):
                 0.0,
                 min(power_offer, storage_capacity_offer),
             )
+            future_storage_cap = max(
+                0.0,
+                (float(future_storage_input_headroom.iloc[position]) - additional_soc_mwh)
+                / plant.etes.efficiency_charge,
+            )
+            horizon_activation_cap = min(physical_activation_cap, future_storage_cap)
 
             capacity_bid = max(0.0, float(capacity_backed_bid.loc[timestamp]))
             free_bid = max(0.0, float(free_bid_upper_bound.loc[timestamp]))
-            free_room_after_capacity = max(0.0, physical_activation_cap - capacity_bid)
+            free_room_after_capacity = max(0.0, horizon_activation_cap - capacity_bid)
             feasible_free_bid_mwh = min(free_bid, free_room_after_capacity)
             free_bid = (
                 _round_bid_down_to_increment(
@@ -456,7 +490,7 @@ class HybridETESGasStrategy(BaseStrategy):
             total_bid = capacity_bid + free_bid
             system_activation = max(0.0, float(system_activation_mwh.loc[timestamp]))
             proxy_activation = min(total_bid, system_activation)
-            feasible_activation = min(proxy_activation, physical_activation_cap)
+            feasible_activation = min(proxy_activation, horizon_activation_cap)
             capacity_activated = min(capacity_bid, feasible_activation)
             free_activated = min(free_bid, max(0.0, feasible_activation - capacity_activated))
             total_activated = capacity_activated + free_activated
@@ -464,7 +498,7 @@ class HybridETESGasStrategy(BaseStrategy):
 
             additional_soc_mwh += total_activated * plant.etes.efficiency_charge
             additional_discharge_heat = min(
-                replaceable_gas_heat,
+                replaceable_heat,
                 additional_soc_mwh * plant.etes.efficiency_discharge,
             )
             additional_soc_mwh -= additional_discharge_heat / plant.etes.efficiency_discharge
@@ -476,7 +510,7 @@ class HybridETESGasStrategy(BaseStrategy):
             free_activated_values.append(free_activated)
             total_activated_values.append(total_activated)
             binding_values.append(
-                proxy_activation > 1e-12 and physical_activation_cap < proxy_activation - 1e-12
+                proxy_activation > 1e-12 and horizon_activation_cap < proxy_activation - 1e-12
             )
             curtailed_values.append(curtailment)
 
@@ -861,6 +895,41 @@ def _round_bid_down_to_increment(
     if rounded < min_bid_mw:
         return 0.0
     return float(rounded)
+
+
+def _future_storage_input_headroom_mwh(
+    plant: SteamGenerationPlant,
+    baseline_soc: pd.Series,
+    replaceable_gas_heat: pd.Series,
+) -> pd.Series:
+    """Return feasible extra thermal inventory before each timestep's heat outlet.
+
+    A volume can fit at delivery time but still overfill ETES later when fixed
+    day-ahead or intraday electricity raises the baseline storage trajectory.
+    Working backward makes each value reserve enough room for every later fixed
+    charge while crediting only replaceable gas heat as a valid storage outlet.
+    """
+
+    baseline_soc_values = baseline_soc.to_numpy(dtype=float)
+    replaceable_heat_values = replaceable_gas_heat.to_numpy(dtype=float)
+    retention = 1.0 - plant.etes.storage_loss_rate
+    discharge_efficiency = plant.etes.efficiency_discharge
+    max_capacity = plant.etes.max_capacity_mwh
+    allowed_before = [0.0] * len(baseline_soc_values)
+    next_allowed_before = float("inf")
+
+    for position in range(len(baseline_soc_values) - 1, -1, -1):
+        capacity_headroom = max(0.0, max_capacity - baseline_soc_values[position])
+        if retention > 0.0:
+            allowed_after_outlet = min(capacity_headroom, next_allowed_before / retention)
+        else:
+            allowed_after_outlet = capacity_headroom
+        allowed_before[position] = (
+            allowed_after_outlet + replaceable_heat_values[position] / discharge_efficiency
+        )
+        next_allowed_before = allowed_before[position]
+
+    return pd.Series(allowed_before, index=baseline_soc.index)
 
 
 def _capacity_column(

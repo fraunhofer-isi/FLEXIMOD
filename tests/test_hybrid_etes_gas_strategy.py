@@ -683,6 +683,36 @@ def test_afrr_energy_can_be_stored_before_replacing_gas(
     assert dispatch["gas_heat_MWh"].iloc[4:].sum() < dispatch["heat_demand_MWh"].iloc[4:].sum()
 
 
+def test_afrr_bid_preserves_headroom_for_later_scheduled_charging(
+    afrr_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        afrr_case / "forecasts_df.csv",
+        da_prices=[120.0, 120.0, 10.0, 10.0, 120.0, 120.0, 120.0, 120.0],
+        idc_prices=[120.0] * 8,
+        afrr_prices=[20.0, 20.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0],
+        afrr_quantities=[7.0, 7.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        heat_demand=[0.0, 0.0, 0.0, 0.0, 4.0, 4.0, 4.0, 4.0],
+    )
+
+    results = _run_case(afrr_case, tmp_path)
+    market = results["market"].sort_values("datetime")
+    dispatch = results["dispatch"].sort_values("datetime")
+
+    assert market["afrr_energy_activated_MWh_el"].iloc[:2].sum() > 0.0
+    expected_activation = market[["afrr_energy_bid_MWh_el", "afrr_system_activation_MWh_el"]].min(
+        axis=1
+    )
+    assert market["afrr_energy_activated_MWh_el"].to_numpy() == pytest.approx(
+        expected_activation.to_numpy()
+    )
+    assert market["afrr_curtailment_MWh"].sum() == pytest.approx(0.0)
+    assert dispatch["etes_soc_MWh"].max() <= 4.0 + 1e-8
+    _assert_actual_electricity_with_afrr(market)
+    _assert_heat_is_feasible(dispatch)
+
+
 def test_afrr_bid_uses_storage_capacity_headroom(
     afrr_case: Path,
     tmp_path: Path,
