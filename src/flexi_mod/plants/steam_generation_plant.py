@@ -965,7 +965,6 @@ class SteamGenerationPlant(BasePlant):
         afrr_activation = (
             signals.afrr_energy_activated_mwh.astype(float).reindex(forecasts.index).fillna(0.0)
         )
-        actual_electricity = final_planned + afrr_activation
         reserved_capacity_mwh = _series_or_zero(signals.reserved_capacity_mwh, forecasts.index)
 
         m.heat_demand = pyo.Param(m.T, initialize={t: heat_demand_mwh[t] for t in steps})
@@ -995,9 +994,6 @@ class SteamGenerationPlant(BasePlant):
         )
         m.afrr_energy_activated_mwh = pyo.Param(
             m.T, initialize={t: float(afrr_activation.iloc[t]) for t in steps}
-        )
-        m.actual_electricity_consumption_mwh = pyo.Param(
-            m.T, initialize={t: float(actual_electricity.iloc[t]) for t in steps}
         )
         m.reserved_capacity_mwh = pyo.Param(
             m.T, initialize={t: float(reserved_capacity_mwh.iloc[t]) for t in steps}
