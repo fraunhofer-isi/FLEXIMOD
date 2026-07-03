@@ -1344,7 +1344,7 @@ class SteamGenerationPlant(BasePlant):
             final_planned = _value(model.final_planned_electricity_mwh[t])
             afrr_bid = _value(model.afrr_energy_bid_mwh[t])
             afrr_activation = _value(model.afrr_energy_activated_mwh[t])
-            actual_electricity = _value(model.actual_electricity_consumption_mwh[t])
+            actual_electricity = final_planned + afrr_activation
             afrr_price_clean = _value(model.afrr_energy_price[t])
             additional_charge = _value(model.additional_electricity_charge[t])
             benchmark = float(signals.electricity_trading_benchmark_eur_per_mwh_el.iloc[t])
@@ -1388,7 +1388,7 @@ class SteamGenerationPlant(BasePlant):
                 "etes_soc_MWh": _value(storage.soc[t]),
                 "gas_heat_MWh": _value(boiler.heat_out[t]),
                 "gas_input_MWh": _value(boiler.fuel_input[t]),
-                "electricity_consumption_MWh": _value(model.electricity_consumption[t]),
+                "electricity_consumption_MWh": actual_electricity,
                 "DA_position_MWh": _value(model.da_position_mwh[t]),
                 "IDC_buy_MWh": _value(model.idc_buy_mwh[t]),
                 "IDC_sell_MWh": _value(model.idc_sell_mwh[t]),
