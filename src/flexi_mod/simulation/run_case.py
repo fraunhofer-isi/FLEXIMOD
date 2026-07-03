@@ -45,6 +45,10 @@ available_examples: dict[str, dict[str, str]] = {
         "scenario": "hybrid_ETES_DA_ID_aFRR_energy_capacity",
         "study_case": "hybrid_ETES_DA_ID_aFRR_energy_capacity",
     },
+    "hybrid_ETES_DA_ID_aFRR_energy_capacity_spain": {
+        "scenario": "hybrid_ETES_DA_ID_aFRR_energy_capacity_spain",
+        "study_case": "hybrid_ETES_DA_ID_aFRR_energy_capacity_spain",
+    },
     "hybrid_ETES_ES": {
         "scenario": "hybrid_ETES_ES",
         "study_case": "hybrid_ETES_ES",
