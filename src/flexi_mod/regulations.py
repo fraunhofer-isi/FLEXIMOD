@@ -481,9 +481,10 @@ class SpanishGridFeeRegulation(GridFeeRegulation):
 
         total = energy_charge + capacity_charge + levies_energy + iee_tax
 
-        # ex_post_addition: costs not captured in the per-timestep marginal dispatch
-        # = capacity charge + IEE tax (both are non-marginal / ex-post)
-        ex_post_addition = capacity_charge + iee_tax
+        # ex_post_addition: costs not captured in the per-timestep marginal dispatch.
+        # IEE (iee_tax) is already in the Pyomo objective via tax_cost and therefore
+        # already in operating_cost_EUR — only the capacity charge is ex-post.
+        ex_post_addition = capacity_charge
 
         return GridFeeResult(
             grid_energy_MWh=grid_energy,

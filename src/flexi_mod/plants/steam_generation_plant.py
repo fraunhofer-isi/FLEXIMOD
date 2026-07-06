@@ -1113,6 +1113,7 @@ class SteamGenerationPlant(BasePlant):
             electricity_cost = _value(model.electricity_cost[t])
             electricity_market_cost = _value(model.electricity_market_cost[t])
             additional_charges_cost = _value(model.additional_electricity_charges_cost[t])
+            tax_cost_val = _value(model.tax_cost[t])
             gas_cost = _value(model.gas_cost[t])
             co2_cost = _value(model.co2_cost[t])
             additional_charge = _value(model.additional_electricity_charge[t])
@@ -1171,9 +1172,10 @@ class SteamGenerationPlant(BasePlant):
                 "electricity_market_cost_EUR": electricity_market_cost,
                 "additional_electricity_charges_cost_EUR": additional_charges_cost,
                 "electricity_cost_EUR": electricity_cost,
+                "tax_cost_EUR": tax_cost_val,
                 "gas_cost_EUR": gas_cost,
                 "co2_cost_EUR": co2_cost,
-                "operating_cost_EUR": electricity_cost + gas_cost,
+                "operating_cost_EUR": electricity_cost + gas_cost + tax_cost_val,
                 "charge_allowed_by_strategy": bool(signals.charge_allowed.iloc[t]),
                 "solver": solver_name,
             }
@@ -1218,6 +1220,7 @@ class SteamGenerationPlant(BasePlant):
             electricity_cost = _value(model.electricity_cost[t])
             electricity_market_cost = _value(model.electricity_market_cost[t])
             additional_charges_cost = _value(model.additional_electricity_charges_cost[t])
+            tax_cost_val = _value(model.tax_cost[t])
             gas_cost = _value(model.gas_cost[t])
             co2_cost = _value(model.co2_cost[t])
             da_position = _value(model.da_position_mwh[t])
@@ -1286,9 +1289,10 @@ class SteamGenerationPlant(BasePlant):
                 "electricity_market_cost_EUR": electricity_market_cost,
                 "additional_electricity_charges_cost_EUR": additional_charges_cost,
                 "electricity_cost_EUR": electricity_cost,
+                "tax_cost_EUR": tax_cost_val,
                 "gas_cost_EUR": gas_cost,
                 "co2_cost_EUR": co2_cost,
-                "operating_cost_EUR": electricity_cost + gas_cost,
+                "operating_cost_EUR": electricity_cost + gas_cost + tax_cost_val,
                 "charge_allowed_by_strategy": bool(signals.idc_buy_upper_bound_mwh.iloc[t] > 1e-12),
                 "idc_buy_allowed_by_strategy": bool(
                     signals.idc_buy_upper_bound_mwh.iloc[t] > 1e-12
@@ -1339,6 +1343,7 @@ class SteamGenerationPlant(BasePlant):
             electricity_cost = _value(model.electricity_cost[t])
             electricity_market_cost = _value(model.electricity_market_cost[t])
             additional_charges_cost = _value(model.additional_electricity_charges_cost[t])
+            tax_cost_val = _value(model.tax_cost[t])
             gas_cost = _value(model.gas_cost[t])
             co2_cost = _value(model.co2_cost[t])
             final_planned = _value(model.final_planned_electricity_mwh[t])
@@ -1438,9 +1443,10 @@ class SteamGenerationPlant(BasePlant):
                 "electricity_market_cost_EUR": electricity_market_cost,
                 "additional_electricity_charges_cost_EUR": additional_charges_cost,
                 "electricity_cost_EUR": electricity_cost,
+                "tax_cost_EUR": tax_cost_val,
                 "gas_cost_EUR": gas_cost,
                 "co2_cost_EUR": co2_cost,
-                "operating_cost_EUR": electricity_cost + gas_cost,
+                "operating_cost_EUR": electricity_cost + gas_cost + tax_cost_val,
                 "charge_allowed_by_strategy": False,
                 "idc_buy_allowed_by_strategy": False,
                 "idc_sell_allowed_by_strategy": False,
