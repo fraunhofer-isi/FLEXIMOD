@@ -475,6 +475,12 @@ class SpanishGridFeeRegulation(GridFeeRegulation):
                 pd.to_numeric(dispatch_results[market_cost_col], errors="coerce").fillna(0.0).sum()
             )
         else:
+            warnings.warn(
+                f"Column '{market_cost_col}' not found in dispatch_results; "
+                "IEE taxable base excludes market cost — Spanish grid-fee bill will be "
+                "understated. Ensure dispatch_results includes electricity_market_cost_EUR.",
+                stacklevel=2,
+            )
             market_cost = 0.0
         taxable_base = market_cost + energy_charge + levies_energy
         iee_tax = taxable_base * self.ELECTRICITY_TAX_RATE
@@ -543,17 +549,22 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
         self._parse_charges(plant_charges)
 
     def _parse_charges(self, plant_charges: pd.DataFrame) -> None:
-        """Extract capacity obligation rate from additional_charges.csv."""
+        """Extract capacity obligation rate and static EUR/MWh levies from additional_charges.csv."""
         capacity_eur_per_mw_a = 0.0
+        levies = 0.0
 
         for _, row in plant_charges.iterrows():
             component = str(row["component"]).strip().lower()
+            unit = str(row["unit"]).strip()
             value = float(row["value"])
 
             if "capacity obligation" in component:
                 capacity_eur_per_mw_a = value
+            elif unit == "EUR/MWh":
+                levies += value
 
         self._capacity_eur_per_mw_a = capacity_eur_per_mw_a
+        self._levies_eur_per_mwh = levies
 
     # ─── Properties for strategy access ───────────────────────────
 
@@ -570,11 +581,11 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
     def marginal_charge_eur_per_mwh(self) -> float:
         """Per-MWh adder for the Pyomo objective.
 
-        For France, the dynamic charges (TURPE + accise) are passed as a
-        time-series via DispatchSignals. No scalar adder needed here.
+        Dynamic charges (TURPE + accise) are passed as a time-series via
+        DispatchSignals. Static EUR/MWh levies (if any) enter here as a scalar.
         The capacity obligation is non-marginal and settled ex-post only.
         """
-        return 0.0
+        return self._levies_eur_per_mwh
 
     def charging_block_mask(self, forecasts: pd.DataFrame) -> pd.Series:
         """France has no high-load-window avoidance mechanism."""
@@ -614,7 +625,10 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
         proration_factor = simulation_hours / hours_per_year if hours_per_year > 0 else 1.0
         capacity_charge = self._capacity_eur_per_mw_a * annual_peak * proration_factor
 
-        total = energy_charge + capacity_charge
+        # Static levies (already in dispatch as additional_electricity_charges_cost_EUR)
+        levies_energy = self._levies_eur_per_mwh * grid_energy
+
+        total = energy_charge + capacity_charge + levies_energy
         ex_post_addition = capacity_charge
 
         return GridFeeResult(
@@ -629,7 +643,7 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
             energy_charge_EUR=energy_charge,
             capacity_charge_EUR=capacity_charge,
             special_network_use_EUR=0.0,
-            levies_EUR=0.0,
+            levies_EUR=levies_energy,
             grid_fee_total_EUR=total,
             ex_post_addition_EUR=ex_post_addition,
         )
