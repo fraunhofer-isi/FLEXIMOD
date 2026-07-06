@@ -279,6 +279,47 @@ all process, power, fuel, and inventory constraints. For sub-hourly data, values
 must already be expressed as tonnes per sub-hourly row; no duration conversion
 is applied.
 
+### Steel rolling horizon
+
+The temporary `steel_cost_minimization` strategy runs the physical steel model
+as a price taker. Its electricity price is the configured day-ahead
+`signals.price`; gas, hydrogen, iron feedstock, lime, and CO2 use their standard
+forecast column names. No duplicate steel signal mapping is required under
+`strategy.dispatch`.
+
+```yaml
+strategy:
+  name: steel_cost_minimization
+  dispatch:
+    dispatch_method: pyomo
+    rolling_horizon_enabled: true
+    dispatch_horizon_hours: 48
+    rolling_step_hours: 24
+```
+
+Each solve optimizes the complete look-ahead but commits only the rolling step.
+Hydrogen and DRI inventories, component power, ramping state, and minimum
+up/down-time state are taken from the committed boundary. Planned operation in
+the discarded look-ahead tail is never carried forward.
+
+The demand balance is cumulative:
+
+```text
+demand balance = cumulative nominal demand - cumulative committed steel output
+```
+
+A positive value is backlog and a negative value is production credit. Backlog
+inherited from one window must be recovered in the next committed window. The
+last window enforces exact equality between total steel production and total
+simulation demand. When only a scalar `steel_demand` is supplied, its nominal
+schedule is distributed uniformly across the simulation before this balance is
+calculated.
+
+Until steel market bidding is implemented, a steel case writes physical
+`dispatch_results.csv` and a steel-specific `summary_indicators.csv`. Market and
+storage-cost ledgers, grid-fee settlement, and market plots are intentionally
+omitted.
+
 If the selected `cases.<case_name>` entry sets `additional_charges: true`,
 `additional_charges.csv` is interpreted by the network-tariff regulation selected
 from `case.country` (`src/flexi_mod/regulations.py`). The regulation is the single

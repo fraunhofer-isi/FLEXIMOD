@@ -4,8 +4,14 @@
 
 import pandas as pd
 import pyomo.environ as pyo
+import pytest
 
-from flexi_mod.plants.technologies import GasBoiler, ThermalStorage
+from flexi_mod.plants.technologies import (
+    Electrolyser,
+    GasBoiler,
+    HydrogenBufferStorage,
+    ThermalStorage,
+)
 
 
 def test_thermal_storage_adds_expected_pyomo_block() -> None:
@@ -85,3 +91,70 @@ def test_technologies_can_be_built_from_csv_rows() -> None:
 
     assert storage.max_capacity_mwh == 12
     assert boiler.fuel_type == "natural_gas"
+
+
+def test_power_component_uses_carried_ramp_and_minimum_uptime_state() -> None:
+    model = pyo.ConcreteModel()
+    model.T = pyo.Set(initialize=[0, 1, 2, 3], ordered=True)
+    model.electricity_price = pyo.Param(model.T, initialize={t: 1.0 for t in model.T})
+    model.electrolyser = pyo.Block()
+    electrolyser = Electrolyser(
+        max_power_mw=10.0,
+        min_power_mw=1.0,
+        efficiency=0.8,
+        ramp_up_mw_per_step=0.5,
+        ramp_down_mw_per_step=0.5,
+        min_operating_steps=4,
+        min_down_steps=1,
+        initial_operational_status=1,
+    )
+    electrolyser.add_to_model(
+        model,
+        model.electrolyser,
+        model.T,
+        {
+            "dt_hours": 0.25,
+            "initial_power_in": 1.0,
+            "initial_operational_status": 1,
+            "initial_consecutive_status_steps": 2,
+        },
+    )
+    model.objective = pyo.Objective(expr=sum(model.electrolyser.power_in[t] for t in model.T))
+
+    pyo.SolverFactory("highs").solve(model)
+
+    assert pyo.value(model.electrolyser.power_in[0]) == pytest.approx(0.875)
+    assert pyo.value(model.electrolyser.operational_status[0]) == pytest.approx(1.0)
+    assert pyo.value(model.electrolyser.operational_status[1]) == pytest.approx(1.0)
+
+
+def test_inventory_storage_uses_carried_flow_for_boundary_ramp() -> None:
+    model = pyo.ConcreteModel()
+    model.T = pyo.Set(initialize=[0, 1], ordered=True)
+    model.storage = pyo.Block()
+    storage = HydrogenBufferStorage(
+        capacity=10.0,
+        initial_soc=0.5,
+        max_power_charge=4.0,
+        max_power_discharge=4.0,
+        ramp_up=1.0,
+        ramp_down=1.0,
+    )
+    storage.add_to_model(
+        model,
+        model.storage,
+        model.T,
+        {
+            "dt_hours": 0.25,
+            "initial_soc": 0.5,
+            "initial_charge": 1.0,
+            "initial_discharge": 0.0,
+        },
+    )
+    model.objective = pyo.Objective(
+        expr=sum(model.storage.charge[t] + model.storage.discharge[t] for t in model.T)
+    )
+
+    pyo.SolverFactory("highs").solve(model)
+
+    assert pyo.value(model.storage.charge[0]) == pytest.approx(0.75)

@@ -176,6 +176,7 @@ class CaseConfig:
         supported_strategies = {
             "hybrid_etes_gas",
             "hybrid_etes_gas_pay_as_cleared_capacity",
+            "steel_cost_minimization",
         }
         strategy_name = str(self.case["strategy"].get("name", ""))
         if strategy_name not in supported_strategies:
@@ -185,6 +186,39 @@ class CaseConfig:
         dispatch = self.case["strategy"].get("dispatch", {})
         if dispatch.get("dispatch_method") != "pyomo":
             raise ConfigError("Only strategy.dispatch.dispatch_method='pyomo' is implemented")
+
+        if strategy_name == "steel_cost_minimization":
+            if not bool(self.case["markets"].get("day_ahead", {}).get("enabled", False)):
+                raise ConfigError("steel_cost_minimization requires an enabled day_ahead market")
+            unsupported_enabled_markets = [
+                name
+                for name in self.market_sequence
+                if name != "day_ahead"
+                and bool(self.case["markets"].get(name, {}).get("enabled", False))
+            ]
+            if unsupported_enabled_markets:
+                raise ConfigError(
+                    "steel_cost_minimization supports only day_ahead price-taking dispatch; "
+                    "disable other markets until a steel bidding strategy is configured"
+                )
+            horizon_hours = float(dispatch.get("dispatch_horizon_hours", 48))
+            step_hours = float(dispatch.get("rolling_step_hours", 24))
+            if horizon_hours <= 0 or step_hours <= 0:
+                raise ConfigError("Steel rolling horizon and step hours must be positive")
+            if step_hours > horizon_hours:
+                raise ConfigError(
+                    "strategy.dispatch.rolling_step_hours must not exceed dispatch_horizon_hours"
+                )
+            timestep_hours = self.timestep_minutes / 60.0
+            for field, hours in {
+                "dispatch_horizon_hours": horizon_hours,
+                "rolling_step_hours": step_hours,
+            }.items():
+                steps = hours / timestep_hours
+                if abs(steps - round(steps)) > 1e-9:
+                    raise ConfigError(
+                        f"strategy.dispatch.{field} must align with case.timestep_minutes"
+                    )
 
         markets = self.case["markets"]
         for market_name in self.market_sequence:

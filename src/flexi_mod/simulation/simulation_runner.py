@@ -17,10 +17,15 @@ from flexi_mod.ledgers.market_ledger import MarketLedger
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.markets import BaseMarket, build_markets
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
+from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.steam_generation_plant import DispatchSignals, SteamGenerationPlant
+from flexi_mod.plants.steel_plant import SteelPlant
 from flexi_mod.regulations import GridFeeResult, build_grid_fee_regulation
 from flexi_mod.strategies import build_strategy
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
+from flexi_mod.strategies.steel_cost_minimization_strategy import (
+    SteelCostMinimizationStrategy,
+)
 from flexi_mod.visualisation.analytics import calculate_summary_indicators
 from flexi_mod.visualisation.plots import create_case_plots
 
@@ -84,7 +89,21 @@ class SimulationRunner:
     def run(self) -> dict[str, Path | list[Path]]:
         self._progress("Loading input data")
         plants_df = self.loader.load_plants()
-        plants = SteamGenerationPlant.from_plants_dataframe(plants_df)
+        built_plants = build_plants(plants_df)
+        plant_families = {plant.unit_type for plant in built_plants}
+        if len(plant_families) != 1:
+            raise ValueError(
+                "A simulation case must currently contain only one plant family; found: "
+                + ", ".join(sorted(plant_families))
+            )
+        if all(isinstance(plant, SteelPlant) for plant in built_plants):
+            return self._run_steel_case(
+                plants_df,
+                [plant for plant in built_plants if isinstance(plant, SteelPlant)],
+            )
+        if not all(isinstance(plant, SteamGenerationPlant) for plant in built_plants):
+            raise ValueError("SimulationRunner encountered an unsupported plant family")
+        plants = [plant for plant in built_plants if isinstance(plant, SteamGenerationPlant)]
         additional_charges = self.loader.load_additional_charges(plants_df)
         for plant in plants:
             regulation = build_grid_fee_regulation(
@@ -184,6 +203,56 @@ class SimulationRunner:
 
         self._progress("Outputs saved")
 
+        return output_paths
+
+    def _run_steel_case(
+        self,
+        plants_df: pd.DataFrame,
+        plants: list[SteelPlant],
+    ) -> dict[str, Path | list[Path]]:
+        strategy = build_strategy(self.config.strategy_name, self.config)
+        if not isinstance(strategy, SteelCostMinimizationStrategy):
+            raise ValueError(
+                "Steel plants currently require strategy.name='steel_cost_minimization'"
+            )
+        required_columns = self.loader.required_forecast_columns(
+            plants_df,
+            extra_required_columns=strategy.required_forecast_columns(),
+        )
+        forecasts = self.loader.load_forecasts(required_columns=required_columns)
+        self._progress("Steel input data loaded")
+
+        dispatch_parts: list[pd.DataFrame] = []
+        for plant in plants:
+            self._progress(f"Rolling steel dispatch started for {plant.name}")
+            dispatch_parts.append(strategy.dispatch(plant, forecasts))
+            self._progress(f"Rolling steel dispatch completed for {plant.name}")
+        dispatch_results = pd.concat(dispatch_parts).sort_index()
+
+        output_dir = self.output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_paths: dict[str, Path | list[Path]] = {}
+        if self.output_options.save_dispatch_results:
+            path = output_dir / "dispatch_results.csv"
+            dispatch_results.reset_index().to_csv(path, index=False)
+            output_paths["dispatch_results"] = path
+
+        summary = _steel_summary_frame(dispatch_results)
+        if self.output_options.save_summary_indicators:
+            path = output_dir / "summary_indicators.csv"
+            summary.to_csv(path, index=False)
+            output_paths["summary_indicators"] = path
+
+        if (
+            self.output_options.save_market_ledger
+            or self.output_options.save_storage_cost_ledger
+            or self.output_options.create_plots
+        ):
+            self._progress(
+                "Steel cost-minimization mode omits market ledger, storage-cost ledger, "
+                "grid-fee settlement, and market plots until steel market bidding is added."
+            )
+        self._progress("Steel outputs saved")
         return output_paths
 
     def _settle_grid_fees(
@@ -420,6 +489,54 @@ def _grid_fee_summary_frame(grid_fee_results: dict[str, GridFeeResult]) -> pd.Da
         row["warnings"] = " | ".join(result.warnings)
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def _steel_summary_frame(dispatch_results: pd.DataFrame) -> pd.DataFrame:
+    records: list[dict[str, object]] = []
+    for plant_name, group in dispatch_results.groupby("plant_name", sort=False):
+        target = float(group["steel_demand_total_t"].iloc[-1])
+        produced = float(group["steel_output_t"].sum())
+
+        def total(column: str, frame: pd.DataFrame = group) -> float:
+            return float(frame[column].sum()) if column in frame else 0.0
+
+        records.append(
+            {
+                "plant_name": plant_name,
+                "plant_type": str(group["plant_type"].iloc[-1]),
+                "steel_demand_total_t": target,
+                "total_steel_production_t": produced,
+                "total_electricity_consumption_MWh": total("total_electricity_consumption_MWh"),
+                "total_hydrogen_consumption_MWh": total("hydrogen_consumption_MWh"),
+                "total_natural_gas_consumption_MWh": total("natural_gas_consumption_MWh"),
+                "total_iron_ore_consumption_t": total("iron_ore_consumption_t"),
+                "total_lime_consumption_t": total("lime_consumption_t"),
+                "total_co2_emissions_t": total("dri_co2_emissions_t")
+                + total("eaf_co2_emissions_t"),
+                "total_variable_cost_EUR": total("variable_cost_EUR"),
+                "final_hydrogen_storage_soc": (
+                    float(group["hydrogen_storage_soc"].iloc[-1])
+                    if "hydrogen_storage_soc" in group
+                    else float("nan")
+                ),
+                "final_dri_storage_soc": (
+                    float(group["dri_storage_soc"].iloc[-1])
+                    if "dri_storage_soc" in group
+                    else float("nan")
+                ),
+                "maximum_steel_backlog_t": (
+                    float(group["steel_demand_balance_t"].clip(lower=0.0).max())
+                    if "steel_demand_balance_t" in group
+                    else 0.0
+                ),
+                "final_steel_demand_balance_t": (
+                    float(group["steel_demand_balance_t"].iloc[-1])
+                    if "steel_demand_balance_t" in group
+                    else target - produced
+                ),
+            }
+        )
+    return pd.DataFrame(records)
 
 
 def _attach_grid_fee_summary(

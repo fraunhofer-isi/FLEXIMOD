@@ -214,6 +214,87 @@ def test_forecast_discovery_requires_profile_only_without_total_target() -> None
     assert "steel_1_steel_demand" in default_required
 
 
+def test_rolling_scalar_target_is_committed_once_and_completed_exactly() -> None:
+    config = _rolling_config(horizon_hours=1.0, step_hours=0.5)
+    plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=True))
+    forecasts = _extended_steel_forecasts()
+
+    result = plant.solve_rolling(config, forecasts, _signals())
+
+    assert result.index.equals(forecasts.index)
+    assert result.index.is_unique
+    assert result["steel_output_t"].sum() == pytest.approx(4.0)
+    assert result["cumulative_steel_output_t"].iloc[-1] == pytest.approx(4.0)
+    assert result["remaining_steel_demand_t"].iloc[-1] == pytest.approx(0.0)
+    assert result["steel_demand_balance_t"].iloc[-1] == pytest.approx(0.0)
+    assert result["rolling_window"].nunique() == 4
+    assert set(result["steel_demand_total_t"]) == {4.0}
+
+
+def test_rolling_profile_carries_backlog_and_credit_between_windows() -> None:
+    config = _rolling_config(horizon_hours=1.0, step_hours=0.5)
+    rows = _steel_rows(include_optional=False)
+    rows["steel_demand"] = pd.NA
+    rows["demand"] = "steel_profile"
+    plant = SteelPlant.from_rows("steel_1", rows)
+    forecasts = _extended_steel_forecasts()
+    forecasts["steel_profile"] = [0.5] * len(forecasts)
+
+    result = plant.solve_rolling(config, forecasts, _signals())
+
+    assert result["steel_output_t"].sum() == pytest.approx(4.0)
+    assert result["steel_demand_balance_t"].iloc[-1] == pytest.approx(0.0)
+    assert (
+        result["steel_demand_balance_t"].abs().max() > 1e-8
+        or result["steel_output_t"].nunique() > 1
+    )
+
+
+def test_rolling_inventory_state_is_continuous_across_commit_boundary() -> None:
+    config = _rolling_config(horizon_hours=1.0, step_hours=0.5)
+    plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=True))
+    result = plant.solve_rolling(config, _extended_steel_forecasts(), _signals())
+    boundary = result.index[result["rolling_window"].diff().fillna(0).ne(0)][0]
+    position = result.index.get_loc(boundary)
+    previous = result.iloc[position - 1]
+    current = result.iloc[position]
+    storage = plant.components["hydrogen_buffer_storage"]
+    expected_soc = (
+        previous["hydrogen_storage_soc"]
+        + (
+            storage.efficiency_charge * current["hydrogen_storage_charge_MWh"]
+            - current["hydrogen_storage_discharge_MWh"] / storage.efficiency_discharge
+            - storage.storage_loss_rate * previous["hydrogen_storage_soc"] * storage.capacity
+        )
+        / storage.capacity
+    )
+
+    assert current["hydrogen_storage_soc"] == pytest.approx(expected_soc)
+
+
+def test_rolling_minimum_uptime_is_carried_across_commit_boundary() -> None:
+    config = _rolling_config(horizon_hours=1.0, step_hours=0.5)
+    rows = _steel_rows(include_optional=False)
+    rows["min_power"] = 0.1
+    rows["min_operating_steps"] = 4
+    rows["min_down_steps"] = 1
+    rows["initial_operational_status"] = 0
+    plant = SteelPlant.from_rows("steel_1", rows)
+
+    result = plant.solve_rolling(config, _extended_steel_forecasts(), _signals())
+
+    assert result["eaf_operational_status"].iloc[:4].tolist() == [1, 1, 1, 1]
+    assert result["dri_operational_status"].iloc[:4].tolist() == [1, 1, 1, 1]
+
+
+def test_rolling_window_configuration_is_validated() -> None:
+    plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=False))
+    config = _rolling_config(horizon_hours=0.5, step_hours=1.0)
+
+    with pytest.raises(ValueError, match="must not exceed"):
+        plant.solve_rolling(config, _extended_steel_forecasts(), _signals())
+
+
 def test_dri_storage_can_shift_dri_production_to_later_eaf_operation() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
     rows = _steel_rows(include_optional=True)
@@ -328,6 +409,31 @@ def _steel_forecasts() -> pd.DataFrame:
         },
         index=pd.date_range("2025-01-01", periods=4, freq="15min"),
     )
+
+
+def _extended_steel_forecasts() -> pd.DataFrame:
+    periods = 8
+    return pd.DataFrame(
+        {
+            "electricity_price": [20.0, 25.0, 100.0, 110.0, 30.0, 35.0, 90.0, 95.0],
+            "natural_gas_price": [50.0] * periods,
+            "hydrogen_price": [70.0] * periods,
+            "iron_ore_price": [100.0] * periods,
+            "lime_price": [20.0] * periods,
+            "co2_price": [80.0] * periods,
+            "steel_price": [600.0] * periods,
+        },
+        index=pd.date_range("2025-01-01", periods=periods, freq="15min"),
+    )
+
+
+def _rolling_config(horizon_hours: float, step_hours: float) -> CaseConfig:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    dispatch = config.case["strategy"]["dispatch"]
+    dispatch["rolling_horizon_enabled"] = True
+    dispatch["dispatch_horizon_hours"] = horizon_hours
+    dispatch["rolling_step_hours"] = step_hours
+    return config
 
 
 def _signals() -> SteelDispatchSignals:

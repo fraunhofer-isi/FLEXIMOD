@@ -6,10 +6,14 @@ from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.strategies.pay_as_cleared_capacity_strategy import (
     PayAsClearedCapacityHybridETESGasStrategy,
 )
+from flexi_mod.strategies.steel_cost_minimization_strategy import (
+    SteelCostMinimizationStrategy,
+)
 
 STRATEGY_REGISTRY = {
     "hybrid_etes_gas": HybridETESGasStrategy,
     "hybrid_etes_gas_pay_as_cleared_capacity": PayAsClearedCapacityHybridETESGasStrategy,
+    "steel_cost_minimization": SteelCostMinimizationStrategy,
 }
 
 
@@ -27,6 +31,7 @@ def build_strategy(name: str, config):
 __all__ = [
     "HybridETESGasStrategy",
     "PayAsClearedCapacityHybridETESGasStrategy",
+    "SteelCostMinimizationStrategy",
     "STRATEGY_REGISTRY",
     "build_strategy",
 ]

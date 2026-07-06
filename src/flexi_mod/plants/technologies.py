@@ -246,7 +246,7 @@ class Electrolyser:
         context: dict[str, Any],
     ) -> pyo.Block:
         dt_hours = float(context["dt_hours"])
-        _add_power_parameters(self, block, dt_hours)
+        _add_power_parameters(self, block, dt_hours, context)
         block.efficiency = pyo.Param(initialize=self.efficiency)
         block.power_in = pyo.Var(
             time_steps, within=pyo.NonNegativeReals, bounds=(0.0, self.max_power_mw * dt_hours)
@@ -332,7 +332,7 @@ class DRIPlant:
         context: dict[str, Any],
     ) -> pyo.Block:
         dt_hours = float(context["dt_hours"])
-        _add_power_parameters(self, block, dt_hours)
+        _add_power_parameters(self, block, dt_hours, context)
         block.specific_hydrogen_consumption = pyo.Param(
             initialize=self.specific_hydrogen_consumption_mwh_per_t
         )
@@ -456,7 +456,7 @@ class ElectricArcFurnace:
         context: dict[str, Any],
     ) -> pyo.Block:
         dt_hours = float(context["dt_hours"])
-        _add_power_parameters(self, block, dt_hours)
+        _add_power_parameters(self, block, dt_hours, context)
         block.specific_electricity_consumption = pyo.Param(
             initialize=self.specific_electricity_consumption_mwh_per_t
         )
@@ -566,7 +566,12 @@ class GenericInventoryStorage(GenericStorage):
         block.max_power_discharge = pyo.Param(initialize=max_discharge_rate * dt_hours)
         block.efficiency_charge = pyo.Param(initialize=self.efficiency_charge)
         block.efficiency_discharge = pyo.Param(initialize=self.efficiency_discharge)
-        block.initial_soc = pyo.Param(initialize=self.initial_soc)
+        initial_soc = float(context.get("initial_soc", self.initial_soc))
+        initial_charge = float(context.get("initial_charge", 0.0))
+        initial_discharge = float(context.get("initial_discharge", 0.0))
+        block.initial_soc = pyo.Param(initialize=initial_soc)
+        block.initial_charge = pyo.Param(initialize=initial_charge)
+        block.initial_discharge = pyo.Param(initialize=initial_discharge)
         block.storage_loss_rate = pyo.Param(initialize=self.storage_loss_rate)
         block.ramp_up = pyo.Param(initialize=ramp_up * dt_hours)
         block.ramp_down = pyo.Param(initialize=ramp_down * dt_hours)
@@ -611,20 +616,22 @@ class GenericInventoryStorage(GenericStorage):
         @block.Constraint(time_steps)
         def charge_ramp_up_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
             position = ordered_steps.index(t)
-            previous = 0.0 if position == 0 else b.charge[ordered_steps[position - 1]]
+            previous = b.initial_charge if position == 0 else b.charge[ordered_steps[position - 1]]
             return b.charge[t] - previous <= b.ramp_up
 
         @block.Constraint(time_steps)
         def discharge_ramp_up_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
             position = ordered_steps.index(t)
-            previous = 0.0 if position == 0 else b.discharge[ordered_steps[position - 1]]
+            previous = (
+                b.initial_discharge if position == 0 else b.discharge[ordered_steps[position - 1]]
+            )
             return b.discharge[t] - previous <= b.ramp_up
 
         @block.Constraint(time_steps)
         def charge_ramp_down_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
             position = ordered_steps.index(t)
             if position == 0:
-                return b.charge[t] <= b.ramp_down
+                return b.initial_charge - b.charge[t] <= b.ramp_down
             previous = b.charge[ordered_steps[position - 1]]
             return previous - b.charge[t] <= b.ramp_down
 
@@ -632,7 +639,7 @@ class GenericInventoryStorage(GenericStorage):
         def discharge_ramp_down_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
             position = ordered_steps.index(t)
             if position == 0:
-                return b.discharge[t] <= b.ramp_down
+                return b.initial_discharge - b.discharge[t] <= b.ramp_down
             previous = b.discharge[ordered_steps[position - 1]]
             return previous - b.discharge[t] <= b.ramp_down
 
@@ -711,7 +718,12 @@ def _first_present(*values: Any) -> Any:
     return None
 
 
-def _add_power_parameters(component: Any, block: pyo.Block, dt_hours: float) -> None:
+def _add_power_parameters(
+    component: Any,
+    block: pyo.Block,
+    dt_hours: float,
+    context: dict[str, Any],
+) -> None:
     ramp_up = (
         component.max_power_mw
         if component.ramp_up_mw_per_step is None
@@ -728,7 +740,19 @@ def _add_power_parameters(component: Any, block: pyo.Block, dt_hours: float) -> 
     block.ramp_down = pyo.Param(initialize=ramp_down * dt_hours)
     block.min_operating_steps = pyo.Param(initialize=component.min_operating_steps)
     block.min_down_steps = pyo.Param(initialize=component.min_down_steps)
-    block.initial_operational_status = pyo.Param(initialize=component.initial_operational_status)
+    initial_status = int(
+        context.get("initial_operational_status", component.initial_operational_status)
+    )
+    default_consecutive_steps = max(
+        component.min_operating_steps,
+        component.min_down_steps,
+        1,
+    )
+    block.initial_power_in = pyo.Param(initialize=float(context.get("initial_power_in", 0.0)))
+    block.initial_operational_status = pyo.Param(initialize=initial_status)
+    block.initial_consecutive_status_steps = pyo.Param(
+        initialize=int(context.get("initial_consecutive_status_steps", default_consecutive_steps))
+    )
 
 
 def _add_power_operating_constraints(block: pyo.Block, time_steps: pyo.Set) -> None:
@@ -737,14 +761,14 @@ def _add_power_operating_constraints(block: pyo.Block, time_steps: pyo.Set) -> N
     @block.Constraint(time_steps)
     def ramp_up_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
         position = ordered_steps.index(t)
-        previous = 0.0 if position == 0 else b.power_in[ordered_steps[position - 1]]
+        previous = b.initial_power_in if position == 0 else b.power_in[ordered_steps[position - 1]]
         return b.power_in[t] - previous <= b.ramp_up
 
     @block.Constraint(time_steps)
     def ramp_down_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
         position = ordered_steps.index(t)
         if position == 0:
-            return b.power_in[t] <= b.ramp_down
+            return b.initial_power_in - b.power_in[t] <= b.ramp_down
         previous = b.power_in[ordered_steps[position - 1]]
         return previous - b.power_in[t] <= b.ramp_down
 
@@ -780,6 +804,21 @@ def _add_power_operating_constraints(block: pyo.Block, time_steps: pyo.Set) -> N
     @block.Constraint(time_steps)
     def prevent_simultaneous_startup_shutdown(b: pyo.Block, t: int) -> pyo.Constraint:
         return b.start_up[t] + b.shut_down[t] <= 1
+
+    initial_status = int(pyo.value(block.initial_operational_status))
+    consecutive_steps = int(pyo.value(block.initial_consecutive_status_steps))
+    minimum_steps = int(
+        pyo.value(block.min_operating_steps if initial_status else block.min_down_steps)
+    )
+    residual_steps = max(0, minimum_steps - consecutive_steps)
+    if residual_steps:
+
+        @block.Constraint(time_steps)
+        def residual_status_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            position = ordered_steps.index(t)
+            if position >= residual_steps:
+                return pyo.Constraint.Skip
+            return b.operational_status[t] == initial_status
 
     @block.Constraint(time_steps)
     def min_operating_time_constraint(b: pyo.Block, t: int) -> pyo.Constraint:

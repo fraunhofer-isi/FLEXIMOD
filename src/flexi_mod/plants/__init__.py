@@ -4,7 +4,7 @@
 
 from flexi_mod.plants.factory import PLANT_REGISTRY, build_plants
 from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
-from flexi_mod.plants.steel_plant import SteelDispatchSignals, SteelPlant
+from flexi_mod.plants.steel_plant import SteelDispatchSignals, SteelPlant, SteelRollingState
 from flexi_mod.plants.technologies import (
     DRIPlant,
     DRIStorage,
@@ -28,6 +28,7 @@ __all__ = [
     "SteamGenerationPlant",
     "SteelDispatchSignals",
     "SteelPlant",
+    "SteelRollingState",
     "ThermalStorage",
     "build_plants",
 ]
