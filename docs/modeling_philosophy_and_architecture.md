@@ -245,6 +245,40 @@ CO2 is currently disabled in the active objective and benchmark. A `co2_price`
 column may still exist in input files for later use, but it is not required for
 the current MVP.
 
+### Steel-demand input modes
+
+A steel plant supports two demand modes. A numeric `steel_demand` in
+`plants.csv` is the total tonnes required over the loaded simulation period and
+takes precedence over any forecast profile:
+
+```csv
+name,unit_type,technology,steel_demand,demand
+steel_1,steel_plant,dri_plant,1000000,
+steel_1,steel_plant,eaf,1000000,
+```
+
+If `steel_demand` is blank, `demand` names a column in `forecasts_df.csv`. When
+`demand` is also blank, the default is `<plant_name>_steel_demand`.
+
+```csv
+name,unit_type,technology,steel_demand,demand
+steel_1,steel_plant,dri_plant,,steel_1_steel_demand
+steel_1,steel_plant,eaf,,steel_1_steel_demand
+```
+
+Forecast demand values are tonnes per timestep. The model sums the selected
+column and treats that sum as a flexible production target:
+
+```text
+sum(EAF steel output over the horizon) = sum(forecast steel demand)
+```
+
+It does not require EAF output to equal the profile in each row. Consequently,
+the EAF may shift production across the optimization horizon while respecting
+all process, power, fuel, and inventory constraints. For sub-hourly data, values
+must already be expressed as tonnes per sub-hourly row; no duration conversion
+is applied.
+
 If the selected `cases.<case_name>` entry sets `additional_charges: true`,
 `additional_charges.csv` is interpreted by the network-tariff regulation selected
 from `case.country` (`src/flexi_mod/regulations.py`). The regulation is the single

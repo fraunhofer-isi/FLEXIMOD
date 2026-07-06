@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.data.data_loader import DataLoader
 from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.steel_plant import SteelDispatchSignals, SteelPlant
 from flexi_mod.plants.technologies import (
@@ -89,12 +90,134 @@ def test_steel_plant_without_electrolyser_buys_hydrogen() -> None:
     assert "electrolyser_hydrogen_output_MWh" not in result
 
 
+def test_forecast_profile_is_summed_as_a_flexible_cumulative_target() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    rows = _steel_rows(include_optional=True)
+    rows["steel_demand"] = pd.NA
+    rows["demand"] = "steel_production_target"
+    plant = SteelPlant.from_rows("steel_1", rows)
+    forecasts = _steel_forecasts()
+    demand_profile = pd.Series([0.0, 0.0, 0.0, 4.0], index=forecasts.index)
+    forecasts["steel_production_target"] = demand_profile
+
+    result = plant.solve_horizon(config, forecasts, _signals())
+
+    assert result["steel_output_t"].sum() == pytest.approx(4.0)
+    assert result["steel_output_t"].to_numpy() != pytest.approx(demand_profile.to_numpy())
+    assert set(result["steel_demand_mode"]) == {"forecast_profile"}
+    assert set(result["steel_demand_total_t"]) == {4.0}
+
+
+def test_forecast_profile_uses_default_plant_specific_column() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    rows = _steel_rows(include_optional=False)
+    rows["steel_demand"] = pd.NA
+    plant = SteelPlant.from_rows("steel_1", rows)
+    forecasts = _steel_forecasts()
+    forecasts["steel_1_steel_demand"] = [1.0, 0.5, 1.5, 1.0]
+
+    result = plant.solve_horizon(config, forecasts, _signals())
+
+    assert plant.steel_demand_tonnes is None
+    assert plant.steel_demand_column == "steel_1_steel_demand"
+    assert result["steel_output_t"].sum() == pytest.approx(4.0)
+
+
+def test_total_target_takes_precedence_over_forecast_profile() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    rows = _steel_rows(include_optional=False)
+    rows["demand"] = "unused_steel_profile"
+    plant = SteelPlant.from_rows("steel_1", rows)
+
+    result = plant.solve_horizon(config, _steel_forecasts(), _signals())
+
+    assert result["steel_output_t"].sum() == pytest.approx(4.0)
+    assert set(result["steel_demand_mode"]) == {"total_target"}
+    assert set(result["steel_demand_total_t"]) == {4.0}
+
+
+def test_missing_total_and_forecast_profile_fails_clearly() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    rows = _steel_rows(include_optional=False)
+    rows["steel_demand"] = pd.NA
+    plant = SteelPlant.from_rows("steel_1", rows)
+
+    with pytest.raises(ValueError, match="missing demand column 'steel_1_steel_demand'"):
+        plant.solve_horizon(config, _steel_forecasts(), _signals())
+
+
+@pytest.mark.parametrize(
+    ("invalid_value", "message"),
+    [
+        (-1.0, "negative"),
+        (None, "missing or non-numeric"),
+        ("not-a-number", "missing or non-numeric"),
+        (float("inf"), "non-finite"),
+    ],
+)
+def test_invalid_forecast_profile_values_fail(invalid_value: object, message: str) -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    rows = _steel_rows(include_optional=False)
+    rows["steel_demand"] = pd.NA
+    rows["demand"] = "steel_profile"
+    plant = SteelPlant.from_rows("steel_1", rows)
+    forecasts = _steel_forecasts()
+    forecasts["steel_profile"] = [1.0, 1.0, 1.0, invalid_value]
+
+    with pytest.raises(ValueError, match=message):
+        plant.solve_horizon(config, forecasts, _signals())
+
+
+@pytest.mark.parametrize(
+    ("column", "first", "second"),
+    [
+        ("steel_demand", 4.0, 5.0),
+        ("demand", "steel_profile_a", "steel_profile_b"),
+    ],
+)
+def test_inconsistent_demand_configuration_fails(
+    column: str, first: object, second: object
+) -> None:
+    rows = _steel_rows(include_optional=False)
+    rows[column] = [first, second]
+
+    with pytest.raises(ValueError, match=f"inconsistent {column}"):
+        SteelPlant.from_rows("steel_1", rows)
+
+
+@pytest.mark.parametrize("invalid_total", [-1.0, "bad", float("inf")])
+def test_invalid_total_target_fails(invalid_total: object) -> None:
+    rows = _steel_rows(include_optional=False)
+    rows["steel_demand"] = invalid_total
+
+    with pytest.raises(ValueError, match="steel_demand"):
+        SteelPlant.from_rows("steel_1", rows)
+
+
+def test_forecast_discovery_requires_profile_only_without_total_target() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    loader = DataLoader(config, input_dir=CASE_DIR)
+    total_rows = _steel_rows(include_optional=False)
+
+    total_required = loader.required_forecast_columns(total_rows)
+
+    assert "steel_1_steel_demand" not in total_required
+
+    profile_rows = total_rows.copy()
+    profile_rows["steel_demand"] = pd.NA
+    profile_rows["demand"] = "custom_steel_demand"
+    profile_required = loader.required_forecast_columns(profile_rows)
+    assert "custom_steel_demand" in profile_required
+
+    profile_rows["demand"] = pd.NA
+    default_required = loader.required_forecast_columns(profile_rows)
+    assert "steel_1_steel_demand" in default_required
+
+
 def test_dri_storage_can_shift_dri_production_to_later_eaf_operation() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
     rows = _steel_rows(include_optional=True)
-    rows = rows.loc[
-        rows["technology"].isin({"dri_plant", "eaf", "dri_storage"})
-    ].copy()
+    rows = rows.loc[rows["technology"].isin({"dri_plant", "eaf", "dri_storage"})].copy()
     rows.loc[rows["technology"] == "dri_plant", "fuel_type"] = "natural_gas"
     plant = SteelPlant.from_rows("steel_1", rows)
     forecasts = _steel_forecasts()

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -46,7 +47,8 @@ class SteelPlant(BasePlant):
     A market strategy is deliberately not embedded in this class.
     """
 
-    steel_demand_tonnes: float = 0.0
+    steel_demand_tonnes: float | None = None
+    steel_demand_column: str = ""
     components: dict[str, object] = field(default_factory=dict)
 
     required_technologies = frozenset({"dri_plant", "eaf"})
@@ -79,19 +81,10 @@ class SteelPlant(BasePlant):
                 f"{', '.join(sorted(missing))}"
             )
 
-        demand_text = first_non_empty(rows, "steel_demand", default="")
-        if not demand_text:
-            demand_text = first_non_empty(rows, "demand", default="")
-        if not demand_text:
-            raise ValueError(f"Steel plant '{plant_name}' does not define steel_demand")
-        try:
-            steel_demand = float(demand_text)
-        except ValueError as exc:
-            raise ValueError(
-                f"Steel plant '{plant_name}' steel_demand must be a numeric horizon total"
-            ) from exc
-        if steel_demand < 0:
-            raise ValueError(f"Steel plant '{plant_name}' steel_demand must be non-negative")
+        steel_demand = _consistent_optional_total(rows, "steel_demand", plant_name)
+        steel_demand_column = _consistent_optional_text(rows, "demand", plant_name)
+        if not steel_demand_column:
+            steel_demand_column = f"{plant_name}_steel_demand"
 
         return cls(
             name=plant_name,
@@ -99,6 +92,7 @@ class SteelPlant(BasePlant):
             node=first_non_empty(rows, "node", default=""),
             objective=first_non_empty(rows, "objective", default="min_variable_cost"),
             steel_demand_tonnes=steel_demand,
+            steel_demand_column=steel_demand_column,
             components=components,
         )
 
@@ -187,7 +181,11 @@ class SteelPlant(BasePlant):
         model.co2_price = pyo.Param(model.T, initialize=values(signals.co2_price_col))
         if signals.steel_price_col:
             model.steel_price = pyo.Param(model.T, initialize=values(signals.steel_price_col))
-        model.steel_demand = pyo.Param(initialize=self.steel_demand_tonnes)
+        steel_demand_total, steel_demand_mode = self._resolve_steel_demand(forecasts)
+        model.steel_demand = pyo.Param(initialize=steel_demand_total)
+        model.steel_demand_from_forecast = pyo.Param(
+            initialize=int(steel_demand_mode == "forecast_profile"), within=pyo.Binary
+        )
         model.technology_blocks = pyo.Block(list(self.components))
         context: dict[str, Any] = {"dt_hours": dt_hours}
         for technology, component in self.components.items():
@@ -266,6 +264,8 @@ class SteelPlant(BasePlant):
         dri = model.technology_blocks["dri_plant"]
         eaf = model.technology_blocks["eaf"]
         data: dict[str, list[float] | list[str]] = {
+            "steel_demand_mode": [],
+            "steel_demand_total_t": [],
             "total_electricity_consumption_MWh": [],
             "variable_cost_EUR": [],
             "dri_electricity_consumption_MWh": [],
@@ -296,6 +296,12 @@ class SteelPlant(BasePlant):
                 data[column] = []
 
         for t in model.T:
+            data["steel_demand_mode"].append(
+                "forecast_profile"
+                if int(pyo.value(model.steel_demand_from_forecast))
+                else "total_target"
+            )
+            data["steel_demand_total_t"].append(_value(model.steel_demand))
             data["total_electricity_consumption_MWh"].append(_value(model.total_power_input[t]))
             data["variable_cost_EUR"].append(_value(model.variable_cost[t]))
             data["dri_electricity_consumption_MWh"].append(_value(dri.power_in[t]))
@@ -335,6 +341,76 @@ class SteelPlant(BasePlant):
                 "Steel dispatch forecasts are missing column(s): " + ", ".join(sorted(missing))
             )
 
+    def _resolve_steel_demand(self, forecasts: pd.DataFrame) -> tuple[float, str]:
+        if self.steel_demand_tonnes is not None:
+            return self.steel_demand_tonnes, "total_target"
+
+        if self.steel_demand_column not in forecasts.columns:
+            raise ValueError(
+                f"Steel plant '{self.name}' has no numeric steel_demand in plants.csv and "
+                f"forecasts are missing demand column '{self.steel_demand_column}'"
+            )
+
+        raw_demand = forecasts[self.steel_demand_column]
+        demand = pd.to_numeric(raw_demand, errors="coerce")
+        if demand.isna().any():
+            raise ValueError(
+                f"Steel demand column '{self.steel_demand_column}' for plant '{self.name}' "
+                "contains missing or non-numeric values"
+            )
+        if not demand.map(math.isfinite).all():
+            raise ValueError(
+                f"Steel demand column '{self.steel_demand_column}' for plant '{self.name}' "
+                "contains non-finite values"
+            )
+        if (demand < 0).any():
+            raise ValueError(
+                f"Steel demand column '{self.steel_demand_column}' for plant '{self.name}' "
+                "contains negative values"
+            )
+        return float(demand.sum()), "forecast_profile"
+
 
 def _value(expression: Any) -> float:
     return float(pyo.value(expression))
+
+
+def _consistent_optional_total(rows: pd.DataFrame, column: str, plant_name: str) -> float | None:
+    values = _non_empty_values(rows, column)
+    if not values:
+        return None
+
+    parsed: list[float] = []
+    for value in values:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Steel plant '{plant_name}' {column} must be a numeric simulation total"
+            ) from exc
+        if not math.isfinite(numeric):
+            raise ValueError(f"Steel plant '{plant_name}' {column} must be finite")
+        if numeric < 0:
+            raise ValueError(f"Steel plant '{plant_name}' {column} must be non-negative")
+        parsed.append(numeric)
+
+    if len(set(parsed)) > 1:
+        raise ValueError(
+            f"Steel plant '{plant_name}' defines inconsistent {column} values across its rows"
+        )
+    return parsed[0]
+
+
+def _consistent_optional_text(rows: pd.DataFrame, column: str, plant_name: str) -> str:
+    values = [str(value).strip() for value in _non_empty_values(rows, column)]
+    if len(set(values)) > 1:
+        raise ValueError(
+            f"Steel plant '{plant_name}' defines inconsistent {column} values across its rows"
+        )
+    return values[0] if values else ""
+
+
+def _non_empty_values(rows: pd.DataFrame, column: str) -> list[Any]:
+    if column not in rows.columns:
+        return []
+    return [value for value in rows[column].tolist() if not pd.isna(value) and str(value).strip()]

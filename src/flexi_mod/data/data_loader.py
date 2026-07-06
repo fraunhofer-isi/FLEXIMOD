@@ -175,7 +175,8 @@ class DataLoader:
 
         for plant_name, plant_rows in plants.groupby("name"):
             demand_column = _demand_column_for_plant(str(plant_name), plant_rows)
-            required.add(demand_column)
+            if demand_column:
+                required.add(demand_column)
 
         return required
 
@@ -423,7 +424,31 @@ def _local_timestamp_to_utc(
         ) from exc
 
 
-def _demand_column_for_plant(plant_name: str, plant_rows: pd.DataFrame) -> str:
+def _demand_column_for_plant(plant_name: str, plant_rows: pd.DataFrame) -> str | None:
+    unit_types = {
+        str(value).strip().lower()
+        for value in plant_rows["unit_type"].dropna().tolist()
+        if str(value).strip()
+    }
+    if unit_types == {"steel_plant"}:
+        if "steel_demand" in plant_rows.columns:
+            total_values = [
+                value
+                for value in plant_rows["steel_demand"].tolist()
+                if not pd.isna(value) and str(value).strip()
+            ]
+            if total_values:
+                return None
+        if "demand" in plant_rows.columns:
+            demand_columns = [
+                str(value).strip()
+                for value in plant_rows["demand"].tolist()
+                if not pd.isna(value) and str(value).strip()
+            ]
+            if demand_columns:
+                return demand_columns[0]
+        return f"{plant_name}_steel_demand"
+
     if "demand" in plant_rows.columns:
         values = [
             str(value).strip()
