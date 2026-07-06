@@ -6,11 +6,11 @@ cases:
   hybrid_ETES_FR:
     name: hybrid_ETES_FR
     country: FR
-    description: Hybrid ETES + gas boiler case for Germany
+    description: Hybrid ETES + gas boiler case for France (pay-as-cleared aFRR capacity)
     timestep_minutes: 15
     simulation_start: 2025-01-01 00:00
     simulation_end: 2025-12-31 23:45
-    timezone: Europe/Berlin
+    timezone: Europe/Paris
     additional_charges: true
     strategy:
       name: hybrid_etes_gas
@@ -33,8 +33,9 @@ cases:
       afrr_capacity:
         enabled: true
         direction: down
-        product_length: 1h
-        price_unit: EUR_per_MW_per_h
+        clearing_mechanism: pay_as_cleared
+        product_length: 15min
+        price_unit: EUR_per_MW_per_product
         gate_open:
           day_relation: D-8
           time: '09:00'
@@ -46,7 +47,7 @@ cases:
           bid_increment_mw: 1.0
           divisible: true
         signals:
-          price: aFRR_capacity_down_price
+          price: FR_aFRR_capacity_down_marginal_price
       day_ahead:
         enabled: true
         product_resolution: 15min
@@ -69,6 +70,7 @@ cases:
       afrr_energy:
         enabled: true
         direction: down
+        clearing_mechanism: pay_as_cleared
         product_resolution: 15min
         gate_close:
           relative_to_delivery_start_minutes: -25

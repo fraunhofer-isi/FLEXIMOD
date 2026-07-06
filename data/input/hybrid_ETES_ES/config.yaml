@@ -13,7 +13,7 @@ cases:
     timezone: Europe/Madrid
     additional_charges: true
     strategy:
-      name: hybrid_etes_gas_pay_as_cleared_capacity
+      name: hybrid_etes_gas
       dispatch:
         dispatch_method: pyomo
         rolling_horizon_enabled: true
@@ -33,6 +33,7 @@ cases:
       afrr_capacity:
         enabled: true
         direction: down
+        clearing_mechanism: pay_as_cleared
         product_length: 15min
         price_unit: EUR_per_MW_per_product
         gate_open:
@@ -69,6 +70,7 @@ cases:
       afrr_energy:
         enabled: true
         direction: down
+        clearing_mechanism: pay_as_cleared
         product_resolution: 15min
         gate_close:
           relative_to_delivery_start_minutes: -25

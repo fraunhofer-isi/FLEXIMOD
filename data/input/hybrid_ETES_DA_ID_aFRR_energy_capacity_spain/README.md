@@ -22,10 +22,11 @@ The important configuration choices are:
 
 ```yaml
 strategy:
-  name: hybrid_etes_gas_pay_as_cleared_capacity
+  name: hybrid_etes_gas
 
 markets:
   afrr_capacity:
+    clearing_mechanism: pay_as_cleared
     product_length: 15min
     price_unit: EUR_per_MW_per_product
 ```

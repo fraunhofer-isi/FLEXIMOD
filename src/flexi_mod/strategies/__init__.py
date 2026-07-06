@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
-from flexi_mod.strategies.pay_as_cleared_capacity_strategy import (
-    PayAsClearedCapacityHybridETESGasStrategy,
-)
 
 STRATEGY_REGISTRY = {
     "hybrid_etes_gas": HybridETESGasStrategy,
-    "hybrid_etes_gas_pay_as_cleared_capacity": PayAsClearedCapacityHybridETESGasStrategy,
+    # Pay-as-cleared is a config-selected capacity-pricing rule inside
+    # HybridETESGasStrategy, not a separate class. This name is kept as a
+    # backward-compatible alias that selects the pay-as-cleared rule.
+    "hybrid_etes_gas_pay_as_cleared_capacity": HybridETESGasStrategy,
 }
 
 
@@ -26,7 +26,6 @@ def build_strategy(name: str, config):
 
 __all__ = [
     "HybridETESGasStrategy",
-    "PayAsClearedCapacityHybridETESGasStrategy",
     "STRATEGY_REGISTRY",
     "build_strategy",
 ]
