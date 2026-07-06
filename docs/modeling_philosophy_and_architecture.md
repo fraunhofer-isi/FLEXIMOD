@@ -315,10 +315,13 @@ simulation demand. When only a scalar `steel_demand` is supplied, its nominal
 schedule is distributed uniformly across the simulation before this balance is
 calculated.
 
-Until steel market bidding is implemented, a steel case writes physical
-`dispatch_results.csv` and a steel-specific `summary_indicators.csv`. Market and
-storage-cost ledgers, grid-fee settlement, and market plots are intentionally
-omitted.
+`steel_cost_minimization` writes physical `dispatch_results.csv` and a
+steel-specific `summary_indicators.csv`; it intentionally omits market outputs.
+The `electrified_steel` strategy adds the German next-day sequence
+`afrr_capacity -> day_ahead -> afrr_energy`, the common `market_ledger.csv`,
+capacity-block and aFRR-data-quality summaries, and the same rolling physical
+state. Its full-activation feasibility trajectory is discarded after each
+solve; only realised dispatch updates the rolling state.
 
 If the selected `cases.<case_name>` entry sets `additional_charges: true`,
 `additional_charges.csv` is interpreted by the network-tariff regulation selected

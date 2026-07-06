@@ -177,6 +177,7 @@ class CaseConfig:
             "hybrid_etes_gas",
             "hybrid_etes_gas_pay_as_cleared_capacity",
             "steel_cost_minimization",
+            "electrified_steel",
         }
         strategy_name = str(self.case["strategy"].get("name", ""))
         if strategy_name not in supported_strategies:
@@ -187,9 +188,10 @@ class CaseConfig:
         if dispatch.get("dispatch_method") != "pyomo":
             raise ConfigError("Only strategy.dispatch.dispatch_method='pyomo' is implemented")
 
-        if strategy_name == "steel_cost_minimization":
+        if strategy_name in {"steel_cost_minimization", "electrified_steel"}:
             if not bool(self.case["markets"].get("day_ahead", {}).get("enabled", False)):
-                raise ConfigError("steel_cost_minimization requires an enabled day_ahead market")
+                raise ConfigError(f"{strategy_name} requires an enabled day_ahead market")
+        if strategy_name == "steel_cost_minimization":
             unsupported_enabled_markets = [
                 name
                 for name in self.market_sequence
@@ -201,6 +203,7 @@ class CaseConfig:
                     "steel_cost_minimization supports only day_ahead price-taking dispatch; "
                     "disable other markets until a steel bidding strategy is configured"
                 )
+        if strategy_name in {"steel_cost_minimization", "electrified_steel"}:
             horizon_hours = float(dispatch.get("dispatch_horizon_hours", 48))
             step_hours = float(dispatch.get("rolling_step_hours", 24))
             if horizon_hours <= 0 or step_hours <= 0:
@@ -219,6 +222,30 @@ class CaseConfig:
                     raise ConfigError(
                         f"strategy.dispatch.{field} must align with case.timestep_minutes"
                     )
+
+        if strategy_name == "electrified_steel":
+            if str(self.case["country"]).upper() != "DE":
+                raise ConfigError("electrified_steel currently requires country='DE'")
+            expected_sequence = ["afrr_capacity", "day_ahead", "afrr_energy"]
+            enabled_sequence = [
+                name
+                for name in self.market_sequence
+                if bool(self.case["markets"].get(name, {}).get("enabled", False))
+            ]
+            if enabled_sequence != expected_sequence:
+                raise ConfigError(
+                    "electrified_steel market_sequence must contain enabled markets in this "
+                    "order: afrr_capacity, day_ahead, afrr_energy"
+                )
+            product_length = str(
+                self.case["markets"].get("afrr_capacity", {}).get("product_length", "4h")
+            )
+            product_hours = _duration_hours(product_length)
+            if horizon_hours + 1e-9 < step_hours + product_hours:
+                raise ConfigError(
+                    "electrified_steel dispatch_horizon_hours must cover rolling_step_hours "
+                    "plus one complete aFRR capacity product"
+                )
 
         markets = self.case["markets"]
         for market_name in self.market_sequence:
@@ -289,6 +316,15 @@ def available_study_cases(config_path: str | Path) -> list[str]:
     if not isinstance(cases, dict):
         return []
     return sorted(str(name) for name in cases)
+
+
+def _duration_hours(value: str) -> float:
+    text = str(value).strip().lower()
+    if text.endswith("min"):
+        return float(text.removesuffix("min")) / 60.0
+    if text.endswith("h"):
+        return float(text.removesuffix("h"))
+    raise ConfigError(f"Unsupported duration '{value}'")
 
 
 def _select_case(

@@ -672,6 +672,82 @@ A complete synthetic input example is available in:
 data/input/hybrid_ETES_DA_ID_aFRR_energy_capacity_spain/
 ```
 
+## Electrified Steel: Day-Ahead and aFRR Down
+
+`electrified_steel` is the German perfect-foresight strategy for a hydrogen-DRI
+and EAF plant with an on-site electrolyser and no natural-gas fallback. Its
+configured market order is:
+
+```text
+afrr_capacity -> day_ahead -> afrr_energy
+```
+
+The 48-hour look-ahead is solved as one cross-market portfolio and only the
+next 24 hours are committed. Capacity-backed aFRR energy is obligatory after a
+capacity award; additional free energy bids remain optional. The physical model
+contains both the realised activation trajectory and a full-bid activation
+trajectory. A bid is therefore unavailable unless both trajectories satisfy
+component, inventory, material, ramping, and steel-demand constraints.
+
+```yaml
+strategy:
+  name: electrified_steel
+  dispatch:
+    dispatch_method: pyomo
+    rolling_horizon_enabled: true
+    dispatch_horizon_hours: 48
+    rolling_step_hours: 24
+market_sequence:
+  - afrr_capacity
+  - day_ahead
+  - afrr_energy
+```
+
+The strategy uses the same German market signal names and product configuration
+as the steam case:
+
+```text
+DE_DA_price
+aFRR_capacity_down_price
+aFRR_energy_down_price
+aFRR_energy_down_quantity
+```
+
+It keeps the established electricity accounting:
+
+```text
+final_planned_electricity_MWh = DA_position_MWh
+actual_electricity_consumption_MWh
+    = final_planned_electricity_MWh + afrr_energy_activated_MWh
+total_electricity_consumption_MWh
+    = actual_electricity_consumption_MWh
+```
+
+### Electrified-steel market quantities
+
+| Code/output name | Unit | Definition |
+|---|---:|---|
+| `DA_position_MWh` | MWh_el | Electricity procured day-ahead after accounting for perfectly known activation. |
+| `final_planned_electricity_MWh` | MWh_el | Fixed pre-activation schedule; equal to DA because IDC is not enabled. |
+| `afrr_energy_capacity_backed_bid_MWh` | MWh_el | Obligatory energy bid created by reserved aFRR capacity. |
+| `afrr_energy_free_bid_MWh` | MWh_el | Optional price-qualified energy bid above reserved capacity. |
+| `afrr_energy_bid_MWh` | MWh_el | Capacity-backed plus free bid. |
+| `afrr_energy_activated_MWh` | MWh_el | Smaller of the total bid and plant-level activation request; not rounded. |
+| `afrr_energy_bid_price_EUR_per_MWh` | EUR/MWh_el | Maximum acceptable delivered price derived from displaced future DA procurement. |
+| `afrr_energy_price_EUR_per_MWh` | EUR/MWh_el | Exogenous marginal clearing and settlement price. |
+| `afrr_capacity_reserved_MW` | MW | Pay-as-bid capacity award in compliant market increments. |
+| `available_load_headroom_after_schedule_MWh` | MWh_el | Aggregate electrical intake remaining above the fixed DA schedule. |
+| `afrr_capacity_opportunity_cost_EUR` | EUR | Additional gross portfolio cost relative to DA plus free aFRR energy without capacity. |
+| `afrr_capacity_net_value_EUR` | EUR | Capacity revenue minus allocated opportunity cost. |
+
+The common market ledger retains the steam-market ontology. Steel-specific
+physical columns are limited to component electricity consumption, hydrogen and
+DRI inventories, and steel output. Steam-only gas and ETES fields remain zero.
+
+Capacity follows the German pay-as-bid interpretation already used by
+`hybrid_etes_gas`; aFRR energy retains separate market-price and plant-bid-price
+fields. Missing prices never create voluntary bids or activation.
+
 ## Current Simplifications
 
 The current DA + IDC + aFRR down strategy is deliberately simple:

@@ -104,5 +104,11 @@ def test_market_ledger_schema_uses_energy_economics_terms() -> None:
         "etes_charge_MWh_el",
         "etes_discharge_MWh_th",
         "etes_thermal_inventory_MWh_th",
+        "electrolyser_electricity_consumption_MWh_el",
+        "dri_electricity_consumption_MWh_el",
+        "eaf_electricity_consumption_MWh_el",
+        "hydrogen_storage_soc",
+        "dri_storage_soc",
+        "steel_output_t",
     }
     assert set(frame.columns) == expected_columns

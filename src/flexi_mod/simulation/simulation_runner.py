@@ -22,6 +22,7 @@ from flexi_mod.plants.steam_generation_plant import DispatchSignals, SteamGenera
 from flexi_mod.plants.steel_plant import SteelPlant
 from flexi_mod.regulations import GridFeeResult, build_grid_fee_regulation
 from flexi_mod.strategies import build_strategy
+from flexi_mod.strategies.electrified_steel_strategy import ElectrifiedSteelStrategy
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.strategies.steel_cost_minimization_strategy import (
     SteelCostMinimizationStrategy,
@@ -211,10 +212,23 @@ class SimulationRunner:
         plants: list[SteelPlant],
     ) -> dict[str, Path | list[Path]]:
         strategy = build_strategy(self.config.strategy_name, self.config)
-        if not isinstance(strategy, SteelCostMinimizationStrategy):
+        if not isinstance(strategy, (SteelCostMinimizationStrategy, ElectrifiedSteelStrategy)):
             raise ValueError(
-                "Steel plants currently require strategy.name='steel_cost_minimization'"
+                "Steel plants require strategy.name='steel_cost_minimization' or "
+                "'electrified_steel'"
             )
+        if isinstance(strategy, ElectrifiedSteelStrategy):
+            additional_charges = self.loader.load_additional_charges(plants_df)
+            for plant in plants:
+                regulation = build_grid_fee_regulation(
+                    self.config.country,
+                    additional_charges.get(plant.name),
+                    assumed_tier=self.assumed_grid_tier,
+                )
+                plant.grid_fee_regulation = regulation
+                plant.additional_electricity_charge_eur_per_mwh = (
+                    regulation.marginal_charge_eur_per_mwh()
+                )
         required_columns = self.loader.required_forecast_columns(
             plants_df,
             extra_required_columns=strategy.required_forecast_columns(),
@@ -243,7 +257,21 @@ class SimulationRunner:
             summary.to_csv(path, index=False)
             output_paths["summary_indicators"] = path
 
-        if (
+        if isinstance(strategy, ElectrifiedSteelStrategy):
+            market_ledger = MarketLedger()
+            market_ledger.update_from_dispatch_results(dispatch_results)
+            if self.output_options.save_market_ledger:
+                output_paths["market_ledger"] = market_ledger.save(output_dir / "market_ledger.csv")
+            if not strategy.afrr_capacity_block_summary.empty:
+                path = output_dir / "afrr_capacity_block_summary.csv"
+                strategy.afrr_capacity_block_summary.to_csv(path, index=False)
+                output_paths["afrr_capacity_block_summary"] = path
+            if not strategy.afrr_energy_data_quality_summary.empty:
+                path = output_dir / "afrr_energy_data_quality_summary.csv"
+                strategy.afrr_energy_data_quality_summary.to_csv(path, index=False)
+                output_paths["afrr_energy_data_quality_summary"] = path
+
+        if isinstance(strategy, SteelCostMinimizationStrategy) and (
             self.output_options.save_market_ledger
             or self.output_options.save_storage_cost_ledger
             or self.output_options.create_plots
@@ -251,6 +279,13 @@ class SimulationRunner:
             self._progress(
                 "Steel cost-minimization mode omits market ledger, storage-cost ledger, "
                 "grid-fee settlement, and market plots until steel market bidding is added."
+            )
+        elif isinstance(strategy, ElectrifiedSteelStrategy) and (
+            self.output_options.save_storage_cost_ledger or self.output_options.create_plots
+        ):
+            self._progress(
+                "Electrified-steel mode writes the common market ledger and aFRR summaries; "
+                "storage-cost ledger and market plots remain unavailable for steel."
             )
         self._progress("Steel outputs saved")
         return output_paths
@@ -534,6 +569,24 @@ def _steel_summary_frame(dispatch_results: pd.DataFrame) -> pd.DataFrame:
                     if "steel_demand_balance_t" in group
                     else target - produced
                 ),
+                "total_DA_electricity_MWh": total("DA_position_MWh"),
+                "total_afrr_energy_bid_MWh": total("afrr_energy_bid_MWh"),
+                "total_afrr_energy_activated_MWh": total("afrr_energy_activated_MWh"),
+                "total_afrr_energy_capacity_backed_bid_MWh": total(
+                    "afrr_energy_capacity_backed_bid_MWh"
+                ),
+                "total_afrr_energy_free_bid_MWh": total("afrr_energy_free_bid_MWh"),
+                "total_afrr_capacity_revenue_EUR": total("afrr_capacity_revenue_EUR"),
+                "total_afrr_capacity_opportunity_cost_EUR": total(
+                    "afrr_capacity_opportunity_cost_EUR"
+                ),
+                "total_afrr_capacity_net_value_EUR": total("afrr_capacity_net_value_EUR"),
+                "total_electricity_market_cost_EUR": total("electricity_market_cost_EUR"),
+                "total_additional_electricity_charges_cost_EUR": total(
+                    "additional_electricity_charges_cost_EUR"
+                ),
+                "gross_operating_cost_EUR": total("gross_operating_cost_EUR"),
+                "net_operating_cost_EUR": total("net_operating_cost_EUR"),
             }
         )
     return pd.DataFrame(records)

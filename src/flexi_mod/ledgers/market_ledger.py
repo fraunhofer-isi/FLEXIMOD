@@ -67,6 +67,12 @@ MARKET_LEDGER_COLUMNS = [
     "etes_charge_MWh_el",
     "etes_discharge_MWh_th",
     "etes_thermal_inventory_MWh_th",
+    "electrolyser_electricity_consumption_MWh_el",
+    "dri_electricity_consumption_MWh_el",
+    "eaf_electricity_consumption_MWh_el",
+    "hydrogen_storage_soc",
+    "dri_storage_soc",
+    "steel_output_t",
 ]
 
 ZERO_COLUMNS = [
@@ -108,6 +114,12 @@ ZERO_COLUMNS = [
     "etes_charge_MWh_el",
     "etes_discharge_MWh_th",
     "etes_thermal_inventory_MWh_th",
+    "electrolyser_electricity_consumption_MWh_el",
+    "dri_electricity_consumption_MWh_el",
+    "eaf_electricity_consumption_MWh_el",
+    "hydrogen_storage_soc",
+    "dri_storage_soc",
+    "steel_output_t",
 ]
 
 
@@ -180,7 +192,12 @@ class MarketLedger:
 
 
 def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[str, Any]:
-    day_ahead_position = _value(row, "DA_position_MWh", row["electricity_consumption_MWh"])
+    physical_electricity = _value(
+        row,
+        "electricity_consumption_MWh",
+        _value(row, "total_electricity_consumption_MWh", 0.0),
+    )
+    day_ahead_position = _value(row, "DA_position_MWh", physical_electricity)
     intraday_buy = _value(row, "IDC_buy_MWh", 0.0)
     intraday_sell = _value(row, "IDC_sell_MWh", 0.0)
     scheduled = _value(
@@ -192,7 +209,7 @@ def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[s
     actual_electricity = _value(
         row,
         "actual_electricity_consumption_MWh",
-        row["electricity_consumption_MWh"],
+        physical_electricity,
     )
     _validate_electricity_accounting(scheduled, afrr_activation, actual_electricity)
 
@@ -313,6 +330,14 @@ def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[s
         "etes_charge_MWh_el": _value(row, "etes_charge_MWh", 0.0),
         "etes_discharge_MWh_th": _value(row, "etes_discharge_MWh", 0.0),
         "etes_thermal_inventory_MWh_th": _value(row, "etes_soc_MWh", 0.0),
+        "electrolyser_electricity_consumption_MWh_el": _value(
+            row, "electrolyser_electricity_consumption_MWh", 0.0
+        ),
+        "dri_electricity_consumption_MWh_el": _value(row, "dri_electricity_consumption_MWh", 0.0),
+        "eaf_electricity_consumption_MWh_el": _value(row, "eaf_electricity_consumption_MWh", 0.0),
+        "hydrogen_storage_soc": _value(row, "hydrogen_storage_soc", 0.0),
+        "dri_storage_soc": _value(row, "dri_storage_soc", 0.0),
+        "steel_output_t": _value(row, "steel_output_t", 0.0),
     }
 
 
