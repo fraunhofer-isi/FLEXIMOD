@@ -131,17 +131,50 @@ class GridFeeRegulation(ABC):
         """Forecasts column with time-varying charges, or None for scalar-only."""
         return None
 
+    # Constructor parameters that are behavioural options rather than named
+    # charge values. Regulations that mix charges and options (Germany) override
+    # this so from_charges_frame can tell the two apart.
+    _BEHAVIOURAL_PARAMS: frozenset[str] = frozenset()
+
+    @classmethod
+    def _charge_param_names(cls) -> set[str]:
+        """The constructor's named charge parameters (excluding behavioural options)."""
+        return {
+            name
+            for name in inspect.signature(cls).parameters
+            if name not in cls._BEHAVIOURAL_PARAMS
+        }
+
+    @classmethod
+    def _charges_from_frame(cls, plant_charges: pd.DataFrame) -> dict[str, float]:
+        """Map ``additional_charges.csv`` component → value, rejecting unknown names.
+
+        An unknown/misspelled component raises instead of being silently dropped
+        into a levy bucket — the failure mode behind the France dropped-charges bug.
+        """
+        valid = cls._charge_param_names()
+        charges: dict[str, float] = {}
+        for _, row in plant_charges.iterrows():
+            name = str(row["component"]).strip()
+            if name not in valid:
+                raise GridFeeConfigError(
+                    f"Unknown grid-fee charge '{name}' for {cls.__name__}. "
+                    f"Supported charges: {', '.join(sorted(valid))}."
+                )
+            charges[name] = float(row["value"])
+        return charges
+
     @classmethod
     def from_charges_frame(cls, plant_charges: pd.DataFrame, **options) -> "GridFeeRegulation":
         """Build the regulation from the ``additional_charges.csv`` frame.
 
-        Default: hand the frame to ``__init__`` (for regulations that parse it
-        themselves). Regulations with explicit, named charge parameters (see
-        :class:`GermanGridFeeRegulation`) override this to map component names to
-        constructor arguments and validate them — so an unknown/misspelled charge
-        raises instead of being silently dropped.
+        Default: map each component name to the constructor's named charge
+        parameter of the same name (rejecting unknowns) and ignore behavioural
+        ``options``. Regulations that also take behavioural options or need extra
+        validation (Germany) override this.
         """
-        return cls(plant_charges, **options)
+        del options  # charge-only regulations take no behavioural options
+        return cls(**cls._charges_from_frame(plant_charges))
 
 
 class NullGridFeeRegulation(GridFeeRegulation):
@@ -233,22 +266,10 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         parameters (e.g. ``grid_energy_charge_high``, ``chp_surcharge``). Unknown
         component names raise, so a typo can't silently disappear into a levy
         bucket. The ``unit`` column is descriptive; the expected unit for each
-        charge is documented on the constructor.
+        charge is documented on the constructor. Behavioural ``options``
+        (assumed_tier, capacity_peak_basis, …) are forwarded to the constructor.
         """
-        valid_charges = {
-            name
-            for name in inspect.signature(cls).parameters
-            if name not in cls._BEHAVIOURAL_PARAMS
-        }
-        charges: dict[str, float] = {}
-        for _, row in plant_charges.iterrows():
-            name = str(row["component"]).strip()
-            if name not in valid_charges:
-                raise GridFeeConfigError(
-                    f"Unknown German grid-fee charge '{name}'. "
-                    f"Supported charges: {', '.join(sorted(valid_charges))}."
-                )
-            charges[name] = float(row["value"])
+        charges = cls._charges_from_frame(plant_charges)
         cls._validate_tier_completeness(charges)
         return cls(**charges, **options)
 
@@ -430,33 +451,12 @@ class SpanishGridFeeRegulation(GridFeeRegulation):
     # Column in forecasts_df.csv containing the time-varying access tariff
     DYNAMIC_CHARGE_COLUMN = GRID_ENERGY_CHARGE_COLUMN
 
-    def __init__(self, plant_charges: pd.DataFrame, **kwargs):
-        # Spain uses the plain annual peak and has no full-load-hour tiers or
-        # high-load window, so German-specific options (assumed_tier,
-        # capacity_peak_basis, avoid_high_load_window, …) are accepted and ignored.
-        del kwargs
-        self._parse_charges(plant_charges)
-
-    def _parse_charges(self, plant_charges: pd.DataFrame) -> None:
-        """Extract capacity charge and any static levies from additional_charges.csv."""
-        capacity = 0.0
-        levies = 0.0
-
-        for _, row in plant_charges.iterrows():
-            component = str(row["component"]).strip().lower()
-            unit = str(row["unit"]).strip()
-            value = float(row["value"])
-
-            if "grid capacity" in component:
-                # EUR/MW.a — use the first non-zero value found
-                if value > 0 and capacity == 0.0:
-                    capacity = value
-            elif unit == "EUR/MWh" and value != 0.0:
-                # Any other EUR/MWh components (CHP, offshore, concession, etc.)
-                levies += value
-
-        self._capacity_eur_per_mw_a = capacity
-        self._levies_eur_per_mwh = levies
+    def __init__(self, *, grid_capacity_charge: float = 0.0):
+        # EUR/MW.a — potencia contratada, settled ex-post on the annual peak.
+        self._capacity_eur_per_mw_a = grid_capacity_charge
+        # Spain's per-MWh charges (peajes) live entirely in the dynamic
+        # grid_energy_charge column, so there is no static EUR/MWh levy here.
+        self._levies_eur_per_mwh = 0.0
 
     # ─── Properties for strategy access ───────────────────────────
 
@@ -593,41 +593,21 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
 
     DYNAMIC_CHARGE_COLUMN = GRID_ENERGY_CHARGE_COLUMN
 
-    def __init__(self, plant_charges: pd.DataFrame, **kwargs):
-        # France uses the plain annual peak and has no full-load-hour tiers or
-        # high-load window, so German-specific options are accepted and ignored.
-        del kwargs
-        self._parse_charges(plant_charges)
-
-    def _parse_charges(self, plant_charges: pd.DataFrame) -> None:
-        """Sum fixed annual charges (EUR/MW.a) and static energy levies (EUR/MWh).
-
-        Every EUR/MW.a row — the Capacity Obligation plus the fixed TURPE
-        components (management, metering, fixed withdrawal) — is a fixed annual
-        charge with no dispatch feedback, settled ex-post on the realized annual
-        peak. They are summed by unit into a single EUR/MW.a rate rather than
-        matched by component name, so no component is silently dropped. Static
-        EUR/MWh levies (if any) are summed into the per-MWh dispatch charge.
-        """
-        fixed_annual_eur_per_mw_a = 0.0
-        levies_eur_per_mwh = 0.0
-
-        for _, row in plant_charges.iterrows():
-            unit = str(row["unit"]).strip()
-            value = float(row["value"])
-
-            if unit == "EUR/MW.a":
-                fixed_annual_eur_per_mw_a += value
-            elif unit == "EUR/MWh":
-                levies_eur_per_mwh += value
-            else:  # pragma: no cover - data_loader restricts units to the two above
-                warnings.warn(
-                    f"France grid fees: ignoring charge with unsupported unit '{unit}'.",
-                    stacklevel=2,
-                )
-
-        self._fixed_annual_eur_per_mw_a = fixed_annual_eur_per_mw_a
-        self._levies_eur_per_mwh = levies_eur_per_mwh
+    def __init__(
+        self,
+        *,
+        capacity_obligation: float = 0.0,   # EUR/MW.a — Obligation de Capacité
+        turpe_management: float = 0.0,      # EUR/MW.a — TURPE composante de gestion
+        turpe_metering: float = 0.0,        # EUR/MW.a — TURPE composante de comptage
+        turpe_fix: float = 0.0,             # EUR/MW.a — TURPE fixed withdrawal (soutirage)
+    ):
+        # All fixed annual EUR/MW.a charges, summed; settled ex-post on the peak.
+        self._fixed_annual_eur_per_mw_a = (
+            capacity_obligation + turpe_management + turpe_metering + turpe_fix
+        )
+        # France's per-MWh charges (TURPE energy + accise) live entirely in the
+        # dynamic grid_energy_charge column, so there is no static EUR/MWh levy here.
+        self._levies_eur_per_mwh = 0.0
 
     # ─── Properties for strategy access ───────────────────────────
 

@@ -1,5 +1,5 @@
 component,unit,plant_1
-Capacity Obligation,EUR/MW.a,14650.0
-TURPE_management,EUR/MW.a,11545.32
-TURPE_metering,EUR/MW.a,3800.04
-TURPE_fix,EUR/MW.a,12948.94
+capacity_obligation,EUR/MW.a,14650.0
+turpe_management,EUR/MW.a,11545.32
+turpe_metering,EUR/MW.a,3800.04
+turpe_fix,EUR/MW.a,12948.94
