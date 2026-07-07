@@ -18,7 +18,10 @@ from pyomo.opt import SolverStatus, TerminationCondition
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.plants.base_plant import BasePlant
 from flexi_mod.plants.technologies import (
+    COAL,
     TECHNOLOGY_REGISTRY,
+    BasicOxygenFurnace,
+    BlastFurnaceBasicOxygenFurnace,
     DRIPlant,
     ElectricArcFurnace,
     GenericInventoryStorage,
@@ -36,6 +39,7 @@ class SteelDispatchSignals:
     iron_ore_price_col: str
     lime_price_col: str
     co2_price_col: str
+    coal_price_col: str = "coal_price"
     steel_price_col: str | None = None
 
 
@@ -86,18 +90,19 @@ class SteelRollingState:
 
 @dataclass
 class SteelPlant(BasePlant):
-    """Hydrogen/natural-gas DRI and EAF steel-production model.
+    """Route-aware steel-production model.
 
-    The physical chain is electricity/hydrogen/gas -> DRI -> EAF -> steel. Optional
-    hydrogen and DRI stores can shift intermediate production across the horizon.
+    Supported terminal routes are DRI -> EAF, DRI -> BOF, and standalone BF-BOF.
+    Optional hydrogen and DRI stores can shift intermediate production across the horizon.
     A market strategy is deliberately not embedded in this class.
     """
 
     steel_demand_tonnes: float | None = None
     steel_demand_column: str = ""
     components: dict[str, object] = field(default_factory=dict)
+    steel_route: str = ""
 
-    required_technologies = frozenset({"dri_plant", "eaf"})
+    route_technologies = frozenset({"dri_plant", "eaf", "bof", "bf_bof"})
     optional_technologies = frozenset({"electrolyser", "hydrogen_buffer_storage", "dri_storage"})
 
     @classmethod
@@ -106,7 +111,7 @@ class SteelPlant(BasePlant):
         normalised["technology_normalised"] = (
             normalised["technology"].astype(str).str.strip().str.lower()
         )
-        allowed = cls.required_technologies | cls.optional_technologies
+        allowed = cls.route_technologies | cls.optional_technologies
         components: dict[str, object] = {}
         for _, row in normalised.iterrows():
             technology = str(row["technology_normalised"])
@@ -120,12 +125,7 @@ class SteelPlant(BasePlant):
                 )
             components[technology] = TECHNOLOGY_REGISTRY[technology].from_row(row)
 
-        missing = cls.required_technologies - components.keys()
-        if missing:
-            raise ValueError(
-                f"Steel plant '{plant_name}' is missing required technology/technologies: "
-                f"{', '.join(sorted(missing))}"
-            )
+        steel_route = _detect_steel_route(components, plant_name)
 
         steel_demand = _consistent_optional_total(rows, "steel_demand", plant_name)
         steel_demand_column = _consistent_optional_text(rows, "demand", plant_name)
@@ -140,6 +140,7 @@ class SteelPlant(BasePlant):
             steel_demand_tonnes=steel_demand,
             steel_demand_column=steel_demand_column,
             components=components,
+            steel_route=steel_route,
         )
 
     @classmethod
@@ -161,6 +162,20 @@ class SteelPlant(BasePlant):
         component = self.components.get("eaf")
         if not isinstance(component, ElectricArcFurnace):
             raise ValueError(f"Steel plant '{self.name}' has no EAF")
+        return component
+
+    @property
+    def bof(self) -> BasicOxygenFurnace:
+        component = self.components.get("bof")
+        if not isinstance(component, BasicOxygenFurnace):
+            raise ValueError(f"Steel plant '{self.name}' has no BOF")
+        return component
+
+    @property
+    def bf_bof(self) -> BlastFurnaceBasicOxygenFurnace:
+        component = self.components.get("bf_bof")
+        if not isinstance(component, BlastFurnaceBasicOxygenFurnace):
+            raise ValueError(f"Steel plant '{self.name}' has no BF-BOF")
         return component
 
     def solve_horizon(
@@ -443,6 +458,7 @@ class SteelPlant(BasePlant):
         model.electricity_price = pyo.Param(model.T, initialize={t: 0.0 for t in model.T})
         model.natural_gas_price = pyo.Param(model.T, initialize={t: 0.0 for t in model.T})
         model.hydrogen_price = pyo.Param(model.T, initialize={t: 0.0 for t in model.T})
+        model.coal_price = pyo.Param(model.T, initialize={t: 0.0 for t in model.T})
         model.iron_ore_price = pyo.Param(model.T, initialize=values(signals.iron_ore_price_col))
         model.lime_price = pyo.Param(model.T, initialize=values(signals.lime_price_col))
         model.co2_price = pyo.Param(model.T, initialize=values(signals.co2_price_col))
@@ -811,6 +827,12 @@ class SteelPlant(BasePlant):
             else values(signals.hydrogen_price_col)
         )
         model.hydrogen_price = pyo.Param(model.T, initialize=hydrogen_prices)
+        coal_prices = (
+            values(signals.coal_price_col)
+            if self._requires_coal_price()
+            else {t: 0.0 for t in model.T}
+        )
+        model.coal_price = pyo.Param(model.T, initialize=coal_prices)
         model.iron_ore_price = pyo.Param(model.T, initialize=values(signals.iron_ore_price_col))
         model.lime_price = pyo.Param(model.T, initialize=values(signals.lime_price_col))
         model.co2_price = pyo.Param(model.T, initialize=values(signals.co2_price_col))
@@ -882,28 +904,38 @@ class SteelPlant(BasePlant):
                 context,
             )
 
-        dri = container.technology_blocks["dri_plant"]
-        eaf = container.technology_blocks["eaf"]
+        terminal_name = self._terminal_technology_name()
+        terminal = container.technology_blocks[terminal_name]
+        dri = container.technology_blocks["dri_plant"] if "dri_plant" in self.components else None
         has_electrolyser = "electrolyser" in self.components
         has_hydrogen_storage = "hydrogen_buffer_storage" in self.components
         has_dri_storage = "dri_storage" in self.components
 
         if has_electrolyser:
             electrolyser = container.technology_blocks["electrolyser"]
+            hydrogen_demand = []
+            if dri is not None:
+                hydrogen_demand.append(dri.hydrogen_in)
+            if hasattr(terminal, "hydrogen_in"):
+                hydrogen_demand.append(terminal.hydrogen_in)
+
+            def total_hydrogen_demand(t: int) -> pyo.Expression:
+                return sum(demand[t] for demand in hydrogen_demand)
+
             if has_hydrogen_storage:
                 hydrogen_storage = container.technology_blocks["hydrogen_buffer_storage"]
 
                 @container.Constraint(time_steps)
                 def hydrogen_flow_balance(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
                     return electrolyser.hydrogen_out[t] + hydrogen_storage.discharge[t] == (
-                        dri.hydrogen_in[t] + hydrogen_storage.charge[t]
+                        total_hydrogen_demand(t) + hydrogen_storage.charge[t]
                     )
 
             else:
 
                 @container.Constraint(time_steps)
                 def hydrogen_flow_balance(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-                    return electrolyser.hydrogen_out[t] == dri.hydrogen_in[t]
+                    return electrolyser.hydrogen_out[t] == total_hydrogen_demand(t)
 
         if has_dri_storage:
             dri_storage = container.technology_blocks["dri_storage"]
@@ -911,21 +943,21 @@ class SteelPlant(BasePlant):
             @container.Constraint(time_steps)
             def dri_flow_balance(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
                 return dri.dri_output[t] + dri_storage.discharge[t] == (
-                    eaf.dri_input[t] + dri_storage.charge[t]
+                    terminal.dri_input[t] + dri_storage.charge[t]
                 )
 
-        else:
+        elif dri is not None:
 
             @container.Constraint(time_steps)
             def dri_flow_balance(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-                return dri.dri_output[t] == eaf.dri_input[t]
+                return dri.dri_output[t] == terminal.dri_input[t]
 
         container.total_power_input = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         container.variable_cost = pyo.Var(time_steps, within=pyo.Reals)
 
         @container.Constraint()
         def steel_output_association_constraint(m: pyo.ConcreteModel) -> pyo.Constraint:
-            return sum(eaf.steel_output[t] for t in time_steps) == model.steel_demand
+            return sum(terminal.steel_output[t] for t in time_steps) == model.steel_demand
 
         if commit_steps is not None and minimum_commit_output_t > 0:
             committed_steps = list(time_steps)[:commit_steps]
@@ -934,21 +966,26 @@ class SteelPlant(BasePlant):
             def inherited_backlog_recovery_constraint(
                 m: pyo.ConcreteModel,
             ) -> pyo.Constraint:
-                return sum(eaf.steel_output[t] for t in committed_steps) >= minimum_commit_output_t
+                return (
+                    sum(terminal.steel_output[t] for t in committed_steps)
+                    >= minimum_commit_output_t
+                )
 
         @container.Constraint(time_steps)
         def total_power_input_constraint(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            power_input = eaf.power_in[t] + dri.power_in[t]
-            if has_electrolyser:
-                power_input += container.technology_blocks["electrolyser"].power_in[t]
-            return m.total_power_input[t] == power_input
+            return m.total_power_input[t] == sum(
+                block.power_in[t]
+                for block in container.technology_blocks.values()
+                if hasattr(block, "power_in")
+            )
 
         @container.Constraint(time_steps)
         def variable_cost_constraint(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            cost = eaf.operating_cost[t] + dri.operating_cost[t]
-            if has_electrolyser:
-                cost += container.technology_blocks["electrolyser"].operating_cost[t]
-            return m.variable_cost[t] == cost
+            return m.variable_cost[t] == sum(
+                block.operating_cost[t]
+                for block in container.technology_blocks.values()
+                if hasattr(block, "operating_cost")
+            )
 
     def _extract_results(
         self,
@@ -958,17 +995,36 @@ class SteelPlant(BasePlant):
     ) -> pd.DataFrame:
         market_model = hasattr(model, "actual")
         trajectory = model.actual if market_model else model
-        dri = trajectory.technology_blocks["dri_plant"]
-        eaf = trajectory.technology_blocks["eaf"]
+        blocks = trajectory.technology_blocks
+        dri = blocks["dri_plant"] if "dri_plant" in self.components else None
+        eaf = blocks["eaf"] if "eaf" in self.components else None
+        bof = blocks["bof"] if "bof" in self.components else None
+        bf_bof = blocks["bf_bof"] if "bf_bof" in self.components else None
+        terminal = blocks[self._terminal_technology_name()]
+
+        def block_value(block: pyo.Block | None, variable: str, t: int) -> float:
+            if block is None or not hasattr(block, variable):
+                return 0.0
+            return _value(getattr(block, variable)[t])
+
+        def block_status(block: pyo.Block | None, t: int) -> int:
+            if block is None:
+                return 0
+            return _operational_status(block, t)
+
         data: dict[str, list[float] | list[str]] = {
             "plant_name": [],
             "plant_type": [],
+            "steel_route": [],
             "steel_demand_mode": [],
             "steel_demand_total_t": [],
             "total_electricity_consumption_MWh": [],
             "variable_cost_EUR": [],
+            "coal_consumption_MWh": [],
+            "co2_emissions_t": [],
             "dri_electricity_consumption_MWh": [],
             "dri_output_t": [],
+            "dri_coal_consumption_MWh": [],
             "hydrogen_consumption_MWh": [],
             "natural_gas_consumption_MWh": [],
             "iron_ore_consumption_t": [],
@@ -980,6 +1036,21 @@ class SteelPlant(BasePlant):
             "lime_consumption_t": [],
             "eaf_co2_emissions_t": [],
             "eaf_operational_status": [],
+            "bof_electricity_consumption_MWh": [],
+            "bof_dri_input_t": [],
+            "bof_steel_output_t": [],
+            "bof_lime_consumption_t": [],
+            "bof_co2_emissions_t": [],
+            "bof_operational_status": [],
+            "bf_bof_electricity_consumption_MWh": [],
+            "bf_bof_steel_output_t": [],
+            "bf_bof_coal_consumption_MWh": [],
+            "bf_bof_natural_gas_consumption_MWh": [],
+            "bf_bof_hydrogen_consumption_MWh": [],
+            "bf_bof_iron_ore_consumption_t": [],
+            "bf_bof_lime_consumption_t": [],
+            "bf_bof_co2_emissions_t": [],
+            "bf_bof_operational_status": [],
             "solver": [],
         }
         optional_variables = {
@@ -1003,6 +1074,7 @@ class SteelPlant(BasePlant):
         for t in model.T:
             data["plant_name"].append(self.name)
             data["plant_type"].append(self.unit_type)
+            data["steel_route"].append(self.steel_route)
             data["steel_demand_mode"].append(
                 "forecast_profile"
                 if int(pyo.value(model.steel_demand_from_forecast))
@@ -1016,19 +1088,50 @@ class SteelPlant(BasePlant):
                 if market_model
                 else _value(trajectory.variable_cost[t])
             )
-            data["dri_electricity_consumption_MWh"].append(_value(dri.power_in[t]))
-            data["dri_output_t"].append(_value(dri.dri_output[t]))
-            data["hydrogen_consumption_MWh"].append(_value(dri.hydrogen_in[t]))
-            data["natural_gas_consumption_MWh"].append(_value(dri.natural_gas_in[t]))
-            data["iron_ore_consumption_t"].append(_value(dri.iron_ore_in[t]))
-            data["dri_co2_emissions_t"].append(_value(dri.co2_emission[t]))
-            data["dri_operational_status"].append(_operational_status(dri, t))
-            data["eaf_electricity_consumption_MWh"].append(_value(eaf.power_in[t]))
-            data["dri_input_t"].append(_value(eaf.dri_input[t]))
-            data["steel_output_t"].append(_value(eaf.steel_output[t]))
-            data["lime_consumption_t"].append(_value(eaf.lime_demand[t]))
-            data["eaf_co2_emissions_t"].append(_value(eaf.co2_emission[t]))
-            data["eaf_operational_status"].append(_operational_status(eaf, t))
+            dri_coal = block_value(dri, "coal_in", t)
+            dri_hydrogen = block_value(dri, "hydrogen_in", t)
+            dri_natural_gas = block_value(dri, "natural_gas_in", t)
+            dri_iron_ore = block_value(dri, "iron_ore_in", t)
+            dri_co2 = block_value(dri, "co2_emission", t)
+            bf_coal = block_value(bf_bof, "coal_in", t)
+            bf_hydrogen = block_value(bf_bof, "hydrogen_in", t)
+            bf_natural_gas = block_value(bf_bof, "natural_gas_in", t)
+            bf_iron_ore = block_value(bf_bof, "iron_ore_in", t)
+            bf_lime = block_value(bf_bof, "lime_demand", t)
+            bf_co2 = block_value(bf_bof, "co2_emission", t)
+            terminal_lime = block_value(terminal, "lime_demand", t)
+            terminal_co2 = block_value(terminal, "co2_emission", t)
+            data["coal_consumption_MWh"].append(dri_coal + bf_coal)
+            data["co2_emissions_t"].append(dri_co2 + terminal_co2)
+            data["dri_electricity_consumption_MWh"].append(block_value(dri, "power_in", t))
+            data["dri_output_t"].append(block_value(dri, "dri_output", t))
+            data["dri_coal_consumption_MWh"].append(dri_coal)
+            data["hydrogen_consumption_MWh"].append(dri_hydrogen + bf_hydrogen)
+            data["natural_gas_consumption_MWh"].append(dri_natural_gas + bf_natural_gas)
+            data["iron_ore_consumption_t"].append(dri_iron_ore + bf_iron_ore)
+            data["dri_co2_emissions_t"].append(dri_co2)
+            data["dri_operational_status"].append(block_status(dri, t))
+            data["eaf_electricity_consumption_MWh"].append(block_value(eaf, "power_in", t))
+            data["dri_input_t"].append(block_value(terminal, "dri_input", t))
+            data["steel_output_t"].append(block_value(terminal, "steel_output", t))
+            data["lime_consumption_t"].append(terminal_lime)
+            data["eaf_co2_emissions_t"].append(block_value(eaf, "co2_emission", t))
+            data["eaf_operational_status"].append(block_status(eaf, t))
+            data["bof_electricity_consumption_MWh"].append(block_value(bof, "power_in", t))
+            data["bof_dri_input_t"].append(block_value(bof, "dri_input", t))
+            data["bof_steel_output_t"].append(block_value(bof, "steel_output", t))
+            data["bof_lime_consumption_t"].append(block_value(bof, "lime_demand", t))
+            data["bof_co2_emissions_t"].append(block_value(bof, "co2_emission", t))
+            data["bof_operational_status"].append(block_status(bof, t))
+            data["bf_bof_electricity_consumption_MWh"].append(block_value(bf_bof, "power_in", t))
+            data["bf_bof_steel_output_t"].append(block_value(bf_bof, "steel_output", t))
+            data["bf_bof_coal_consumption_MWh"].append(bf_coal)
+            data["bf_bof_natural_gas_consumption_MWh"].append(bf_natural_gas)
+            data["bf_bof_hydrogen_consumption_MWh"].append(bf_hydrogen)
+            data["bf_bof_iron_ore_consumption_t"].append(bf_iron_ore)
+            data["bf_bof_lime_consumption_t"].append(bf_lime)
+            data["bf_bof_co2_emissions_t"].append(bf_co2)
+            data["bf_bof_operational_status"].append(block_status(bf_bof, t))
             data["solver"].append(solver_name)
             for column, (technology, variable) in optional_variables.items():
                 if column in data:
@@ -1081,11 +1184,15 @@ class SteelPlant(BasePlant):
             "electrolyser": "electrolyser_electricity_consumption_MWh",
             "dri_plant": "dri_electricity_consumption_MWh",
             "eaf": "eaf_electricity_consumption_MWh",
+            "bof": "bof_electricity_consumption_MWh",
+            "bf_bof": "bf_bof_electricity_consumption_MWh",
         }
         status_columns = {
             "electrolyser": "electrolyser_operational_status",
             "dri_plant": "dri_operational_status",
             "eaf": "eaf_operational_status",
+            "bof": "bof_operational_status",
+            "bf_bof": "bf_bof_operational_status",
         }
         component_states: dict[str, SteelComponentState] = {}
         for technology, old_state in previous.components.items():
@@ -1139,8 +1246,23 @@ class SteelPlant(BasePlant):
             demand_balance_t=balance,
         )
 
-    @staticmethod
-    def _validate_signal_columns(forecasts: pd.DataFrame, signals: SteelDispatchSignals) -> None:
+    def _terminal_technology_name(self) -> str:
+        if self.steel_route == "bf_bof":
+            return "bf_bof"
+        if self.steel_route == "dri_bof":
+            return "bof"
+        return "eaf"
+
+    def _requires_coal_price(self) -> bool:
+        return any(
+            getattr(component, "fuel_type", "") == COAL for component in self.components.values()
+        )
+
+    def _validate_signal_columns(
+        self,
+        forecasts: pd.DataFrame,
+        signals: SteelDispatchSignals,
+    ) -> None:
         columns = {
             signals.electricity_price_col,
             signals.natural_gas_price_col,
@@ -1149,6 +1271,8 @@ class SteelPlant(BasePlant):
             signals.lime_price_col,
             signals.co2_price_col,
         }
+        if self._requires_coal_price():
+            columns.add(signals.coal_price_col)
         if signals.steel_price_col:
             columns.add(signals.steel_price_col)
         missing = columns - set(forecasts.columns)
@@ -1158,6 +1282,10 @@ class SteelPlant(BasePlant):
             )
 
     def _validate_electrified_steel(self) -> None:
+        if self.steel_route != "dri_eaf":
+            raise ValueError(
+                f"Electrified-steel strategy requires plant '{self.name}' route to be DRI + EAF"
+            )
         if self.dri_plant.fuel_type != "hydrogen":
             raise ValueError(
                 f"Electrified-steel strategy requires plant '{self.name}' DRI fuel_type "
@@ -1474,3 +1602,61 @@ def _non_empty_values(rows: pd.DataFrame, column: str) -> list[Any]:
     if column not in rows.columns:
         return []
     return [value for value in rows[column].tolist() if not pd.isna(value) and str(value).strip()]
+
+
+def _detect_steel_route(components: dict[str, object], plant_name: str) -> str:
+    has_dri = "dri_plant" in components
+    has_eaf = "eaf" in components
+    has_bof = "bof" in components
+    has_bf_bof = "bf_bof" in components
+
+    if "hydrogen_buffer_storage" in components and "electrolyser" not in components:
+        raise ValueError(
+            f"Steel plant '{plant_name}' defines hydrogen_buffer_storage without an electrolyser"
+        )
+    if "dri_storage" in components and not has_dri:
+        raise ValueError(f"Steel plant '{plant_name}' defines dri_storage without a DRI plant")
+
+    if has_bf_bof:
+        conflicting = sorted(
+            technology
+            for technology, present in {
+                "dri_plant": has_dri,
+                "eaf": has_eaf,
+                "bof": has_bof,
+            }.items()
+            if present
+        )
+        if conflicting:
+            raise ValueError(
+                f"Steel plant '{plant_name}' has ambiguous route: bf_bof cannot be combined "
+                f"with {', '.join(conflicting)}"
+            )
+        return "bf_bof"
+
+    if has_eaf and has_bof:
+        raise ValueError(
+            f"Steel plant '{plant_name}' has ambiguous route: choose either eaf or bof, not both"
+        )
+    if has_eaf:
+        if not has_dri:
+            raise ValueError(
+                f"Steel plant '{plant_name}' route dri_eaf is missing required technology "
+                "'dri_plant'"
+            )
+        return "dri_eaf"
+    if has_bof:
+        if not has_dri:
+            raise ValueError(
+                f"Steel plant '{plant_name}' route dri_bof is missing required technology "
+                "'dri_plant'"
+            )
+        return "dri_bof"
+    if has_dri:
+        raise ValueError(
+            f"Steel plant '{plant_name}' is missing required terminal technology 'eaf' or 'bof'"
+        )
+    raise ValueError(
+        f"Steel plant '{plant_name}' must define exactly one route: "
+        "dri_plant + eaf, dri_plant + bof, or bf_bof"
+    )

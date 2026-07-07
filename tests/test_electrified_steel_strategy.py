@@ -30,8 +30,7 @@ def test_electrified_steel_cross_market_dispatch_and_ontology(tmp_path: Path) ->
     )
     assert dispatch["actual_electricity_consumption_MWh"].to_numpy() == pytest.approx(
         (
-            dispatch["final_planned_electricity_MWh"]
-            + dispatch["afrr_energy_activated_MWh"]
+            dispatch["final_planned_electricity_MWh"] + dispatch["afrr_energy_activated_MWh"]
         ).to_numpy()
     )
     assert dispatch["total_electricity_consumption_MWh"].to_numpy() == pytest.approx(
@@ -43,14 +42,11 @@ def test_electrified_steel_cross_market_dispatch_and_ontology(tmp_path: Path) ->
         dispatch["afrr_capacity_reserved_MWh"].to_numpy()
     )
     assert dispatch["afrr_energy_activated_MWh"].to_numpy() == pytest.approx(
-        dispatch[
-            ["afrr_energy_bid_MWh", "afrr_system_activation_MWh"]
-        ].min(axis=1).to_numpy()
+        dispatch[["afrr_energy_bid_MWh", "afrr_system_activation_MWh"]].min(axis=1).to_numpy()
     )
     assert set(dispatch["afrr_capacity_pricing_rule"]) == {"pay_as_bid"}
     assert (
-        dispatch["afrr_energy_bid_price_EUR_per_MWh"]
-        != dispatch["afrr_energy_price_EUR_per_MWh"]
+        dispatch["afrr_energy_bid_price_EUR_per_MWh"] != dispatch["afrr_energy_price_EUR_per_MWh"]
     ).all()
     assert ledger["day_ahead_position_MWh_el"].to_numpy() == pytest.approx(
         dispatch["DA_position_MWh"].to_numpy()
@@ -66,7 +62,7 @@ def test_electrified_steel_rejects_gas_fallback(tmp_path: Path) -> None:
     case_dir.mkdir()
     (case_dir / "config.yaml").write_text(_config(), encoding="utf-8")
     plants = _plants()
-    plants.loc[plants["technology"] == "dri_plant", "fuel_type"] = "both"
+    plants.loc[plants["technology"] == "dri_plant", "fuel_type"] = "hybrid_hydrogen_natural_gas"
     plants.to_csv(case_dir / "plants.csv", index=False)
     _forecasts().to_csv(case_dir / "forecasts_df.csv", index=False)
 
@@ -93,9 +89,7 @@ def test_free_energy_bid_is_compliant_and_activation_can_be_partial(tmp_path: Pa
     assert positive["afrr_energy_bid_MW"].to_numpy() == pytest.approx(
         positive["afrr_energy_bid_MW"].round().to_numpy()
     )
-    assert (
-        positive["afrr_energy_activated_MWh"] < positive["afrr_energy_bid_MWh"]
-    ).all()
+    assert (positive["afrr_energy_activated_MWh"] < positive["afrr_energy_bid_MWh"]).all()
     assert positive["afrr_energy_activated_MWh"].to_numpy() == pytest.approx(
         positive["afrr_system_activation_MWh"].to_numpy()
     )

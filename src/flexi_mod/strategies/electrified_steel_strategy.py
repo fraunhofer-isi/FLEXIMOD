@@ -62,19 +62,13 @@ class ElectrifiedSteelStrategy:
         self.afrr_energy_data_quality_summary = energy_data.quality_summary.copy()
 
         prepared = forecasts.copy()
-        prepared[_AFRR_ENERGY_PRICE] = energy_data.frame[
-            "afrr_energy_down_price_EUR_per_MWh"
-        ]
+        prepared[_AFRR_ENERGY_PRICE] = energy_data.frame["afrr_energy_down_price_EUR_per_MWh"]
         prepared[_AFRR_SYSTEM_ACTIVATION] = energy_data.frame["afrr_system_activation_MWh"]
         prepared[_AFRR_PRICE_AVAILABLE] = energy_data.frame["afrr_price_available"]
         prepared[_AFRR_CAPACITY_BLOCK_ID] = capacity_data.frame["afrr_capacity_block_id"]
         prepared[_AFRR_CAPACITY_BLOCK_DURATION] = capacity_data.frame["block_duration_h"]
-        prepared[_AFRR_CAPACITY_PRICE] = capacity_data.frame[
-            "capacity_price_EUR_per_MW_h"
-        ]
-        prepared[_AFRR_CAPACITY_MISSING_PRICE] = capacity_data.frame[
-            "missing_capacity_price_flag"
-        ]
+        prepared[_AFRR_CAPACITY_PRICE] = capacity_data.frame["capacity_price_EUR_per_MW_h"]
+        prepared[_AFRR_CAPACITY_MISSING_PRICE] = capacity_data.frame["missing_capacity_price_flag"]
 
         energy_rules = energy.product_rules
         capacity_rules = capacity.product_rules
@@ -96,9 +90,7 @@ class ElectrifiedSteelStrategy:
             afrr_energy_min_bid_mw=float(energy_rules.get("min_bid_mw", 0.0)),
             afrr_energy_bid_increment_mw=float(energy_rules.get("bid_increment_mw", 1.0)),
             afrr_capacity_min_bid_mw=float(capacity_rules.get("min_bid_mw", 0.0)),
-            afrr_capacity_bid_increment_mw=float(
-                capacity_rules.get("bid_increment_mw", 1.0)
-            ),
+            afrr_capacity_bid_increment_mw=float(capacity_rules.get("bid_increment_mw", 1.0)),
             afrr_capacity_product_duration_h=_duration_hours(capacity.product_length),
         )
         dispatch = plant.solve_afrr_down_rolling(self.config, prepared, signals)
@@ -119,12 +111,13 @@ class ElectrifiedSteelStrategy:
         if "intraday_continuous" in self.config.enabled_markets:
             raise ValueError("electrified_steel does not support intraday_continuous")
         sequence = [
-            market for market in self.config.market_sequence if market in self.config.enabled_markets
+            market
+            for market in self.config.market_sequence
+            if market in self.config.enabled_markets
         ]
         if sequence != ["afrr_capacity", "day_ahead", "afrr_energy"]:
             raise ValueError(
-                "electrified_steel market_sequence must be: afrr_capacity, day_ahead, "
-                "afrr_energy"
+                "electrified_steel market_sequence must be: afrr_capacity, day_ahead, afrr_energy"
             )
         capacity = self.config.market("afrr_capacity")
         day_ahead = self.config.market("day_ahead")
@@ -186,9 +179,7 @@ def _require_relative_gate(
     except (TypeError, ValueError) as exc:
         raise ValueError(f"electrified_steel has invalid {label}") from exc
     if minutes != expected_minutes:
-        raise ValueError(
-            f"electrified_steel requires German {label}={expected_minutes} minutes"
-        )
+        raise ValueError(f"electrified_steel requires German {label}={expected_minutes} minutes")
 
 
 def _capacity_block_summary(dispatch: pd.DataFrame) -> pd.DataFrame:

@@ -12,6 +12,8 @@ from flexi_mod.data.data_loader import DataLoader
 from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.steel_plant import SteelDispatchSignals, SteelPlant
 from flexi_mod.plants.technologies import (
+    BasicOxygenFurnace,
+    BlastFurnaceBasicOxygenFurnace,
     DRIPlant,
     DRIStorage,
     ElectricArcFurnace,
@@ -27,6 +29,7 @@ CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES
 def test_steel_plant_builds_required_and_optional_technologies() -> None:
     plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=True))
 
+    assert plant.steel_route == "dri_eaf"
     assert isinstance(plant.dri_plant, DRIPlant)
     assert isinstance(plant.eaf, ElectricArcFurnace)
     assert isinstance(plant.components["electrolyser"], Electrolyser)
@@ -36,6 +39,21 @@ def test_steel_plant_builds_required_and_optional_technologies() -> None:
     assert issubclass(ThermalStorage, GenericStorage)
     assert issubclass(HydrogenBufferStorage, GenericStorage)
     assert issubclass(DRIStorage, GenericStorage)
+
+
+def test_steel_plant_builds_dri_bof_route() -> None:
+    plant = SteelPlant.from_rows("steel_1", _dri_bof_rows())
+
+    assert plant.steel_route == "dri_bof"
+    assert isinstance(plant.dri_plant, DRIPlant)
+    assert isinstance(plant.bof, BasicOxygenFurnace)
+
+
+def test_steel_plant_builds_standalone_bf_bof_route() -> None:
+    plant = SteelPlant.from_rows("steel_1", _bf_bof_rows("coal"))
+
+    assert plant.steel_route == "bf_bof"
+    assert isinstance(plant.bf_bof, BlastFurnaceBasicOxygenFurnace)
 
 
 def test_shared_plant_factory_selects_steel_plant() -> None:
@@ -77,6 +95,118 @@ def test_steel_plant_hydrogen_route_and_material_balances_solve() -> None:
             + result["electrolyser_electricity_consumption_MWh"]
         ).to_numpy()
     )
+    assert result["coal_consumption_MWh"].sum() == pytest.approx(0.0)
+    assert result["co2_emissions_t"].sum() == pytest.approx(
+        result["dri_co2_emissions_t"].sum() + result["eaf_co2_emissions_t"].sum()
+    )
+
+
+def test_dri_bof_route_solves_and_satisfies_material_balance() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    plant = SteelPlant.from_rows("steel_1", _dri_bof_rows())
+
+    result = plant.solve_horizon(config, _steel_forecasts(), _signals())
+
+    assert result["steel_route"].unique().tolist() == ["dri_bof"]
+    assert result["steel_output_t"].sum() == pytest.approx(4.0)
+    assert result["bof_steel_output_t"].sum() == pytest.approx(4.0)
+    assert result["dri_output_t"].sum() == pytest.approx(result["bof_dri_input_t"].sum())
+    assert result["eaf_electricity_consumption_MWh"].sum() == pytest.approx(0.0)
+    assert result["lime_consumption_t"].sum() == pytest.approx(0.2)
+
+
+def test_bf_bof_coal_route_solves_and_requires_coal_price() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    plant = SteelPlant.from_rows("steel_1", _bf_bof_rows("coal"))
+    forecasts = _steel_forecasts()
+
+    result = plant.solve_horizon(config, forecasts, _signals())
+
+    assert result["steel_route"].unique().tolist() == ["bf_bof"]
+    assert result["steel_output_t"].sum() == pytest.approx(4.0)
+    assert result["coal_consumption_MWh"].sum() == pytest.approx(16.0)
+    assert result["hydrogen_consumption_MWh"].sum() == pytest.approx(0.0)
+    assert result["natural_gas_consumption_MWh"].sum() == pytest.approx(0.0)
+    assert result["iron_ore_consumption_t"].sum() == pytest.approx(6.0)
+    assert result["lime_consumption_t"].sum() == pytest.approx(0.2)
+
+    with pytest.raises(ValueError, match="coal_price"):
+        plant.solve_horizon(config, forecasts.drop(columns=["coal_price"]), _signals())
+
+
+@pytest.mark.parametrize("fuel_type", ["natural_gas", "hydrogen"])
+def test_bf_bof_single_fuel_routes_leave_unused_fuels_zero(fuel_type: str) -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    plant = SteelPlant.from_rows("steel_1", _bf_bof_rows(fuel_type))
+
+    result = plant.solve_horizon(config, _steel_forecasts(), _signals())
+
+    assert result["steel_output_t"].sum() == pytest.approx(4.0)
+    if fuel_type == "natural_gas":
+        assert result["natural_gas_consumption_MWh"].sum() == pytest.approx(12.0)
+        assert result["hydrogen_consumption_MWh"].sum() == pytest.approx(0.0)
+    else:
+        assert result["hydrogen_consumption_MWh"].sum() == pytest.approx(8.0)
+        assert result["natural_gas_consumption_MWh"].sum() == pytest.approx(0.0)
+    assert result["coal_consumption_MWh"].sum() == pytest.approx(0.0)
+
+
+def test_bf_bof_hybrid_fuel_selects_cheaper_feasible_mix() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    plant = SteelPlant.from_rows("steel_1", _bf_bof_rows("hybrid_hydrogen_natural_gas"))
+    forecasts = _steel_forecasts()
+    forecasts["natural_gas_price"] = 10.0
+    forecasts["hydrogen_price"] = 200.0
+
+    gas_result = plant.solve_horizon(config, forecasts, _signals())
+
+    assert gas_result["natural_gas_consumption_MWh"].sum() == pytest.approx(12.0)
+    assert gas_result["hydrogen_consumption_MWh"].sum() == pytest.approx(0.0)
+
+    forecasts["natural_gas_price"] = 200.0
+    forecasts["hydrogen_price"] = 1.0
+    hydrogen_result = plant.solve_horizon(config, forecasts, _signals())
+
+    assert hydrogen_result["hydrogen_consumption_MWh"].sum() == pytest.approx(8.0)
+    assert hydrogen_result["natural_gas_consumption_MWh"].sum() == pytest.approx(0.0)
+
+
+def test_bf_bof_hydrogen_is_external_without_electrolyser_and_constrained_with_one() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    external_plant = SteelPlant.from_rows("steel_1", _bf_bof_rows("hydrogen"))
+    external_result = external_plant.solve_horizon(config, _steel_forecasts(), _signals())
+
+    assert external_result["hydrogen_consumption_MWh"].sum() == pytest.approx(8.0)
+    assert "electrolyser_hydrogen_output_MWh" not in external_result
+
+    electrolyser_plant = SteelPlant.from_rows(
+        "steel_1",
+        _bf_bof_rows("hydrogen", include_electrolyser=True),
+    )
+    electrolyser_result = electrolyser_plant.solve_horizon(config, _steel_forecasts(), _signals())
+
+    assert electrolyser_result["hydrogen_consumption_MWh"].sum() == pytest.approx(8.0)
+    assert electrolyser_result["electrolyser_hydrogen_output_MWh"].sum() == pytest.approx(8.0)
+
+
+def test_invalid_steel_route_combinations_fail_clearly() -> None:
+    rows = pd.concat([_steel_rows(include_optional=False), _dri_bof_rows().iloc[[1]]])
+
+    with pytest.raises(ValueError, match="ambiguous route"):
+        SteelPlant.from_rows("steel_1", rows)
+
+    rows = pd.concat([_bf_bof_rows("coal"), _steel_rows(include_optional=False).iloc[[0]]])
+
+    with pytest.raises(ValueError, match="bf_bof cannot be combined"):
+        SteelPlant.from_rows("steel_1", rows)
+
+
+def test_ambiguous_both_fuel_type_is_rejected() -> None:
+    rows = _steel_rows(include_optional=False)
+    rows.loc[rows["technology"] == "dri_plant", "fuel_type"] = "both"
+
+    with pytest.raises(ValueError, match="hybrid_hydrogen_natural_gas"):
+        SteelPlant.from_rows("steel_1", rows)
 
 
 def test_steel_plant_without_electrolyser_buys_hydrogen() -> None:
@@ -213,6 +343,12 @@ def test_forecast_discovery_requires_profile_only_without_total_target() -> None
     default_required = loader.required_forecast_columns(profile_rows)
     assert "steel_1_steel_demand" in default_required
 
+    coal_required = loader.required_forecast_columns(_bf_bof_rows("coal"))
+    assert "coal_price" in coal_required
+
+    gas_required = loader.required_forecast_columns(_bf_bof_rows("natural_gas"))
+    assert "coal_price" not in gas_required
+
 
 def test_rolling_scalar_target_is_committed_once_and_completed_exactly() -> None:
     config = _rolling_config(horizon_hours=1.0, step_hours=0.5)
@@ -248,6 +384,18 @@ def test_rolling_profile_carries_backlog_and_credit_between_windows() -> None:
         result["steel_demand_balance_t"].abs().max() > 1e-8
         or result["steel_output_t"].nunique() > 1
     )
+
+
+def test_rolling_bf_bof_preserves_route_state_and_final_demand() -> None:
+    config = _rolling_config(horizon_hours=1.0, step_hours=0.5)
+    plant = SteelPlant.from_rows("steel_1", _bf_bof_rows("natural_gas"))
+
+    result = plant.solve_rolling(config, _extended_steel_forecasts(), _signals())
+
+    assert result["steel_output_t"].sum() == pytest.approx(4.0)
+    assert result["cumulative_steel_output_t"].iloc[-1] == pytest.approx(4.0)
+    assert result["steel_demand_balance_t"].iloc[-1] == pytest.approx(0.0)
+    assert result["bf_bof_operational_status"].isin([0, 1]).all()
 
 
 def test_rolling_inventory_state_is_continuous_across_commit_boundary() -> None:
@@ -396,10 +544,57 @@ def _steel_rows(include_optional: bool) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _dri_bof_rows() -> pd.DataFrame:
+    rows = _steel_rows(include_optional=False)
+    rows.loc[rows["technology"] == "eaf", "technology"] = "bof"
+    rows.loc[rows["technology"] == "bof", "specific_electricity_consumption"] = 0.2
+    return rows
+
+
+def _bf_bof_rows(fuel_type: str, include_electrolyser: bool = False) -> pd.DataFrame:
+    shared = {
+        "name": "steel_1",
+        "unit_type": "steel_plant",
+        "node": "north",
+        "objective": "min_variable_cost",
+        "steel_demand": 4.0,
+    }
+    rows = [
+        {
+            **shared,
+            "technology": "bf_bof",
+            "fuel_type": fuel_type,
+            "specific_coal_consumption": 4.0,
+            "specific_hydrogen_consumption": 2.0,
+            "specific_natural_gas_consumption": 3.0,
+            "specific_electricity_consumption": 0.2,
+            "specific_iron_ore_consumption": 1.5,
+            "specific_lime_demand": 0.05,
+            "coal_co2_factor": 0.34,
+            "natural_gas_co2_factor": 0.2,
+            "lime_co2_factor": 0.1,
+            "max_power": 10.0,
+            "min_power": 0.0,
+        }
+    ]
+    if include_electrolyser:
+        rows.append(
+            {
+                **shared,
+                "technology": "electrolyser",
+                "max_power": 20.0,
+                "min_power": 0.0,
+                "efficiency": 0.8,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _steel_forecasts() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "electricity_price": [30.0, 40.0, 80.0, 100.0],
+            "coal_price": [15.0] * 4,
             "natural_gas_price": [50.0] * 4,
             "hydrogen_price": [70.0] * 4,
             "iron_ore_price": [100.0] * 4,
@@ -416,6 +611,7 @@ def _extended_steel_forecasts() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "electricity_price": [20.0, 25.0, 100.0, 110.0, 30.0, 35.0, 90.0, 95.0],
+            "coal_price": [15.0] * periods,
             "natural_gas_price": [50.0] * periods,
             "hydrogen_price": [70.0] * periods,
             "iron_ore_price": [100.0] * periods,

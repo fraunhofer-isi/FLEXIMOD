@@ -12,6 +12,12 @@ from typing import Any
 import pandas as pd
 import pyomo.environ as pyo
 
+COAL = "coal"
+NATURAL_GAS = "natural_gas"
+HYDROGEN = "hydrogen"
+HYBRID_HYDROGEN_NATURAL_GAS = "hybrid_hydrogen_natural_gas"
+STEEL_FUEL_TYPES = frozenset({COAL, NATURAL_GAS, HYDROGEN, HYBRID_HYDROGEN_NATURAL_GAS})
+
 
 class GenericStorage(ABC):
     """Common interface for energy stores and material inventories."""
@@ -268,8 +274,14 @@ class Electrolyser:
 
 @dataclass
 class DRIPlant:
-    """Direct-reduced-iron shaft using hydrogen, natural gas, or a mixture."""
+    """Direct-reduced-iron shaft using a configured reducing fuel.
 
+    Balance structure follows the direct-reduction route taxonomy in the IEA
+    Iron and Steel Technology Roadmap. Fuel and raw-material intensities remain
+    explicit plant inputs, so case data can represent a specific shaft design.
+    """
+
+    specific_coal_consumption_mwh_per_t: float
     specific_hydrogen_consumption_mwh_per_t: float
     specific_natural_gas_consumption_mwh_per_t: float
     specific_electricity_consumption_mwh_per_t: float
@@ -283,19 +295,29 @@ class DRIPlant:
     min_down_steps: int = 0
     initial_operational_status: int = 1
     natural_gas_co2_factor_t_per_mwh: float = 0.5
+    coal_co2_factor_t_per_mwh: float = 0.0
 
     @classmethod
     def from_row(cls, row: pd.Series) -> DRIPlant:
-        fuel_type = _clean(row.get("fuel_type")).lower()
-        if fuel_type not in {"hydrogen", "natural_gas", "both"}:
-            raise ValueError("DRIPlant fuel_type must be 'hydrogen', 'natural_gas', or 'both'")
+        fuel_type = _steel_fuel_type(row, "DRIPlant")
         return cls(
-            specific_hydrogen_consumption_mwh_per_t=_as_float(
-                row.get("specific_hydrogen_consumption"), "specific_hydrogen_consumption"
+            specific_coal_consumption_mwh_per_t=_fuel_specific_consumption(
+                row,
+                "specific_coal_consumption",
+                fuel_type,
+                required_for={COAL},
             ),
-            specific_natural_gas_consumption_mwh_per_t=_as_float(
-                row.get("specific_natural_gas_consumption"),
+            specific_hydrogen_consumption_mwh_per_t=_fuel_specific_consumption(
+                row,
+                "specific_hydrogen_consumption",
+                fuel_type,
+                required_for={HYDROGEN, HYBRID_HYDROGEN_NATURAL_GAS},
+            ),
+            specific_natural_gas_consumption_mwh_per_t=_fuel_specific_consumption(
+                row,
                 "specific_natural_gas_consumption",
+                fuel_type,
+                required_for={NATURAL_GAS, HYBRID_HYDROGEN_NATURAL_GAS},
             ),
             specific_electricity_consumption_mwh_per_t=_as_float(
                 row.get("specific_electricity_consumption"),
@@ -322,6 +344,9 @@ class DRIPlant:
                 "natural_gas_co2_factor",
                 default=0.5,
             ),
+            coal_co2_factor_t_per_mwh=_as_float(
+                row.get("coal_co2_factor"), "coal_co2_factor", default=0.0
+            ),
         )
 
     def add_to_model(
@@ -333,6 +358,9 @@ class DRIPlant:
     ) -> pyo.Block:
         dt_hours = float(context["dt_hours"])
         _add_power_parameters(self, block, dt_hours, context)
+        block.specific_coal_consumption = pyo.Param(
+            initialize=self.specific_coal_consumption_mwh_per_t
+        )
         block.specific_hydrogen_consumption = pyo.Param(
             initialize=self.specific_hydrogen_consumption_mwh_per_t
         )
@@ -346,10 +374,12 @@ class DRIPlant:
             initialize=self.specific_iron_ore_consumption_t_per_t
         )
         block.natural_gas_co2_factor = pyo.Param(initialize=self.natural_gas_co2_factor_t_per_mwh)
+        block.coal_co2_factor = pyo.Param(initialize=self.coal_co2_factor_t_per_mwh)
         block.power_in = pyo.Var(
             time_steps, within=pyo.NonNegativeReals, bounds=(0.0, self.max_power_mw * dt_hours)
         )
         block.iron_ore_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.coal_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.natural_gas_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.co2_emission = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.hydrogen_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
@@ -358,9 +388,11 @@ class DRIPlant:
 
         @block.Constraint(time_steps)
         def dri_output_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            if self.fuel_type == "hydrogen":
+            if self.fuel_type == COAL:
+                return b.dri_output[t] == b.coal_in[t] / b.specific_coal_consumption
+            if self.fuel_type == HYDROGEN:
                 return b.dri_output[t] == b.hydrogen_in[t] / b.specific_hydrogen_consumption
-            if self.fuel_type == "natural_gas":
+            if self.fuel_type == NATURAL_GAS:
                 return b.dri_output[t] == b.natural_gas_in[t] / b.specific_natural_gas_consumption
             return b.dri_output[t] == (
                 b.natural_gas_in[t] / b.specific_natural_gas_consumption
@@ -368,10 +400,20 @@ class DRIPlant:
             )
 
         @block.Constraint(time_steps)
-        def zero_unused_fuel_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            if self.fuel_type == "hydrogen":
+        def zero_unused_coal_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            if self.fuel_type != COAL:
+                return b.coal_in[t] == 0
+            return pyo.Constraint.Skip
+
+        @block.Constraint(time_steps)
+        def zero_unused_natural_gas_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            if self.fuel_type not in {NATURAL_GAS, HYBRID_HYDROGEN_NATURAL_GAS}:
                 return b.natural_gas_in[t] == 0
-            if self.fuel_type == "natural_gas":
+            return pyo.Constraint.Skip
+
+        @block.Constraint(time_steps)
+        def zero_unused_hydrogen_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            if self.fuel_type not in {HYDROGEN, HYBRID_HYDROGEN_NATURAL_GAS}:
                 return b.hydrogen_in[t] == 0
             return pyo.Constraint.Skip
 
@@ -385,7 +427,9 @@ class DRIPlant:
 
         @block.Constraint(time_steps)
         def co2_emission_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_emission[t] == b.natural_gas_in[t] * b.natural_gas_co2_factor
+            return b.co2_emission[t] == (
+                b.coal_in[t] * b.coal_co2_factor + b.natural_gas_in[t] * b.natural_gas_co2_factor
+            )
 
         @block.Constraint(time_steps)
         def operating_cost_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -394,9 +438,11 @@ class DRIPlant:
                 + b.iron_ore_in[t] * model.iron_ore_price[t]
                 + b.co2_emission[t] * model.co2_price[t]
             )
-            if self.fuel_type in {"natural_gas", "both"}:
+            if self.fuel_type == COAL:
+                cost += b.coal_in[t] * model.coal_price[t]
+            if self.fuel_type in {NATURAL_GAS, HYBRID_HYDROGEN_NATURAL_GAS}:
                 cost += b.natural_gas_in[t] * model.natural_gas_price[t]
-            if self.fuel_type in {"hydrogen", "both"}:
+            if self.fuel_type in {HYDROGEN, HYBRID_HYDROGEN_NATURAL_GAS}:
                 cost += b.hydrogen_in[t] * model.hydrogen_price[t]
             return b.operating_cost[t] == cost
 
@@ -495,6 +541,306 @@ class ElectricArcFurnace:
                 + b.co2_emission[t] * model.co2_price[t]
                 + b.lime_demand[t] * model.lime_price[t]
             )
+
+        _add_power_operating_constraints(block, time_steps)
+        return block
+
+
+@dataclass
+class BasicOxygenFurnace:
+    """Basic oxygen furnace converting DRI into steel.
+
+    This is a linear converter balance for FLEXIMOD optimization. BOF process
+    boundaries follow the JRC Iron and Steel BREF; the DRI-to-steel material
+    balance follows the mass-balance formulation used for BOF/EAF converter
+    modelling in Zhou et al. (2025). Consumption factors are case inputs.
+    """
+
+    max_power_mw: float
+    min_power_mw: float
+    specific_electricity_consumption_mwh_per_t: float
+    specific_dri_demand_t_per_t: float
+    specific_lime_demand_t_per_t: float
+    lime_co2_factor_t_per_t: float
+    ramp_up_mw_per_step: float | None = None
+    ramp_down_mw_per_step: float | None = None
+    min_operating_steps: int = 0
+    min_down_steps: int = 0
+    initial_operational_status: int = 1
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> BasicOxygenFurnace:
+        return cls(
+            max_power_mw=_as_float(row.get("max_power"), "max_power"),
+            min_power_mw=_as_float(row.get("min_power"), "min_power", default=0.0),
+            specific_electricity_consumption_mwh_per_t=_as_float(
+                row.get("specific_electricity_consumption"),
+                "specific_electricity_consumption",
+            ),
+            specific_dri_demand_t_per_t=_as_float(
+                row.get("specific_dri_demand"), "specific_dri_demand"
+            ),
+            specific_lime_demand_t_per_t=_as_float(
+                row.get("specific_lime_demand"), "specific_lime_demand"
+            ),
+            lime_co2_factor_t_per_t=_as_float(row.get("lime_co2_factor"), "lime_co2_factor"),
+            ramp_up_mw_per_step=_as_optional_float(row.get("ramp_up")),
+            ramp_down_mw_per_step=_as_optional_float(row.get("ramp_down")),
+            min_operating_steps=_as_int(
+                _first_present(row.get("min_operating_steps"), row.get("min_operating_time")),
+                default=0,
+            ),
+            min_down_steps=_as_int(
+                _first_present(row.get("min_down_steps"), row.get("min_down_time")), default=0
+            ),
+            initial_operational_status=_as_int(row.get("initial_operational_status"), default=1),
+        )
+
+    def add_to_model(
+        self,
+        model: pyo.ConcreteModel,
+        block: pyo.Block,
+        time_steps: pyo.Set,
+        context: dict[str, Any],
+    ) -> pyo.Block:
+        dt_hours = float(context["dt_hours"])
+        _add_power_parameters(self, block, dt_hours, context)
+        block.specific_electricity_consumption = pyo.Param(
+            initialize=self.specific_electricity_consumption_mwh_per_t
+        )
+        block.specific_dri_demand = pyo.Param(initialize=self.specific_dri_demand_t_per_t)
+        block.specific_lime_demand = pyo.Param(initialize=self.specific_lime_demand_t_per_t)
+        block.lime_co2_factor = pyo.Param(initialize=self.lime_co2_factor_t_per_t)
+        block.power_in = pyo.Var(
+            time_steps, within=pyo.NonNegativeReals, bounds=(0.0, self.max_power_mw * dt_hours)
+        )
+        block.dri_input = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.steel_output = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.operating_cost = pyo.Var(time_steps, within=pyo.Reals)
+        block.co2_emission = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.lime_demand = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+
+        @block.Constraint(time_steps)
+        def steel_output_dri_relation_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.steel_output[t] == b.dri_input[t] / b.specific_dri_demand
+
+        @block.Constraint(time_steps)
+        def steel_output_power_relation_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.power_in[t] == b.steel_output[t] * b.specific_electricity_consumption
+
+        @block.Constraint(time_steps)
+        def lime_demand_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.lime_demand[t] == b.steel_output[t] * b.specific_lime_demand
+
+        @block.Constraint(time_steps)
+        def co2_emission_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_emission[t] == b.lime_demand[t] * b.lime_co2_factor
+
+        @block.Constraint(time_steps)
+        def operating_cost_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.operating_cost[t] == (
+                b.power_in[t] * model.electricity_price[t]
+                + b.co2_emission[t] * model.co2_price[t]
+                + b.lime_demand[t] * model.lime_price[t]
+            )
+
+        _add_power_operating_constraints(block, time_steps)
+        return block
+
+
+@dataclass
+class BlastFurnaceBasicOxygenFurnace:
+    """Integrated BF-BOF steelmaking route.
+
+    Process boundaries follow the JRC Iron and Steel BREF and IEA BF-BOF route
+    taxonomy. The linear equations below are production-planning balances:
+    explicit case coefficients convert final steel output into iron-bearing
+    feedstock, reductant, electricity, lime, and direct CO2. This preserves
+    literature structure without hard-coding one plant recipe as universal.
+    """
+
+    specific_coal_consumption_mwh_per_t: float
+    specific_hydrogen_consumption_mwh_per_t: float
+    specific_natural_gas_consumption_mwh_per_t: float
+    specific_electricity_consumption_mwh_per_t: float
+    specific_iron_ore_consumption_t_per_t: float
+    specific_lime_demand_t_per_t: float
+    max_power_mw: float
+    min_power_mw: float
+    fuel_type: str
+    coal_co2_factor_t_per_mwh: float
+    natural_gas_co2_factor_t_per_mwh: float
+    lime_co2_factor_t_per_t: float
+    ramp_up_mw_per_step: float | None = None
+    ramp_down_mw_per_step: float | None = None
+    min_operating_steps: int = 0
+    min_down_steps: int = 0
+    initial_operational_status: int = 1
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> BlastFurnaceBasicOxygenFurnace:
+        fuel_type = _steel_fuel_type(row, "BlastFurnaceBasicOxygenFurnace")
+        return cls(
+            specific_coal_consumption_mwh_per_t=_fuel_specific_consumption(
+                row,
+                "specific_coal_consumption",
+                fuel_type,
+                required_for={COAL},
+            ),
+            specific_hydrogen_consumption_mwh_per_t=_fuel_specific_consumption(
+                row,
+                "specific_hydrogen_consumption",
+                fuel_type,
+                required_for={HYDROGEN, HYBRID_HYDROGEN_NATURAL_GAS},
+            ),
+            specific_natural_gas_consumption_mwh_per_t=_fuel_specific_consumption(
+                row,
+                "specific_natural_gas_consumption",
+                fuel_type,
+                required_for={NATURAL_GAS, HYBRID_HYDROGEN_NATURAL_GAS},
+            ),
+            specific_electricity_consumption_mwh_per_t=_as_float(
+                row.get("specific_electricity_consumption"),
+                "specific_electricity_consumption",
+            ),
+            specific_iron_ore_consumption_t_per_t=_as_float(
+                row.get("specific_iron_ore_consumption"), "specific_iron_ore_consumption"
+            ),
+            specific_lime_demand_t_per_t=_as_float(
+                row.get("specific_lime_demand"), "specific_lime_demand"
+            ),
+            max_power_mw=_as_float(row.get("max_power"), "max_power"),
+            min_power_mw=_as_float(row.get("min_power"), "min_power", default=0.0),
+            fuel_type=fuel_type,
+            coal_co2_factor_t_per_mwh=_as_float(
+                row.get("coal_co2_factor"), "coal_co2_factor", default=0.0
+            ),
+            natural_gas_co2_factor_t_per_mwh=_as_float(
+                row.get("natural_gas_co2_factor"),
+                "natural_gas_co2_factor",
+                default=0.0,
+            ),
+            lime_co2_factor_t_per_t=_as_float(row.get("lime_co2_factor"), "lime_co2_factor"),
+            ramp_up_mw_per_step=_as_optional_float(row.get("ramp_up")),
+            ramp_down_mw_per_step=_as_optional_float(row.get("ramp_down")),
+            min_operating_steps=_as_int(
+                _first_present(row.get("min_operating_steps"), row.get("min_operating_time")),
+                default=0,
+            ),
+            min_down_steps=_as_int(
+                _first_present(row.get("min_down_steps"), row.get("min_down_time")), default=0
+            ),
+            initial_operational_status=_as_int(row.get("initial_operational_status"), default=1),
+        )
+
+    def add_to_model(
+        self,
+        model: pyo.ConcreteModel,
+        block: pyo.Block,
+        time_steps: pyo.Set,
+        context: dict[str, Any],
+    ) -> pyo.Block:
+        dt_hours = float(context["dt_hours"])
+        _add_power_parameters(self, block, dt_hours, context)
+        block.specific_coal_consumption = pyo.Param(
+            initialize=self.specific_coal_consumption_mwh_per_t
+        )
+        block.specific_hydrogen_consumption = pyo.Param(
+            initialize=self.specific_hydrogen_consumption_mwh_per_t
+        )
+        block.specific_natural_gas_consumption = pyo.Param(
+            initialize=self.specific_natural_gas_consumption_mwh_per_t
+        )
+        block.specific_electricity_consumption = pyo.Param(
+            initialize=self.specific_electricity_consumption_mwh_per_t
+        )
+        block.specific_iron_ore_consumption = pyo.Param(
+            initialize=self.specific_iron_ore_consumption_t_per_t
+        )
+        block.specific_lime_demand = pyo.Param(initialize=self.specific_lime_demand_t_per_t)
+        block.coal_co2_factor = pyo.Param(initialize=self.coal_co2_factor_t_per_mwh)
+        block.natural_gas_co2_factor = pyo.Param(initialize=self.natural_gas_co2_factor_t_per_mwh)
+        block.lime_co2_factor = pyo.Param(initialize=self.lime_co2_factor_t_per_t)
+        block.power_in = pyo.Var(
+            time_steps, within=pyo.NonNegativeReals, bounds=(0.0, self.max_power_mw * dt_hours)
+        )
+        block.coal_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.natural_gas_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.hydrogen_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.iron_ore_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.lime_demand = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.co2_emission = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.steel_output = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.operating_cost = pyo.Var(time_steps, within=pyo.Reals)
+
+        @block.Constraint(time_steps)
+        def steel_output_fuel_relation_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            if self.fuel_type == COAL:
+                return b.steel_output[t] == b.coal_in[t] / b.specific_coal_consumption
+            if self.fuel_type == HYDROGEN:
+                return b.steel_output[t] == b.hydrogen_in[t] / b.specific_hydrogen_consumption
+            if self.fuel_type == NATURAL_GAS:
+                return b.steel_output[t] == (
+                    b.natural_gas_in[t] / b.specific_natural_gas_consumption
+                )
+            return b.steel_output[t] == (
+                b.natural_gas_in[t] / b.specific_natural_gas_consumption
+                + b.hydrogen_in[t] / b.specific_hydrogen_consumption
+            )
+
+        @block.Constraint(time_steps)
+        def zero_unused_coal_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            if self.fuel_type != COAL:
+                return b.coal_in[t] == 0
+            return pyo.Constraint.Skip
+
+        @block.Constraint(time_steps)
+        def zero_unused_natural_gas_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            if self.fuel_type not in {NATURAL_GAS, HYBRID_HYDROGEN_NATURAL_GAS}:
+                return b.natural_gas_in[t] == 0
+            return pyo.Constraint.Skip
+
+        @block.Constraint(time_steps)
+        def zero_unused_hydrogen_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            if self.fuel_type not in {HYDROGEN, HYBRID_HYDROGEN_NATURAL_GAS}:
+                return b.hydrogen_in[t] == 0
+            return pyo.Constraint.Skip
+
+        @block.Constraint(time_steps)
+        def electricity_consumption_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.power_in[t] == b.steel_output[t] * b.specific_electricity_consumption
+
+        @block.Constraint(time_steps)
+        def iron_ore_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.iron_ore_in[t] == b.steel_output[t] * b.specific_iron_ore_consumption
+
+        @block.Constraint(time_steps)
+        def lime_demand_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.lime_demand[t] == b.steel_output[t] * b.specific_lime_demand
+
+        @block.Constraint(time_steps)
+        def co2_emission_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_emission[t] == (
+                b.coal_in[t] * b.coal_co2_factor
+                + b.natural_gas_in[t] * b.natural_gas_co2_factor
+                + b.lime_demand[t] * b.lime_co2_factor
+            )
+
+        @block.Constraint(time_steps)
+        def operating_cost_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            cost = (
+                b.power_in[t] * model.electricity_price[t]
+                + b.iron_ore_in[t] * model.iron_ore_price[t]
+                + b.lime_demand[t] * model.lime_price[t]
+                + b.co2_emission[t] * model.co2_price[t]
+            )
+            if self.fuel_type == COAL:
+                cost += b.coal_in[t] * model.coal_price[t]
+            if self.fuel_type in {NATURAL_GAS, HYBRID_HYDROGEN_NATURAL_GAS}:
+                cost += b.natural_gas_in[t] * model.natural_gas_price[t]
+            if self.fuel_type in {HYDROGEN, HYBRID_HYDROGEN_NATURAL_GAS}:
+                cost += b.hydrogen_in[t] * model.hydrogen_price[t]
+            return b.operating_cost[t] == cost
 
         _add_power_operating_constraints(block, time_steps)
         return block
@@ -662,6 +1008,8 @@ TECHNOLOGY_REGISTRY = {
     "electrolyser": Electrolyser,
     "dri_plant": DRIPlant,
     "eaf": ElectricArcFurnace,
+    "bof": BasicOxygenFurnace,
+    "bf_bof": BlastFurnaceBasicOxygenFurnace,
     "generic_storage": GenericInventoryStorage,
     "hydrogen_buffer_storage": HydrogenBufferStorage,
     "dri_storage": DRIStorage,
@@ -703,6 +1051,33 @@ def _as_optional_float(value: Any) -> float | None:
     if pd.isna(value) or str(value).strip() == "":
         return None
     return float(value)
+
+
+def _steel_fuel_type(row: pd.Series, owner: str) -> str:
+    fuel_type = _clean(row.get("fuel_type"), HYDROGEN).lower()
+    if fuel_type == "both":
+        raise ValueError(
+            f"{owner} fuel_type='both' is ambiguous; use fuel_type='hybrid_hydrogen_natural_gas'"
+        )
+    if fuel_type not in STEEL_FUEL_TYPES:
+        allowed = ", ".join(sorted(STEEL_FUEL_TYPES))
+        raise ValueError(f"{owner} fuel_type must be one of: {allowed}")
+    return fuel_type
+
+
+def _fuel_specific_consumption(
+    row: pd.Series,
+    column: str,
+    fuel_type: str,
+    *,
+    required_for: set[str],
+) -> float:
+    value = _as_float(row.get(column), column, default=None if fuel_type in required_for else 0.0)
+    if fuel_type in required_for and value <= 0:
+        raise ValueError(
+            f"Plant parameter '{column}' must be positive when fuel_type='{fuel_type}'"
+        )
+    return value
 
 
 def _as_int(value: Any, default: int) -> int:

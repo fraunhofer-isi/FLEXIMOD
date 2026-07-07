@@ -563,12 +563,14 @@ def _steel_summary_frame(dispatch_results: pd.DataFrame) -> pd.DataFrame:
                 "steel_demand_total_t": target,
                 "total_steel_production_t": produced,
                 "total_electricity_consumption_MWh": total("total_electricity_consumption_MWh"),
+                "total_coal_consumption_MWh": total("coal_consumption_MWh"),
                 "total_hydrogen_consumption_MWh": total("hydrogen_consumption_MWh"),
                 "total_natural_gas_consumption_MWh": total("natural_gas_consumption_MWh"),
                 "total_iron_ore_consumption_t": total("iron_ore_consumption_t"),
                 "total_lime_consumption_t": total("lime_consumption_t"),
-                "total_co2_emissions_t": total("dri_co2_emissions_t")
-                + total("eaf_co2_emissions_t"),
+                "total_co2_emissions_t": total("co2_emissions_t")
+                if "co2_emissions_t" in group
+                else total("dri_co2_emissions_t") + total("eaf_co2_emissions_t"),
                 "total_variable_cost_EUR": total("variable_cost_EUR"),
                 "final_hydrogen_storage_soc": (
                     float(group["hydrogen_storage_soc"].iloc[-1])

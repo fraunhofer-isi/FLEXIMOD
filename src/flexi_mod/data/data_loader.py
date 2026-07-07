@@ -177,6 +177,8 @@ class DataLoader:
             demand_column = _demand_column_for_plant(str(plant_name), plant_rows)
             if demand_column:
                 required.add(demand_column)
+        if _steel_requires_coal_price(plants):
+            required.add("coal_price")
 
         return required
 
@@ -458,3 +460,11 @@ def _demand_column_for_plant(plant_name: str, plant_rows: pd.DataFrame) -> str |
         if values:
             return values[0]
     return f"{plant_name}_heat_demand"
+
+
+def _steel_requires_coal_price(plants: pd.DataFrame) -> bool:
+    if not {"unit_type", "fuel_type"}.issubset(plants.columns):
+        return False
+    unit_type = plants["unit_type"].astype(str).str.strip().str.lower()
+    fuel_type = plants["fuel_type"].astype(str).str.strip().str.lower()
+    return bool(((unit_type == "steel_plant") & (fuel_type == "coal")).any())

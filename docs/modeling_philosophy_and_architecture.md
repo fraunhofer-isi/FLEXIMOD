@@ -245,6 +245,67 @@ CO2 is currently disabled in the active objective and benchmark. A `co2_price`
 column may still exist in input files for later use, but it is not required for
 the current MVP.
 
+### Steel physical routes
+
+`steel_plant` detects exactly one physical route from its configured
+technologies:
+
+| Route | Required technologies | Terminal steel output |
+|---|---|---|
+| DRI-EAF | `dri_plant` + `eaf` | `eaf.steel_output` |
+| DRI-BOF | `dri_plant` + `bof` | `bof.steel_output` |
+| BF-BOF | `bf_bof` | `bf_bof.steel_output` |
+
+Ambiguous combinations are rejected, for example `eaf + bof` or
+`bf_bof + dri_plant`. `dri_storage` may only be used with a DRI route.
+
+Fuel types use the same ontology for DRI and BF-BOF:
+
+```text
+coal
+natural_gas
+hydrogen
+hybrid_hydrogen_natural_gas
+```
+
+The old `both` value is intentionally rejected because it does not say which
+fuels are being hybridized. For `hybrid_hydrogen_natural_gas`, the optimizer may
+choose gas, hydrogen, or a mixture based on the configured prices and process
+coefficients.
+
+Hydrogen has one explicit supply rule. If an `electrolyser` is configured,
+hydrogen consumption is constrained by electrolyser output and optional
+`hydrogen_buffer_storage`. If no electrolyser is configured, hydrogen is treated
+as externally purchased and unlimited at `hydrogen_price`. The German
+`electrified_steel` market strategy is stricter and still requires hydrogen DRI
+with an on-site electrolyser.
+
+The BF-BOF and BOF equations are linear planning balances with explicit
+`plants.csv` coefficients. The process boundary follows the
+[JRC Iron and Steel BREF](https://bureau-industrial-transformation.jrc.ec.europa.eu/reference/iron-and-steel-production),
+the route and hydrogen terminology follows the
+[IEA Iron and Steel Technology Roadmap](https://www.iea.org/reports/iron-and-steel-technology-roadmap),
+and the converter mass-balance structure follows BOF/EAF modelling literature
+such as [Zhou et al. 2025](https://arxiv.org/abs/2504.09382). FLEXIMOD does not
+hard-code one universal recipe; case-specific coefficients such as
+`specific_coal_consumption`, `specific_hydrogen_consumption`,
+`specific_natural_gas_consumption`, `specific_iron_ore_consumption`, and
+`specific_lime_demand` remain plant inputs.
+
+Common dispatch columns across steel routes include:
+
+```text
+steel_output_t
+total_electricity_consumption_MWh
+coal_consumption_MWh
+natural_gas_consumption_MWh
+hydrogen_consumption_MWh
+iron_ore_consumption_t
+lime_consumption_t
+co2_emissions_t
+variable_cost_EUR
+```
+
 ### Steel-demand input modes
 
 A steel plant supports two demand modes. A numeric `steel_demand` in
@@ -270,14 +331,14 @@ Forecast demand values are tonnes per timestep. The model sums the selected
 column and treats that sum as a flexible production target:
 
 ```text
-sum(EAF steel output over the horizon) = sum(forecast steel demand)
+sum(route-terminal steel output over the horizon) = sum(forecast steel demand)
 ```
 
-It does not require EAF output to equal the profile in each row. Consequently,
-the EAF may shift production across the optimization horizon while respecting
-all process, power, fuel, and inventory constraints. For sub-hourly data, values
-must already be expressed as tonnes per sub-hourly row; no duration conversion
-is applied.
+It does not require route-terminal output to equal the profile in each row.
+Consequently, production may shift across the optimization horizon while
+respecting all process, power, fuel, and inventory constraints. For sub-hourly
+data, values must already be expressed as tonnes per sub-hourly row; no duration
+conversion is applied.
 
 ### Steel rolling horizon
 
@@ -286,6 +347,9 @@ as a price taker. Its electricity price is the configured day-ahead
 `signals.price`; gas, hydrogen, iron feedstock, lime, and CO2 use their standard
 forecast column names. No duplicate steel signal mapping is required under
 `strategy.dispatch`.
+
+`coal_price` is required only when a steel route contains a technology with
+`fuel_type: coal`.
 
 ```yaml
 strategy:
