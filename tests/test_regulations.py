@@ -22,16 +22,16 @@ def full_charges() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "component": [
-                "Grid energy charge >=2500 h/a",
-                "Grid energy charge <2500 h/a",
-                "Grid capacity charge >=2500 h/a",
-                "Grid capacity charge <2500 h/a",
-                "CHP surcharge",
-                "Offshore grid levy",
-                "Surcharge for special network use (group A)",
-                "Surcharge for special network use (group B)",
-                "Concession fee",
-                "Electricity tax",
+                "grid_energy_charge_high",
+                "grid_energy_charge_low",
+                "grid_capacity_charge_high",
+                "grid_capacity_charge_low",
+                "chp_surcharge",
+                "offshore_grid_levy",
+                "special_network_use_a",
+                "special_network_use_b",
+                "concession_fee",
+                "electricity_tax",
             ],
             "unit": [
                 "EUR/MWh",
@@ -51,7 +51,7 @@ def full_charges() -> pd.DataFrame:
 
 
 def make_reg(**kwargs) -> GermanGridFeeRegulation:
-    return GermanGridFeeRegulation(full_charges(), **kwargs)
+    return GermanGridFeeRegulation.from_charges_frame(full_charges(), **kwargs)
 
 
 def dispatch(index: pd.DatetimeIndex, consumption) -> pd.DataFrame:
@@ -201,25 +201,34 @@ def test_factory_unknown_country_raises():
 def test_incomplete_tier_raises():
     charges = pd.DataFrame(
         {
-            "component": ["Grid energy charge >=2500 h/a", "CHP surcharge"],
+            "component": ["grid_energy_charge_high", "chp_surcharge"],
             "unit": ["EUR/MWh", "EUR/MWh"],
             "value": [36.9, 2.77],
         }
     )
     with pytest.raises(GridFeeConfigError, match="incomplete tiered component"):
-        GermanGridFeeRegulation(charges)
+        GermanGridFeeRegulation.from_charges_frame(charges)
+
+
+def test_unknown_charge_name_raises():
+    # A misspelled/unknown component no longer disappears into a levy bucket.
+    charges = pd.DataFrame(
+        {"component": ["grid_capcity_charge_high"], "unit": ["EUR/MW.a"], "value": [66570.0]}
+    )
+    with pytest.raises(GridFeeConfigError, match="Unknown German grid-fee charge"):
+        GermanGridFeeRegulation.from_charges_frame(charges)
 
 
 def test_absent_categories_default_to_zero():
     # A pure-levy tariff (no grid energy/capacity/special) loads with zero tiers.
     charges = pd.DataFrame(
         {
-            "component": ["Network consumption price"],
+            "component": ["electricity_tax"],
             "unit": ["EUR/MWh"],
             "value": [10.0],
         }
     )
-    reg = GermanGridFeeRegulation(charges)
+    reg = GermanGridFeeRegulation.from_charges_frame(charges)
     assert reg.marginal_charge_eur_per_mwh() == pytest.approx(10.0)
     idx = pd.date_range("2025-04-01 00:00", periods=4, freq="15min")
     res = reg.settle(dispatch(idx, [1.0] * 4), timestep_minutes=15)

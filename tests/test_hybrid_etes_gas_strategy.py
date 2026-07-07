@@ -148,7 +148,7 @@ def test_additional_charges_enter_strategy_and_electricity_cost(
         "\n".join(
             [
                 "component,unit,plant_1",
-                "Network consumption price,EUR/MWh,100.0",
+                "electricity_tax,EUR/MWh,100.0",
             ]
         ),
         encoding="utf-8",
@@ -612,7 +612,7 @@ def test_afrr_down_additional_charges_block_unprofitable_free_bid(
         "\n".join(
             [
                 "component,unit,plant_1",
-                "Network consumption price,EUR/MWh,10.0",
+                "electricity_tax,EUR/MWh,10.0",
             ]
         ),
         encoding="utf-8",

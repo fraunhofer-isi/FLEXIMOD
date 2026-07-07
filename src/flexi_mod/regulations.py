@@ -21,6 +21,7 @@ register it in ``_REGISTRY``. The case ``config.country`` then selects it.
 
 from __future__ import annotations
 
+import inspect
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -130,6 +131,18 @@ class GridFeeRegulation(ABC):
         """Forecasts column with time-varying charges, or None for scalar-only."""
         return None
 
+    @classmethod
+    def from_charges_frame(cls, plant_charges: pd.DataFrame, **options) -> "GridFeeRegulation":
+        """Build the regulation from the ``additional_charges.csv`` frame.
+
+        Default: hand the frame to ``__init__`` (for regulations that parse it
+        themselves). Regulations with explicit, named charge parameters (see
+        :class:`GermanGridFeeRegulation`) override this to map component names to
+        constructor arguments and validate them — so an unknown/misspelled charge
+        raises instead of being silently dropped.
+        """
+        return cls(plant_charges, **options)
+
 
 class NullGridFeeRegulation(GridFeeRegulation):
     """No-op regulation used when ``additional_charges`` is disabled for the case."""
@@ -164,9 +177,28 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         (15 * 60, 19 * 60 + 15),
     )  # 11:15–13:45, 15:00–19:15
 
+    # Constructor parameters that are behavioural options rather than charge
+    # values. Everything else in __init__ is a named static charge, which is how
+    # from_charges_frame tells the two apart when mapping the CSV.
+    _BEHAVIOURAL_PARAMS = frozenset(
+        {"assumed_tier", "avoid_high_load_window", "high_load_window_column", "capacity_peak_basis"}
+    )
+
     def __init__(
         self,
-        plant_charges: pd.DataFrame,
+        *,
+        # --- Static charges (from additional_charges.csv) -----------------------
+        grid_energy_charge_high: float = 0.0,    # EUR/MWh  — full-load-hours >= 2500 h/a
+        grid_energy_charge_low: float = 0.0,     # EUR/MWh  — full-load-hours < 2500 h/a
+        grid_capacity_charge_high: float = 0.0,  # EUR/MW.a — >= 2500 h/a
+        grid_capacity_charge_low: float = 0.0,   # EUR/MW.a — < 2500 h/a
+        special_network_use_a: float = 0.0,      # EUR/MWh  — group A (first 1 GWh)
+        special_network_use_b: float = 0.0,      # EUR/MWh  — group B (remainder)
+        chp_surcharge: float = 0.0,              # EUR/MWh
+        offshore_grid_levy: float = 0.0,         # EUR/MWh
+        concession_fee: float = 0.0,             # EUR/MWh
+        electricity_tax: float = 0.0,            # EUR/MWh  — flat Stromsteuer levy
+        # --- Behavioural options (from config, not charges) ---------------------
         assumed_tier: str = DEFAULT_ASSUMED_TIER,
         avoid_high_load_window: bool = True,
         high_load_window_column: str = "high_load_window",
@@ -181,56 +213,64 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         self._window_col = high_load_window_column
         self._capacity_peak_basis = capacity_peak_basis
         self._missing_col_warned = False
-        self._parse_charges(plant_charges)
 
-    # ------------------------------------------------------------------ parsing
-    def _parse_charges(self, plant_charges: pd.DataFrame) -> None:
-        energy: dict[str, float] = {}
-        capacity: dict[str, float] = {}
-        special: dict[str, float] = {}
-        levies = 0.0
+        # Group the named charges into the internal structures the rest of the
+        # class uses (tier dicts, special A/B, summed levies).
+        self._energy = {"high": grid_energy_charge_high, "low": grid_energy_charge_low}
+        self._capacity = {"high": grid_capacity_charge_high, "low": grid_capacity_charge_low}
+        self._special_a = special_network_use_a
+        self._special_b = special_network_use_b
+        self._levies = chp_surcharge + offshore_grid_levy + concession_fee + electricity_tax
 
+    # -------------------------------------------------------------- CSV adapter
+    @classmethod
+    def from_charges_frame(
+        cls, plant_charges: pd.DataFrame, **options
+    ) -> "GermanGridFeeRegulation":
+        """Build from additional_charges.csv.
+
+        Each ``component`` must match one of the constructor's named charge
+        parameters (e.g. ``grid_energy_charge_high``, ``chp_surcharge``). Unknown
+        component names raise, so a typo can't silently disappear into a levy
+        bucket. The ``unit`` column is descriptive; the expected unit for each
+        charge is documented on the constructor.
+        """
+        valid_charges = {
+            name
+            for name in inspect.signature(cls).parameters
+            if name not in cls._BEHAVIOURAL_PARAMS
+        }
+        charges: dict[str, float] = {}
         for _, row in plant_charges.iterrows():
-            component = str(row["component"]).strip().lower()
-            value = float(row["value"])
-            tier = "low" if "<2500" in component else "high"
-            if "grid energy" in component:
-                energy[tier] = value
-            elif "grid capacity" in component:
-                capacity[tier] = value
-            elif "group a" in component or "group_a" in component:
-                special["a"] = value
-            elif "group b" in component or "group_b" in component:
-                special["b"] = value
-            else:
-                levies += value  # CHP, offshore, concession, electricity tax, ...
+            name = str(row["component"]).strip()
+            if name not in valid_charges:
+                raise GridFeeConfigError(
+                    f"Unknown German grid-fee charge '{name}'. "
+                    f"Supported charges: {', '.join(sorted(valid_charges))}."
+                )
+            charges[name] = float(row["value"])
+        cls._validate_tier_completeness(charges)
+        return cls(**charges, **options)
 
-        # A category that is present must be complete (both tiers / both groups);
-        # a fully absent category defaults to zero so partial tariffs still load.
-        incomplete = []
-        for label, store, keys in [
-            ("grid energy", energy, ("high", "low")),
-            ("grid capacity", capacity, ("high", "low")),
-        ]:
-            if store and any(key not in store for key in keys):
-                incomplete += [f"{label} ({key} tier)" for key in keys if key not in store]
-        if special and any(key not in special for key in ("a", "b")):
-            incomplete += [
-                f"special network use (group {key.upper()})"
-                for key in ("a", "b")
-                if key not in special
-            ]
-        if incomplete:
+    @staticmethod
+    def _validate_tier_completeness(charges: dict[str, float]) -> None:
+        """Both halves of a tiered/paired charge must be given if either is."""
+        pairs = (
+            ("grid_energy_charge_high", "grid_energy_charge_low"),
+            ("grid_capacity_charge_high", "grid_capacity_charge_low"),
+            ("special_network_use_a", "special_network_use_b"),
+        )
+        missing = [
+            other
+            for a, b in pairs
+            for one, other in ((a, b), (b, a))
+            if one in charges and other not in charges
+        ]
+        if missing:
             raise GridFeeConfigError(
                 "additional_charges.csv has an incomplete tiered component; missing: "
-                + ", ".join(incomplete)
+                + ", ".join(sorted(set(missing)))
             )
-
-        self._energy = {"high": energy.get("high", 0.0), "low": energy.get("low", 0.0)}
-        self._capacity = {"high": capacity.get("high", 0.0), "low": capacity.get("low", 0.0)}
-        self._special_a = special.get("a", 0.0)
-        self._special_b = special.get("b", 0.0)
-        self._levies = levies
 
     def tier_prompt_options(self) -> list[dict[str, str]]:
         if self._energy["high"] == self._energy["low"] == 0.0:
@@ -708,7 +748,8 @@ def build_grid_fee_regulation(
         )
     # These options are German-specific (full-load-hour tier + §19(2) high-load
     # window). Non-German regulations accept and ignore them via **kwargs.
-    return regulation_cls(
+    # from_charges_frame maps the CSV to each regulation's constructor.
+    return regulation_cls.from_charges_frame(
         plant_charges,
         assumed_tier=assumed_tier,
         avoid_high_load_window=avoid_high_load_window,
