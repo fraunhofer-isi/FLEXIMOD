@@ -11,6 +11,8 @@ charges:
 * :class:`GridFeeRegulation`    - the small interface the strategy + runner call.
 * :class:`NullGridFeeRegulation`- no-op (used when additional charges are disabled).
 * :class:`GermanGridFeeRegulation` - Germany (Netzentgelte, §19(2) StromNEV).
+* :class:`SpanishGridFeeRegulation` - Spain (peajes 6.xTD + IEE + capacity charge).
+* :class:`FrenchGridFeeRegulation` - France (TURPE + accise + fixed annual charges).
 * :func:`build_grid_fee_regulation` - factory selecting the regulation by country.
 
 To add another country, write one more ``GridFeeRegulation`` subclass below and
@@ -43,21 +45,32 @@ class GridFeeResult:
 
     grid_energy_MWh: float = 0.0
     annual_peak_MW: float = 0.0
-    window_peak_MW: float = 0.0
     billed_peak_MW: float = 0.0
-    full_load_hours: float = 0.0
-    assumed_tier: str = "n/a"
-    realized_tier: str = "n/a"
-    tier_assumption_held: bool = True
     energy_charge_EUR: float = 0.0
     capacity_charge_EUR: float = 0.0
-    special_network_use_EUR: float = 0.0
+    # Flat per-MWh levies (e.g. German CHP/offshore/concession/Stromsteuer, or a
+    # country's static EUR/MWh levies). Note: a *multiplicative* electricity tax
+    # such as the Spanish IEE goes in ``electricity_tax_EUR``, not here.
     levies_EUR: float = 0.0
+    # Multiplicative electricity tax settled on the electricity bill (Spanish IEE).
+    # Pairs with ``GridFeeRegulation.electricity_tax_rate``; 0 for DE/FR.
+    electricity_tax_EUR: float = 0.0
     grid_fee_total_EUR: float = 0.0
     # Extra cost to add on top of the in-dispatch marginal charge already booked,
     # so the reported economics are correct without re-running the dispatch:
     #   ex_post_addition = capacity charge + group-A premium + energy tier true-up
     ex_post_addition_EUR: float = 0.0
+
+    # --- Germany-specific detail (default/neutral for other countries) ----------
+    # These describe the German full-load-hour tiers and §19(2) high-load window;
+    # ES/FR leave them at their defaults. A future country-neutral redesign would
+    # move them into an optional per-country detail object.
+    full_load_hours: float = 0.0
+    window_peak_MW: float = 0.0
+    assumed_tier: str = "n/a"
+    realized_tier: str = "n/a"
+    tier_assumption_held: bool = True
+    special_network_use_EUR: float = 0.0
     warnings: list[str] = field(default_factory=list)
 
     def as_summary_dict(self) -> dict[str, float | str | bool]:
@@ -76,6 +89,7 @@ class GridFeeResult:
             "grid_fee_capacity_charge_EUR": self.capacity_charge_EUR,
             "grid_fee_special_network_use_EUR": self.special_network_use_EUR,
             "grid_fee_levies_EUR": self.levies_EUR,
+            "grid_fee_electricity_tax_EUR": self.electricity_tax_EUR,
             "grid_fee_total_EUR": self.grid_fee_total_EUR,
             "grid_fee_ex_post_addition_EUR": self.ex_post_addition_EUR,
         }
@@ -376,16 +390,11 @@ class SpanishGridFeeRegulation(GridFeeRegulation):
     # Column in forecasts_df.csv containing the time-varying access tariff
     DYNAMIC_CHARGE_COLUMN = GRID_ENERGY_CHARGE_COLUMN
 
-    def __init__(
-        self,
-        plant_charges: pd.DataFrame,
-        assumed_tier: str = "high",
-        avoid_high_load_window: bool = False,
-        high_load_window_column: str = "high_load_window",
-        capacity_peak_basis: str = "annual",
-        **kwargs,
-    ):
-        self._capacity_peak_basis = capacity_peak_basis
+    def __init__(self, plant_charges: pd.DataFrame, **kwargs):
+        # Spain uses the plain annual peak and has no full-load-hour tiers or
+        # high-load window, so German-specific options (assumed_tier,
+        # capacity_peak_basis, avoid_high_load_window, …) are accepted and ignored.
+        del kwargs
         self._parse_charges(plant_charges)
 
     def _parse_charges(self, plant_charges: pd.DataFrame) -> None:
@@ -442,7 +451,7 @@ class SpanishGridFeeRegulation(GridFeeRegulation):
 
         Components:
         - Energy charges (peajes): already in dispatch as additional_electricity_charges_cost
-        - Capacity charge: peak MW × EUR/MW.a (prorated to simulation period)
+        - Capacity charge: annual peak MW × EUR/MW.a (annual, not prorated)
         - IEE tax: applied on total electricity cost (market + peajes + levies)
         - Static levies: EUR/MWh × total energy
         """
@@ -508,7 +517,8 @@ class SpanishGridFeeRegulation(GridFeeRegulation):
             energy_charge_EUR=energy_charge,
             capacity_charge_EUR=capacity_charge,
             special_network_use_EUR=0.0,
-            levies_EUR=levies_energy + iee_tax,
+            levies_EUR=levies_energy,
+            electricity_tax_EUR=iee_tax,
             grid_fee_total_EUR=total,
             ex_post_addition_EUR=ex_post_addition,
         )
@@ -543,15 +553,10 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
 
     DYNAMIC_CHARGE_COLUMN = GRID_ENERGY_CHARGE_COLUMN
 
-    def __init__(
-        self,
-        plant_charges: pd.DataFrame,
-        assumed_tier: str = "high",
-        avoid_high_load_window: bool = False,
-        high_load_window_column: str = "high_load_window",
-        capacity_peak_basis: str = "annual",
-        **kwargs,
-    ):
+    def __init__(self, plant_charges: pd.DataFrame, **kwargs):
+        # France uses the plain annual peak and has no full-load-hour tiers or
+        # high-load window, so German-specific options are accepted and ignored.
+        del kwargs
         self._parse_charges(plant_charges)
 
     def _parse_charges(self, plant_charges: pd.DataFrame) -> None:
@@ -701,6 +706,8 @@ def build_grid_fee_regulation(
             f"No grid-fee regulation registered for country '{country}'. "
             f"Available: {', '.join(sorted(_REGISTRY))}"
         )
+    # These options are German-specific (full-load-hour tier + §19(2) high-load
+    # window). Non-German regulations accept and ignore them via **kwargs.
     return regulation_cls(
         plant_charges,
         assumed_tier=assumed_tier,

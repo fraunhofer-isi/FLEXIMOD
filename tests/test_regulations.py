@@ -7,9 +7,11 @@ import pandas as pd
 import pytest
 
 from flexi_mod.regulations import (
+    FrenchGridFeeRegulation,
     GermanGridFeeRegulation,
     GridFeeConfigError,
     NullGridFeeRegulation,
+    SpanishGridFeeRegulation,
     build_grid_fee_regulation,
 )
 
@@ -239,3 +241,72 @@ def test_charging_block_mask_absent_column_blocks_nothing():
     with pytest.warns(UserWarning, match="high_load_window"):
         mask = make_reg().charging_block_mask(pd.DataFrame(index=idx))
     assert not mask.any()
+
+
+# --------------------------------------------------------------------- Spain
+def test_spanish_settle_separates_iee_from_levies():
+    """IEE is reported in electricity_tax_EUR, not folded into levies_EUR."""
+    charges = pd.DataFrame(
+        {
+            "component": ["Grid capacity charge", "Some static levy"],
+            "unit": ["EUR/MW.a", "EUR/MWh"],
+            "value": [19629.0, 2.0],
+        }
+    )
+    reg = SpanishGridFeeRegulation(charges)
+
+    idx = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
+    dr = pd.DataFrame(
+        {
+            "actual_electricity_consumption_MWh": [1.0, 1.0, 1.0, 1.0],  # 4 MWh, 4 MW peak
+            "additional_electricity_charges_cost_EUR": [10.0, 10.0, 10.0, 10.0],  # peajes = 40
+            "electricity_market_cost_EUR": [100.0, 100.0, 100.0, 100.0],  # market = 400
+        },
+        index=idx,
+    )
+    res = reg.settle(dr, timestep_minutes=15)
+
+    grid_energy = 4.0
+    levies_energy = 2.0 * grid_energy  # 8.0
+    energy_charge = 40.0
+    taxable_base = 400.0 + energy_charge + levies_energy  # market + peajes + levies
+    iee = taxable_base * SpanishGridFeeRegulation.ELECTRICITY_TAX_RATE
+
+    # Levies field is pure; IEE lives in its own field (Bug: was bundled).
+    assert res.levies_EUR == pytest.approx(levies_energy)
+    assert res.electricity_tax_EUR == pytest.approx(iee)
+    assert res.capacity_charge_EUR == pytest.approx(19629.0 * 4.0)  # annual, no proration
+    # Breakdown reconciles to the total.
+    assert res.grid_fee_total_EUR == pytest.approx(
+        res.energy_charge_EUR
+        + res.capacity_charge_EUR
+        + res.special_network_use_EUR
+        + res.levies_EUR
+        + res.electricity_tax_EUR
+    )
+
+
+# --------------------------------------------------------------------- France
+def test_french_settle_sums_all_fixed_annual_charges():
+    """All EUR/MW.a rows are summed (not just Capacity Obligation) and not prorated."""
+    charges = pd.DataFrame(
+        {
+            "component": [
+                "Capacity Obligation",
+                "TURPE_management",
+                "TURPE_metering",
+                "TURPE_fix",
+            ],
+            "unit": ["EUR/MW.a", "EUR/MW.a", "EUR/MW.a", "EUR/MW.a"],
+            "value": [14650.0, 11545.32, 3800.04, 12948.94],
+        }
+    )
+    reg = FrenchGridFeeRegulation(charges)
+
+    idx = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
+    dr = pd.DataFrame({"actual_electricity_consumption_MWh": [1.0, 1.0, 1.0, 1.0]}, index=idx)
+    res = reg.settle(dr, timestep_minutes=15)
+
+    total_rate = 14650.0 + 11545.32 + 3800.04 + 12948.94  # 42944.30
+    assert res.capacity_charge_EUR == pytest.approx(total_rate * 4.0)  # 4 MW peak, no proration
+    assert res.electricity_tax_EUR == pytest.approx(0.0)  # France has no multiplicative tax
