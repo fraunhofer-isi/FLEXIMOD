@@ -289,9 +289,7 @@ def test_spanish_settle_separates_iee_from_levies():
 
 def test_spanish_rejects_unknown_charge():
     """Spain's per-MWh charges belong in the dynamic column; a stray levy row raises."""
-    charges = pd.DataFrame(
-        {"component": ["some_static_levy"], "unit": ["EUR/MWh"], "value": [2.0]}
-    )
+    charges = pd.DataFrame({"component": ["some_static_levy"], "unit": ["EUR/MWh"], "value": [2.0]})
     with pytest.raises(GridFeeConfigError, match="Unknown grid-fee charge"):
         SpanishGridFeeRegulation.from_charges_frame(charges)
 

@@ -92,8 +92,7 @@ class HybridETESGasStrategy(BaseStrategy):
         if mechanism not in _VALID_CLEARING_MECHANISMS:
             options = ", ".join(_VALID_CLEARING_MECHANISMS)
             raise ValueError(
-                f"Unknown afrr_capacity clearing_mechanism '{mechanism}'. "
-                f"Valid options: {options}."
+                f"Unknown afrr_capacity clearing_mechanism '{mechanism}'. Valid options: {options}."
             )
         return mechanism
 
@@ -113,8 +112,7 @@ class HybridETESGasStrategy(BaseStrategy):
         if mechanism not in _VALID_CLEARING_MECHANISMS:
             options = ", ".join(_VALID_CLEARING_MECHANISMS)
             raise ValueError(
-                f"Unknown afrr_energy clearing_mechanism '{mechanism}'. "
-                f"Valid options: {options}."
+                f"Unknown afrr_energy clearing_mechanism '{mechanism}'. Valid options: {options}."
             )
         if mechanism != "pay_as_cleared":
             raise ValueError(

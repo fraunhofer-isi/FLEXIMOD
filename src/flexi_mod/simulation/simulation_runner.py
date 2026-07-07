@@ -450,11 +450,7 @@ def _attach_grid_fee_summary(
             merged["total_additional_electricity_charges_cost_EUR"]
             if "total_additional_electricity_charges_cost_EUR" in merged.columns
             else 0.0
-        ) + (
-            merged["total_tax_cost_EUR"]
-            if "total_tax_cost_EUR" in merged.columns
-            else 0.0
-        )
+        ) + (merged["total_tax_cost_EUR"] if "total_tax_cost_EUR" in merged.columns else 0.0)
         merged["net_operating_cost_incl_grid_fees_EUR"] = (
             merged["net_operating_cost_EUR"] - in_dispatch + merged["grid_fee_total_EUR"]
         )

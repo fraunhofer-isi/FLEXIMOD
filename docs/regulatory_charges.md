@@ -94,7 +94,7 @@ avoiding consumption in those windows lowers the bill.
 | Capacity Obligation (Obligation de Capacité) | `additional_charges.csv` | `capacity_obligation` | EUR/MW.a | Static | × peak, ex-post |
 | TURPE — management (composante de gestion) | `additional_charges.csv` | `turpe_management` | EUR/MW.a | Static | × peak, ex-post |
 | TURPE — metering (composante de comptage) | `additional_charges.csv` | `turpe_metering` | EUR/MW.a | Static | × peak, ex-post |
-| TURPE — fixed withdrawal (soutirage fixe) | `additional_charges.csv` | `turpe_fix` | EUR/MW.a | Static | × peak, ex-post |
+| TURPE — fixed withdrawal charge (soutirage) | `additional_charges.csv` | `turpe_fix` | EUR/MW.a | Static | × peak, ex-post |
 | TURPE energy + accise | `forecasts_df.csv` | `grid_energy_charge` | EUR/MWh | **Dynamic** | per-MWh; pre-summed per time slot |
 
 > **Note:** France has no multiplicative tax. All per-MWh charges (TURPE energy +

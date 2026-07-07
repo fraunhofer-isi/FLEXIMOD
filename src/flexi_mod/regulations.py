@@ -165,7 +165,7 @@ class GridFeeRegulation(ABC):
         return charges
 
     @classmethod
-    def from_charges_frame(cls, plant_charges: pd.DataFrame, **options) -> "GridFeeRegulation":
+    def from_charges_frame(cls, plant_charges: pd.DataFrame, **options) -> GridFeeRegulation:
         """Build the regulation from the ``additional_charges.csv`` frame.
 
         Default: map each component name to the constructor's named charge
@@ -221,16 +221,16 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         self,
         *,
         # --- Static charges (from additional_charges.csv) -----------------------
-        grid_energy_charge_high: float = 0.0,    # EUR/MWh  — full-load-hours >= 2500 h/a
-        grid_energy_charge_low: float = 0.0,     # EUR/MWh  — full-load-hours < 2500 h/a
+        grid_energy_charge_high: float = 0.0,  # EUR/MWh  — full-load-hours >= 2500 h/a
+        grid_energy_charge_low: float = 0.0,  # EUR/MWh  — full-load-hours < 2500 h/a
         grid_capacity_charge_high: float = 0.0,  # EUR/MW.a — >= 2500 h/a
-        grid_capacity_charge_low: float = 0.0,   # EUR/MW.a — < 2500 h/a
-        special_network_use_a: float = 0.0,      # EUR/MWh  — group A (first 1 GWh)
-        special_network_use_b: float = 0.0,      # EUR/MWh  — group B (remainder)
-        chp_surcharge: float = 0.0,              # EUR/MWh
-        offshore_grid_levy: float = 0.0,         # EUR/MWh
-        concession_fee: float = 0.0,             # EUR/MWh
-        electricity_tax: float = 0.0,            # EUR/MWh  — flat Stromsteuer levy
+        grid_capacity_charge_low: float = 0.0,  # EUR/MW.a — < 2500 h/a
+        special_network_use_a: float = 0.0,  # EUR/MWh  — group A (first 1 GWh)
+        special_network_use_b: float = 0.0,  # EUR/MWh  — group B (remainder)
+        chp_surcharge: float = 0.0,  # EUR/MWh
+        offshore_grid_levy: float = 0.0,  # EUR/MWh
+        concession_fee: float = 0.0,  # EUR/MWh
+        electricity_tax: float = 0.0,  # EUR/MWh  — flat Stromsteuer levy
         # --- Behavioural options (from config, not charges) ---------------------
         assumed_tier: str = DEFAULT_ASSUMED_TIER,
         avoid_high_load_window: bool = True,
@@ -257,9 +257,7 @@ class GermanGridFeeRegulation(GridFeeRegulation):
 
     # -------------------------------------------------------------- CSV adapter
     @classmethod
-    def from_charges_frame(
-        cls, plant_charges: pd.DataFrame, **options
-    ) -> "GermanGridFeeRegulation":
+    def from_charges_frame(cls, plant_charges: pd.DataFrame, **options) -> GermanGridFeeRegulation:
         """Build from additional_charges.csv.
 
         Each ``component`` must match one of the constructor's named charge
@@ -596,10 +594,10 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
     def __init__(
         self,
         *,
-        capacity_obligation: float = 0.0,   # EUR/MW.a — Obligation de Capacité
-        turpe_management: float = 0.0,      # EUR/MW.a — TURPE composante de gestion
-        turpe_metering: float = 0.0,        # EUR/MW.a — TURPE composante de comptage
-        turpe_fix: float = 0.0,             # EUR/MW.a — TURPE fixed withdrawal (soutirage)
+        capacity_obligation: float = 0.0,  # EUR/MW.a — Obligation de Capacité
+        turpe_management: float = 0.0,  # EUR/MW.a — TURPE composante de gestion
+        turpe_metering: float = 0.0,  # EUR/MW.a — TURPE composante de comptage
+        turpe_fix: float = 0.0,  # EUR/MW.a — TURPE fixed withdrawal (soutirage)
     ):
         # All fixed annual EUR/MW.a charges, summed; settled ex-post on the peak.
         self._fixed_annual_eur_per_mw_a = (
