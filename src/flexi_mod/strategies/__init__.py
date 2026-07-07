@@ -4,9 +4,6 @@
 
 from flexi_mod.strategies.electrified_steel_strategy import ElectrifiedSteelStrategy
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
-from flexi_mod.strategies.pay_as_cleared_capacity_strategy import (
-    PayAsClearedCapacityHybridETESGasStrategy,
-)
 from flexi_mod.strategies.steel_cost_minimization_strategy import (
     SteelCostMinimizationStrategy,
 )

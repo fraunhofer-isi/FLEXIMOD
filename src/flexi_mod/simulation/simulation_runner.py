@@ -17,6 +17,7 @@ from flexi_mod.ledgers.market_ledger import MarketLedger
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.markets import BaseMarket, build_markets
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
+from flexi_mod.plants.base_plant import BasePlant
 from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.steam_generation_plant import DispatchSignals, SteamGenerationPlant
 from flexi_mod.plants.steel_plant import SteelPlant
@@ -252,6 +253,11 @@ class SimulationRunner:
             dispatch_parts.append(strategy.dispatch(plant, forecasts))
             self._progress(f"Rolling steel dispatch completed for {plant.name}")
         dispatch_results = pd.concat(dispatch_parts).sort_index()
+        grid_fee_results = (
+            self._settle_grid_fees(plants, dispatch_results)
+            if isinstance(strategy, ElectrifiedSteelStrategy)
+            else {}
+        )
 
         output_dir = self.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -262,6 +268,11 @@ class SimulationRunner:
             output_paths["dispatch_results"] = path
 
         summary = _steel_summary_frame(dispatch_results)
+        summary = _attach_grid_fee_summary(summary, grid_fee_results)
+        if grid_fee_results and self.output_options.save_summary_indicators:
+            path = output_dir / "grid_fee_summary.csv"
+            _grid_fee_summary_frame(grid_fee_results).to_csv(path, index=False)
+            output_paths["grid_fee_summary"] = path
         if self.output_options.save_summary_indicators:
             path = output_dir / "summary_indicators.csv"
             summary.to_csv(path, index=False)
@@ -302,7 +313,7 @@ class SimulationRunner:
 
     def _settle_grid_fees(
         self,
-        plants: list[SteamGenerationPlant],
+        plants: list[BasePlant],
         dispatch_results: pd.DataFrame,
     ) -> dict[str, GridFeeResult]:
         """Compute the authoritative ex-post grid-fee bill per plant."""

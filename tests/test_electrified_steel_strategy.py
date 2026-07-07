@@ -121,8 +121,46 @@ def test_expensive_afrr_energy_produces_no_free_bid(tmp_path: Path) -> None:
     )
 
 
-def _config() -> str:
-    return """
+def test_german_regulatory_charges_are_settled_for_electrified_steel(
+    tmp_path: Path,
+) -> None:
+    case_dir = tmp_path / "steel_grid_fees"
+    output_dir = tmp_path / "output"
+    case_dir.mkdir()
+    (case_dir / "config.yaml").write_text(
+        _config(additional_charges=True),
+        encoding="utf-8",
+    )
+    _plants().to_csv(case_dir / "plants.csv", index=False)
+    _forecasts().to_csv(case_dir / "forecasts_df.csv", index=False)
+    _additional_charges().to_csv(case_dir / "additional_charges.csv", index=False)
+
+    outputs = SimulationRunner(
+        case_dir,
+        output_dir=output_dir,
+        assumed_grid_tier="low",
+    ).run()
+
+    dispatch = pd.read_csv(outputs["dispatch_results"])
+    summary = pd.read_csv(outputs["summary_indicators"])
+    grid_fees = pd.read_csv(outputs["grid_fee_summary"])
+
+    assert dispatch["additional_electricity_charge_EUR_per_MWh_el"].gt(0.0).all()
+    assert dispatch["additional_electricity_charges_cost_EUR"].sum() > 0.0
+    assert grid_fees.loc[0, "grid_fee_total_EUR"] > 0.0
+    assert summary.loc[0, "grid_fee_total_EUR"] == pytest.approx(
+        grid_fees.loc[0, "grid_fee_total_EUR"]
+    )
+    assert summary.loc[0, "net_operating_cost_incl_grid_fees_EUR"] == pytest.approx(
+        summary.loc[0, "net_operating_cost_EUR"]
+        - summary.loc[0, "total_additional_electricity_charges_cost_EUR"]
+        + summary.loc[0, "grid_fee_total_EUR"]
+    )
+
+
+def _config(*, additional_charges: bool = False) -> str:
+    additional_charges_value = str(additional_charges).lower()
+    return f"""
 cases:
   electrified_steel:
     name: electrified_steel
@@ -130,7 +168,7 @@ cases:
     timestep_minutes: 15
     simulation_start: "2025-01-01 00:00"
     simulation_end: "2025-01-01 07:45"
-    additional_charges: false
+    additional_charges: {additional_charges_value}
     strategy:
       name: electrified_steel
       dispatch:
@@ -258,5 +296,37 @@ def _forecasts() -> pd.DataFrame:
             "iron_ore_price": [100.0] * periods,
             "lime_price": [20.0] * periods,
             "co2_price": [80.0] * periods,
+        }
+    )
+
+
+def _additional_charges() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "component": [
+                "grid_energy_charge_high",
+                "grid_energy_charge_low",
+                "grid_capacity_charge_high",
+                "grid_capacity_charge_low",
+                "special_network_use_a",
+                "special_network_use_b",
+                "chp_surcharge",
+                "offshore_grid_levy",
+                "concession_fee",
+                "electricity_tax",
+            ],
+            "unit": [
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MW.a",
+                "EUR/MW.a",
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MWh",
+            ],
+            "steel_1": [8.0, 9.0, 100.0, 120.0, 2.0, 0.5, 0.1, 0.2, 0.3, 0.4],
         }
     )

@@ -754,6 +754,14 @@ Capacity follows the German pay-as-bid interpretation already used by
 `hybrid_etes_gas`; aFRR energy retains separate market-price and plant-bid-price
 fields. Missing prices never create voluntary bids or activation.
 
+When `additional_charges: true`, `electrified_steel` uses the same German
+grid-fee regulation as the steam strategy. The regulation's marginal per-MWh
+charge is added to DA and aFRR delivered electricity prices during optimization,
+and the realized `actual_electricity_consumption_MWh` is settled ex-post into
+`grid_fee_summary.csv`. The summary also reports
+`net_operating_cost_incl_grid_fees_EUR`, replacing the in-dispatch marginal
+charge with the authoritative grid-fee bill.
+
 ## Current Simplifications
 
 The current DA + IDC + aFRR down strategy is deliberately simple:
