@@ -13,7 +13,10 @@ from flexi_mod.strategies.steel_cost_minimization_strategy import (
 
 STRATEGY_REGISTRY = {
     "hybrid_etes_gas": HybridETESGasStrategy,
-    "hybrid_etes_gas_pay_as_cleared_capacity": PayAsClearedCapacityHybridETESGasStrategy,
+    # Pay-as-cleared is a config-selected capacity-pricing rule inside
+    # HybridETESGasStrategy, not a separate class. This name is kept as a
+    # backward-compatible alias that selects the pay-as-cleared rule.
+    "hybrid_etes_gas_pay_as_cleared_capacity": HybridETESGasStrategy,
     "steel_cost_minimization": SteelCostMinimizationStrategy,
     "electrified_steel": ElectrifiedSteelStrategy,
 }
@@ -32,7 +35,6 @@ def build_strategy(name: str, config):
 
 __all__ = [
     "HybridETESGasStrategy",
-    "PayAsClearedCapacityHybridETESGasStrategy",
     "SteelCostMinimizationStrategy",
     "ElectrifiedSteelStrategy",
     "STRATEGY_REGISTRY",

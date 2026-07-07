@@ -382,6 +382,7 @@ def _economic_indicators(
     heat_demand = _sum(dispatch, "heat_demand_MWh")
     total_operating_cost = _sum(dispatch, "operating_cost_EUR")
     total_electricity_cost = _sum(dispatch, "electricity_cost_EUR")
+    total_tax_cost = _sum(dispatch, "tax_cost_EUR")
     total_additional_charges = _sum(dispatch, "additional_electricity_charges_cost_EUR")
     total_electricity_market_cost = _sum(
         dispatch,
@@ -453,6 +454,7 @@ def _economic_indicators(
     return {
         "total_electricity_market_cost_EUR": total_electricity_market_cost,
         "total_additional_electricity_charges_cost_EUR": total_additional_charges,
+        "total_tax_cost_EUR": total_tax_cost,
         "total_electricity_procurement_cost_EUR": total_electricity_cost,
         "total_electricity_cost_EUR": total_electricity_cost,
         "total_gas_cost_EUR": _sum(dispatch, "gas_cost_EUR"),

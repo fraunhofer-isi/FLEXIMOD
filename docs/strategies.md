@@ -595,40 +595,46 @@ AFRR_CAPACITY_MARGIN_EUR_PER_MW_H = 0.0
 
 ### Capacity Pricing Strategies
 
-FLEXIMOD provides two capacity-pricing strategy variants. They inherit the same
+FLEXIMOD supports two aFRR-capacity clearing mechanisms. They share the same
 physical feasibility, market-compliance, storage, activation, and sequencing
-logic. Only capacity bid and settlement pricing differ.
+logic; only capacity bid and settlement pricing differ. The mechanism is a
+property of the market, configured under `markets.afrr_capacity.clearing_mechanism`
+and read by the single `HybridETESGasStrategy` class.
 
-| Behaviour | `hybrid_etes_gas` | `hybrid_etes_gas_pay_as_cleared_capacity` |
+| Behaviour | `pay_as_bid` | `pay_as_cleared` |
 |---|---|---|
-| Python class | `HybridETESGasStrategy` | `PayAsClearedCapacityHybridETESGasStrategy` |
+| Selected by | Default (field omitted) | `markets.afrr_capacity.clearing_mechanism: pay_as_cleared` |
 | Configured capacity-price meaning | Submitted/awarded bid-price proxy | Exogenous marginal clearing price |
 | Submitted bid | Configured price signal | Opportunity cost + capacity margin |
 | Award proxy | Price covers opportunity cost and all other eligibility checks pass | Clearing price covers bid and all other eligibility checks pass |
 | Settlement price | Submitted bid price | Marginal clearing price |
 | Market surplus | Normally zero | Clearing price minus bid price, multiplied by awarded capacity and duration |
 
-The new subclass is implemented in
-`src/flexi_mod/strategies/pay_as_cleared_capacity_strategy.py` and is selected
-through the strategy registry. Neither variant endogenously clears the full
-market; both use the configured deterministic price series.
+Both rules live in `src/flexi_mod/strategies/hybrid_etes_gas_strategy.py`
+(`capacity_pricing_rule`, `capacity_bid_price`, `capacity_settlement_price`).
+Neither rule endogenously clears the full market; both use the configured
+deterministic price series.
 
-The existing strategy keeps its previous pay-as-bid interpretation:
+With the field omitted the market defaults to pay-as-bid: its configured
+capacity-price signal is treated as the submitted bid price and the awarded
+capacity is settled at that price.
 
-```yaml
-strategy:
-  name: hybrid_etes_gas
-```
-
-Its configured capacity-price signal is treated as the submitted bid price and
-the awarded capacity is settled at that price.
-
-The pay-as-cleared variant is selected with:
+Pay-as-cleared is selected on the market block:
 
 ```yaml
-strategy:
-  name: hybrid_etes_gas_pay_as_cleared_capacity
+markets:
+  afrr_capacity:
+    clearing_mechanism: pay_as_cleared
 ```
+
+For backward compatibility the legacy strategy name
+`hybrid_etes_gas_pay_as_cleared_capacity` (and the interim
+`strategy.clearing_mechanism` field) still select pay-as-cleared capacity when
+the market-level field is absent. If the market-level field is present, it wins.
+
+**aFRR energy** is always settled at the marginal clearing price. For symmetry
+the field is accepted under `markets.afrr_energy.clearing_mechanism`, but only
+`pay_as_cleared` is implemented; `pay_as_bid` raises a configuration error.
 
 It calculates the minimum acceptable capacity bid from opportunity cost and the
 capacity margin:

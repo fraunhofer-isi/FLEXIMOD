@@ -117,9 +117,19 @@ class SimulationRunner:
                 regulation.marginal_charge_eur_per_mwh()
             )
         strategy = build_strategy(self.config.strategy_name, self.config)
+        extra_required_columns = set(strategy.required_forecast_columns())
+        # A regulation that declares a dynamic charge column (ES peajes, FR
+        # TURPE+accise) requires that column in the forecasts; add it so a
+        # missing/misspelled column fails fast at load instead of silently
+        # falling back to a zero scalar during dispatch.
+        for plant in plants:
+            regulation = getattr(plant, "grid_fee_regulation", None)
+            dynamic_column = getattr(regulation, "dynamic_charge_column", None)
+            if dynamic_column:
+                extra_required_columns.add(dynamic_column)
         required_columns = self.loader.required_forecast_columns(
             plants_df,
-            extra_required_columns=strategy.required_forecast_columns(),
+            extra_required_columns=extra_required_columns,
         )
         forecasts = self.loader.load_forecasts(required_columns=required_columns)
         self._progress("Input data loaded")
@@ -610,7 +620,7 @@ def _attach_grid_fee_summary(
             merged["total_additional_electricity_charges_cost_EUR"]
             if "total_additional_electricity_charges_cost_EUR" in merged.columns
             else 0.0
-        )
+        ) + (merged["total_tax_cost_EUR"] if "total_tax_cost_EUR" in merged.columns else 0.0)
         merged["net_operating_cost_incl_grid_fees_EUR"] = (
             merged["net_operating_cost_EUR"] - in_dispatch + merged["grid_fee_total_EUR"]
         )
@@ -724,7 +734,11 @@ def _run_zero_electricity_dispatch(
         gas_price_col=gas_price_col,
         gas_benchmark_eur_per_mwh_th=gas_benchmark,
         charge_allowed=pd.Series(False, index=dispatch_forecasts.index),
-        additional_electricity_charge_eur_per_mwh=(plant.additional_electricity_charge_eur_per_mwh),
+        additional_electricity_charge_eur_per_mwh=pd.Series(
+            float(getattr(plant, "additional_electricity_charge_eur_per_mwh", 0.0)),
+            index=dispatch_forecasts.index,
+        ),
+        tax_rate=getattr(plant.grid_fee_regulation, "electricity_tax_rate", 0.0),
         **_capacity_signal_kwargs(capacity_reservation, dispatch_forecasts.index),
     )
     result = plant.solve_horizon(

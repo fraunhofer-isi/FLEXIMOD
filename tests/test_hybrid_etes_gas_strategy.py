@@ -5,13 +5,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 from conftest import case_config_text
 
+from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.data.data_loader import DataValidationError
 from flexi_mod.simulation.simulation_runner import OutputOptions, SimulationRunner
-from flexi_mod.strategies.hybrid_etes_gas_strategy import _round_bid_down_to_increment
+from flexi_mod.strategies.hybrid_etes_gas_strategy import (
+    HybridETESGasStrategy,
+    _round_bid_down_to_increment,
+)
 
 
 @pytest.fixture
@@ -142,7 +148,7 @@ def test_additional_charges_enter_strategy_and_electricity_cost(
         "\n".join(
             [
                 "component,unit,plant_1",
-                "Network consumption price,EUR/MWh,100.0",
+                "electricity_tax,EUR/MWh,100.0",
             ]
         ),
         encoding="utf-8",
@@ -169,6 +175,70 @@ def test_additional_charges_enter_strategy_and_electricity_cost(
         (market["day_ahead_price_EUR_per_MWh_el"] + 100.0).to_numpy()
     )
     assert summary["total_additional_electricity_charges_cost_EUR"].iloc[0] == pytest.approx(0.0)
+
+
+def test_missing_declared_dynamic_charge_column_raises(tmp_path: Path) -> None:
+    """A regulation-declared dynamic charge column that is absent must raise.
+
+    Previously the strategy silently fell back to the scalar marginal charge,
+    which is 0 for ES/FR — zeroing the entire per-MWh grid fee without any error.
+    """
+    case_dir = tmp_path / "dynamic_charge_case"
+    case_dir.mkdir()
+    _write_config(case_dir / "config.yaml")
+    config = CaseConfig.from_case_dir(case_dir)
+    strategy = HybridETESGasStrategy(config)
+
+    # Plant whose regulation declares a dynamic charge column (ES/FR style).
+    plant = SimpleNamespace(
+        name="plant_1",
+        grid_fee_regulation=SimpleNamespace(dynamic_charge_column="access_tariff_eur_per_mwh"),
+        additional_electricity_charge_eur_per_mwh=0.0,
+    )
+    forecasts = pd.DataFrame({"DE_day_ahead_price_EUR_per_MWh_el": [10.0, 20.0]})
+
+    # Missing column -> loud error instead of silent zero fallback.
+    with pytest.raises(DataValidationError, match="access_tariff_eur_per_mwh"):
+        strategy.calculate_additional_charges_t(plant, forecasts)
+
+    # Present column -> its time series is used verbatim.
+    forecasts_ok = forecasts.assign(access_tariff_eur_per_mwh=[5.0, 7.5])
+    charges = strategy.calculate_additional_charges_t(plant, forecasts_ok)
+    assert charges.tolist() == [5.0, 7.5]
+
+    # No dynamic column declared (e.g. Germany) -> scalar fallback still works.
+    de_plant = SimpleNamespace(
+        name="plant_1",
+        grid_fee_regulation=SimpleNamespace(dynamic_charge_column=None),
+        additional_electricity_charge_eur_per_mwh=3.0,
+    )
+    de_charges = strategy.calculate_additional_charges_t(de_plant, forecasts)
+    assert de_charges.tolist() == [3.0, 3.0]
+
+
+def test_static_levy_is_summed_with_dynamic_charge_column(tmp_path: Path) -> None:
+    """A static EUR/MWh levy must be added on top of the dynamic column.
+
+    Guards Bug #3: dispatch used to take the dynamic column alone while settle()
+    counted dynamic + static levies, so the two layers could disagree. Now
+    dispatch sums both, matching settlement (and warns about possible double
+    counting).
+    """
+    case_dir = tmp_path / "sum_charges_case"
+    case_dir.mkdir()
+    _write_config(case_dir / "config.yaml")
+    strategy = HybridETESGasStrategy(CaseConfig.from_case_dir(case_dir))
+
+    forecasts = pd.DataFrame({"grid_energy_charge": [10.0, 20.0]})
+    plant = SimpleNamespace(
+        name="plant_1",
+        grid_fee_regulation=SimpleNamespace(dynamic_charge_column="grid_energy_charge"),
+        additional_electricity_charge_eur_per_mwh=5.0,  # static levy alongside the column
+    )
+
+    with pytest.warns(UserWarning, match="double counting"):
+        charges = strategy.calculate_additional_charges_t(plant, forecasts)
+    assert charges.tolist() == [15.0, 25.0]  # dynamic + static levy
 
 
 def test_market_calendar_carries_final_soc_to_next_decision_window(tmp_path: Path) -> None:
@@ -542,7 +612,7 @@ def test_afrr_down_additional_charges_block_unprofitable_free_bid(
         "\n".join(
             [
                 "component,unit,plant_1",
-                "Network consumption price,EUR/MWh,10.0",
+                "electricity_tax,EUR/MWh,10.0",
             ]
         ),
         encoding="utf-8",
