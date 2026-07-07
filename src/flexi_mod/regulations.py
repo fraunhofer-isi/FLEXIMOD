@@ -464,11 +464,10 @@ class SpanishGridFeeRegulation(GridFeeRegulation):
         else:
             energy_charge = 0.0
 
-        # Capacity charge (based on annual peak, prorated)
-        simulation_hours = len(dispatch_results) * dt_h
-        hours_per_year = 8760.0
-        proration_factor = simulation_hours / hours_per_year if hours_per_year > 0 else 1.0
-        capacity_charge = self._capacity_eur_per_mw_a * annual_peak * proration_factor
+        # Capacity charge: annual rate (EUR/MW.a) × annual peak. Not prorated by
+        # simulation length — the rate is an annual value driven only by the peak,
+        # consistent with the German and French capacity charge.
+        capacity_charge = self._capacity_eur_per_mw_a * annual_peak
 
         # Static levies
         levies_energy = self._levies_eur_per_mwh * grid_energy
@@ -640,11 +639,10 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
             energy_charge = 0.0
 
         # Fixed annual charges (Capacity Obligation + fixed TURPE components):
-        # summed EUR/MW.a × realized annual peak, prorated to sim period
-        simulation_hours = len(dispatch_results) * dt_h
-        hours_per_year = 8760.0
-        proration_factor = simulation_hours / hours_per_year if hours_per_year > 0 else 1.0
-        capacity_charge = self._fixed_annual_eur_per_mw_a * annual_peak * proration_factor
+        # summed EUR/MW.a × realized annual peak. Not prorated by simulation length
+        # — the rate is an annual value driven only by the peak, consistent with
+        # the German and Spanish capacity charge.
+        capacity_charge = self._fixed_annual_eur_per_mw_a * annual_peak
 
         # Static levies (already in dispatch as additional_electricity_charges_cost_EUR)
         levies_energy = self._levies_eur_per_mwh * grid_energy
