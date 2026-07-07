@@ -1,4 +1,4 @@
-datetime,plant_1_heat_demand,ES_DA_price,natural_gas_price,co2_price,ES_ID3_price,ES_ID3_volume,aFRR_energy_down_quantity,aFRR_energy_down_price,aFRR_capacity_down_price,ES_aFRR_capacity_down_marginal_price,fallback_elecricity_price,arbeit_6_2TD_eur_per_mwh
+datetime,plant_1_heat_demand,ES_DA_price,natural_gas_price,co2_price,ES_ID3_price,ES_ID3_volume,aFRR_energy_down_quantity,aFRR_energy_down_price,aFRR_capacity_down_price,ES_aFRR_capacity_down_marginal_price,fallback_elecricity_price,grid_energy_charge
 01.01.2025 00:00,6.42,134.49,66.2,,122.54624,55.6,11.7,101.06,10.0,2.5,2.16,0.683
 01.01.2025 00:15,6.42,134.49,66.2,,122.54624,55.6,8.8,95.96,10.0,2.5,2.16,0.683
 01.01.2025 00:30,6.42,134.49,66.2,,122.54624,55.6,21.7,101.68,10.0,2.5,2.16,0.683

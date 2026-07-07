@@ -97,9 +97,19 @@ class SimulationRunner:
                 regulation.marginal_charge_eur_per_mwh()
             )
         strategy = build_strategy(self.config.strategy_name, self.config)
+        extra_required_columns = set(strategy.required_forecast_columns())
+        # A regulation that declares a dynamic charge column (ES peajes, FR
+        # TURPE+accise) requires that column in the forecasts; add it so a
+        # missing/misspelled column fails fast at load instead of silently
+        # falling back to a zero scalar during dispatch.
+        for plant in plants:
+            regulation = getattr(plant, "grid_fee_regulation", None)
+            dynamic_column = getattr(regulation, "dynamic_charge_column", None)
+            if dynamic_column:
+                extra_required_columns.add(dynamic_column)
         required_columns = self.loader.required_forecast_columns(
             plants_df,
-            extra_required_columns=strategy.required_forecast_columns(),
+            extra_required_columns=extra_required_columns,
         )
         forecasts = self.loader.load_forecasts(required_columns=required_columns)
         self._progress("Input data loaded")

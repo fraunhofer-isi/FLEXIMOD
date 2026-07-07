@@ -1,4 +1,4 @@
-datetime,plant_1_heat_demand,FR_DA_price,natural_gas_price,co2_price,FR_ID3_price,FR_ID3_volume,aFRR_energy_down_quantity,aFRR_energy_down_price,aFRR_capacity_down_price,fallback_elecricity_price,TURPE,accise,FR_total_dynamic_charges,FR_aFRR_capacity_down_marginal_price
+datetime,plant_1_heat_demand,FR_DA_price,natural_gas_price,co2_price,FR_ID3_price,FR_ID3_volume,aFRR_energy_down_quantity,aFRR_energy_down_price,aFRR_capacity_down_price,fallback_elecricity_price,TURPE,accise,grid_energy_charge,FR_aFRR_capacity_down_marginal_price
 2025-01-01 00:00:00,6.42,12.36,64.75,,12.36,150.0,377.0,-1.95,5.39,2.16,1.66,20.5,22.16,1.3475
 2025-01-01 00:15:00,6.42,12.36,64.75,,12.36,150.0,0.0,131.85,5.39,2.16,1.66,20.5,22.16,1.3475
 2025-01-01 00:30:00,6.42,12.36,64.75,,12.36,150.0,34.0,27.45,5.39,2.16,1.66,20.5,22.16,1.3475

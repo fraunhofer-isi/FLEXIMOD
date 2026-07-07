@@ -26,6 +26,11 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+# Standard forecasts_df.csv column holding the time-varying per-MWh grid energy
+# charge (Arbeitspreis). Shared, country-neutral name for every regulation that
+# uses a dynamic charge (ES peajes, FR TURPE+accise, …).
+GRID_ENERGY_CHARGE_COLUMN = "grid_energy_charge"
+
 
 class GridFeeConfigError(ValueError):
     """Raised when the per-plant charge table or options cannot be interpreted."""
@@ -369,7 +374,7 @@ class SpanishGridFeeRegulation(GridFeeRegulation):
     ELECTRICITY_TAX_RATE = 0.007669044  # = 0.05112696 × 0.15
 
     # Column in forecasts_df.csv containing the time-varying access tariff
-    DYNAMIC_CHARGE_COLUMN = "arbeit_6_2TD_eur_per_mwh"
+    DYNAMIC_CHARGE_COLUMN = GRID_ENERGY_CHARGE_COLUMN
 
     def __init__(
         self,
@@ -516,7 +521,7 @@ class SpanishGridFeeRegulation(GridFeeRegulation):
 
 # --------------------------------------------------------------------- France
 class FrenchGridFeeRegulation(GridFeeRegulation):
-    """France: TURPE + accise (dynamic, from forecasts) + Capacity Obligation (ex-post).
+    """France: TURPE + accise (dynamic, from forecasts) + fixed annual charges (ex-post).
 
     French industrial electricity cost structure:
     1. Market price (EPEX SPOT day-ahead / intraday)
@@ -524,18 +529,20 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
        — time-varying by period, provided as column in forecasts_df.csv
     3. Accise sur l'électricité (formerly CSPE/TICFE)
        — time-varying, provided as column in forecasts_df.csv
-    4. Capacity Obligation (Obligation de Capacité)
-       — EUR/MW.a × realized annual peak, settled ex-post
+    4. Fixed annual charges (EUR/MW.a), settled ex-post on the realized annual
+       peak with no dispatch feedback. All EUR/MW.a rows are summed, covering:
+       - Capacity Obligation (Obligation de Capacité)
+       - fixed TURPE components (management, metering, fixed withdrawal)
 
-    TURPE and accise are pre-summed into a single forecasts column
-    ``FR_total_dynamic_charges``.
+    TURPE and accise are pre-summed into the standard forecasts column
+    ``grid_energy_charge``.
 
     Delivered price for strategy decisions:
-        market_price + FR_total_dynamic_charges
+        market_price + grid_energy_charge
     (all additive, no multiplicative tax for industrial consumers)
     """
 
-    DYNAMIC_CHARGE_COLUMN = "FR_total_dynamic_charges"
+    DYNAMIC_CHARGE_COLUMN = GRID_ENERGY_CHARGE_COLUMN
 
     def __init__(
         self,
@@ -549,22 +556,34 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
         self._parse_charges(plant_charges)
 
     def _parse_charges(self, plant_charges: pd.DataFrame) -> None:
-        """Extract capacity obligation rate and static EUR/MWh levies from additional_charges.csv."""
-        capacity_eur_per_mw_a = 0.0
-        levies = 0.0
+        """Sum fixed annual charges (EUR/MW.a) and static energy levies (EUR/MWh).
+
+        Every EUR/MW.a row — the Capacity Obligation plus the fixed TURPE
+        components (management, metering, fixed withdrawal) — is a fixed annual
+        charge with no dispatch feedback, settled ex-post on the realized annual
+        peak. They are summed by unit into a single EUR/MW.a rate rather than
+        matched by component name, so no component is silently dropped. Static
+        EUR/MWh levies (if any) are summed into the per-MWh dispatch charge.
+        """
+        fixed_annual_eur_per_mw_a = 0.0
+        levies_eur_per_mwh = 0.0
 
         for _, row in plant_charges.iterrows():
-            component = str(row["component"]).strip().lower()
             unit = str(row["unit"]).strip()
             value = float(row["value"])
 
-            if "capacity obligation" in component:
-                capacity_eur_per_mw_a = value
+            if unit == "EUR/MW.a":
+                fixed_annual_eur_per_mw_a += value
             elif unit == "EUR/MWh":
-                levies += value
+                levies_eur_per_mwh += value
+            else:  # pragma: no cover - data_loader restricts units to the two above
+                warnings.warn(
+                    f"France grid fees: ignoring charge with unsupported unit '{unit}'.",
+                    stacklevel=2,
+                )
 
-        self._capacity_eur_per_mw_a = capacity_eur_per_mw_a
-        self._levies_eur_per_mwh = levies
+        self._fixed_annual_eur_per_mw_a = fixed_annual_eur_per_mw_a
+        self._levies_eur_per_mwh = levies_eur_per_mwh
 
     # ─── Properties for strategy access ───────────────────────────
 
@@ -599,7 +618,8 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
         Components:
         - Energy charges (TURPE + accise): already in dispatch as
           additional_electricity_charges_cost_EUR
-        - Capacity Obligation: EUR/MW.a × realized annual peak (prorated)
+        - Fixed annual charges (Capacity Obligation + fixed TURPE components):
+          summed EUR/MW.a × realized annual peak (prorated)
         """
         dt_h = timestep_minutes / 60.0
         consumption = pd.to_numeric(
@@ -619,11 +639,12 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
         else:
             energy_charge = 0.0
 
-        # Capacity Obligation: EUR/MW.a × realized annual peak, prorated to sim period
+        # Fixed annual charges (Capacity Obligation + fixed TURPE components):
+        # summed EUR/MW.a × realized annual peak, prorated to sim period
         simulation_hours = len(dispatch_results) * dt_h
         hours_per_year = 8760.0
         proration_factor = simulation_hours / hours_per_year if hours_per_year > 0 else 1.0
-        capacity_charge = self._capacity_eur_per_mw_a * annual_peak * proration_factor
+        capacity_charge = self._fixed_annual_eur_per_mw_a * annual_peak * proration_factor
 
         # Static levies (already in dispatch as additional_electricity_charges_cost_EUR)
         levies_energy = self._levies_eur_per_mwh * grid_energy
