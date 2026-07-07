@@ -10,6 +10,7 @@ __pycache__/
 .mypy_cache/
 build/
 dist/
+playground/
 *.egg-info/
 
 data/input/Archive/

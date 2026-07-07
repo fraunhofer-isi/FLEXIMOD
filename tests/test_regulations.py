@@ -7,9 +7,11 @@ import pandas as pd
 import pytest
 
 from flexi_mod.regulations import (
+    FrenchGridFeeRegulation,
     GermanGridFeeRegulation,
     GridFeeConfigError,
     NullGridFeeRegulation,
+    SpanishGridFeeRegulation,
     build_grid_fee_regulation,
 )
 
@@ -20,16 +22,16 @@ def full_charges() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "component": [
-                "Grid energy charge >=2500 h/a",
-                "Grid energy charge <2500 h/a",
-                "Grid capacity charge >=2500 h/a",
-                "Grid capacity charge <2500 h/a",
-                "CHP surcharge",
-                "Offshore grid levy",
-                "Surcharge for special network use (group A)",
-                "Surcharge for special network use (group B)",
-                "Concession fee",
-                "Electricity tax",
+                "grid_energy_charge_high",
+                "grid_energy_charge_low",
+                "grid_capacity_charge_high",
+                "grid_capacity_charge_low",
+                "chp_surcharge",
+                "offshore_grid_levy",
+                "special_network_use_a",
+                "special_network_use_b",
+                "concession_fee",
+                "electricity_tax",
             ],
             "unit": [
                 "EUR/MWh",
@@ -49,7 +51,7 @@ def full_charges() -> pd.DataFrame:
 
 
 def make_reg(**kwargs) -> GermanGridFeeRegulation:
-    return GermanGridFeeRegulation(full_charges(), **kwargs)
+    return GermanGridFeeRegulation.from_charges_frame(full_charges(), **kwargs)
 
 
 def dispatch(index: pd.DatetimeIndex, consumption) -> pd.DataFrame:
@@ -193,31 +195,40 @@ def test_null_regulation_when_charges_none():
 
 def test_factory_unknown_country_raises():
     with pytest.raises(GridFeeConfigError, match="No grid-fee regulation"):
-        build_grid_fee_regulation("FR", full_charges())
+        build_grid_fee_regulation("NL", full_charges())
 
 
 def test_incomplete_tier_raises():
     charges = pd.DataFrame(
         {
-            "component": ["Grid energy charge >=2500 h/a", "CHP surcharge"],
+            "component": ["grid_energy_charge_high", "chp_surcharge"],
             "unit": ["EUR/MWh", "EUR/MWh"],
             "value": [36.9, 2.77],
         }
     )
     with pytest.raises(GridFeeConfigError, match="incomplete tiered component"):
-        GermanGridFeeRegulation(charges)
+        GermanGridFeeRegulation.from_charges_frame(charges)
+
+
+def test_unknown_charge_name_raises():
+    # A misspelled/unknown component no longer disappears into a levy bucket.
+    charges = pd.DataFrame(
+        {"component": ["grid_capcity_charge_high"], "unit": ["EUR/MW.a"], "value": [66570.0]}
+    )
+    with pytest.raises(GridFeeConfigError, match="Unknown grid-fee charge"):
+        GermanGridFeeRegulation.from_charges_frame(charges)
 
 
 def test_absent_categories_default_to_zero():
     # A pure-levy tariff (no grid energy/capacity/special) loads with zero tiers.
     charges = pd.DataFrame(
         {
-            "component": ["Network consumption price"],
+            "component": ["electricity_tax"],
             "unit": ["EUR/MWh"],
             "value": [10.0],
         }
     )
-    reg = GermanGridFeeRegulation(charges)
+    reg = GermanGridFeeRegulation.from_charges_frame(charges)
     assert reg.marginal_charge_eur_per_mwh() == pytest.approx(10.0)
     idx = pd.date_range("2025-04-01 00:00", periods=4, freq="15min")
     res = reg.settle(dispatch(idx, [1.0] * 4), timestep_minutes=15)
@@ -239,3 +250,71 @@ def test_charging_block_mask_absent_column_blocks_nothing():
     with pytest.warns(UserWarning, match="high_load_window"):
         mask = make_reg().charging_block_mask(pd.DataFrame(index=idx))
     assert not mask.any()
+
+
+# --------------------------------------------------------------------- Spain
+def test_spanish_settle_separates_iee_from_levies():
+    """IEE is reported in electricity_tax_EUR, not folded into levies_EUR."""
+    charges = pd.DataFrame(
+        {"component": ["grid_capacity_charge"], "unit": ["EUR/MW.a"], "value": [19629.0]}
+    )
+    reg = SpanishGridFeeRegulation.from_charges_frame(charges)
+
+    idx = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
+    dr = pd.DataFrame(
+        {
+            "actual_electricity_consumption_MWh": [1.0, 1.0, 1.0, 1.0],  # 4 MWh, 4 MW peak
+            "additional_electricity_charges_cost_EUR": [10.0, 10.0, 10.0, 10.0],  # peajes = 40
+            "electricity_market_cost_EUR": [100.0, 100.0, 100.0, 100.0],  # market = 400
+        },
+        index=idx,
+    )
+    res = reg.settle(dr, timestep_minutes=15)
+
+    energy_charge = 40.0
+    taxable_base = 400.0 + energy_charge  # market + peajes (Spain has no static EUR/MWh levy)
+    iee = taxable_base * SpanishGridFeeRegulation.ELECTRICITY_TAX_RATE
+
+    assert res.levies_EUR == pytest.approx(0.0)  # pure; IEE not bundled in here
+    assert res.electricity_tax_EUR == pytest.approx(iee)  # IEE lives in its own field
+    assert res.capacity_charge_EUR == pytest.approx(19629.0 * 4.0)  # annual, no proration
+    assert res.grid_fee_total_EUR == pytest.approx(
+        res.energy_charge_EUR
+        + res.capacity_charge_EUR
+        + res.special_network_use_EUR
+        + res.levies_EUR
+        + res.electricity_tax_EUR
+    )
+
+
+def test_spanish_rejects_unknown_charge():
+    """Spain's per-MWh charges belong in the dynamic column; a stray levy row raises."""
+    charges = pd.DataFrame({"component": ["some_static_levy"], "unit": ["EUR/MWh"], "value": [2.0]})
+    with pytest.raises(GridFeeConfigError, match="Unknown grid-fee charge"):
+        SpanishGridFeeRegulation.from_charges_frame(charges)
+
+
+# --------------------------------------------------------------------- France
+def test_french_settle_sums_all_fixed_annual_charges():
+    """All EUR/MW.a charges are summed (not just Capacity Obligation) and not prorated."""
+    charges = pd.DataFrame(
+        {
+            "component": [
+                "capacity_obligation",
+                "turpe_management",
+                "turpe_metering",
+                "turpe_fix",
+            ],
+            "unit": ["EUR/MW.a", "EUR/MW.a", "EUR/MW.a", "EUR/MW.a"],
+            "value": [14650.0, 11545.32, 3800.04, 12948.94],
+        }
+    )
+    reg = FrenchGridFeeRegulation.from_charges_frame(charges)
+
+    idx = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
+    dr = pd.DataFrame({"actual_electricity_consumption_MWh": [1.0, 1.0, 1.0, 1.0]}, index=idx)
+    res = reg.settle(dr, timestep_minutes=15)
+
+    total_rate = 14650.0 + 11545.32 + 3800.04 + 12948.94  # 42944.30
+    assert res.capacity_charge_EUR == pytest.approx(total_rate * 4.0)  # 4 MW peak, no proration
+    assert res.electricity_tax_EUR == pytest.approx(0.0)  # France has no multiplicative tax

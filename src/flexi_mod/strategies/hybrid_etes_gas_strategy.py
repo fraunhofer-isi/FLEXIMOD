@@ -10,6 +10,7 @@ import warnings
 import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.data.data_loader import DataValidationError
 from flexi_mod.markets.afrr_capacity import AFRRCapacityMarket
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
 from flexi_mod.markets.day_ahead import DayAheadMarket
@@ -30,6 +31,18 @@ IDC_MARGIN_EUR_PER_MWH = 0.0
 AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH = 0.0
 AFRR_CAPACITY_MARGIN_EUR_PER_MW_H = 0.0
 
+# aFRR clearing mechanisms. ``pay_as_bid`` pays each awarded bid its own
+# submitted price; ``pay_as_cleared`` pays every awarded bid the marginal
+# clearing price. The mechanism is a property of each market and is configured
+# under ``markets.<market>.clearing_mechanism`` — see
+# HybridETESGasStrategy._resolve_capacity_clearing_mechanism.
+_VALID_CLEARING_MECHANISMS = ("pay_as_bid", "pay_as_cleared")
+_AFRR_CAPACITY_MARKET = "afrr_capacity"
+_AFRR_ENERGY_MARKET = "afrr_energy"
+# Legacy strategy name that selected pay-as-cleared capacity before the
+# clearing mechanism moved onto the market blocks. Kept for backward compatibility.
+_PAY_AS_CLEARED_STRATEGY_NAME = "hybrid_etes_gas_pay_as_cleared_capacity"
+
 
 class HybridETESGasStrategy(BaseStrategy):
     """Operator strategy for electricity procurement and plant operation.
@@ -41,24 +54,100 @@ class HybridETESGasStrategy(BaseStrategy):
 
     def __init__(self, config: CaseConfig):
         self.config = config
+        self._capacity_clearing_mechanism = self._resolve_capacity_clearing_mechanism(config)
+        self._energy_clearing_mechanism = self._resolve_energy_clearing_mechanism(config)
         self.afrr_energy_data_quality_summary = pd.DataFrame()
         self.afrr_capacity_block_summary = pd.DataFrame()
         self._afrr_down_energy_data_cache = {}
 
+    def _market_clearing_mechanism(self, config: CaseConfig, market_name: str) -> str | None:
+        """Return ``markets.<market_name>.clearing_mechanism`` (lowercased) or None."""
+
+        markets = config.case.get("markets") or {}
+        market_cfg = markets.get(market_name) or {}
+        value = market_cfg.get("clearing_mechanism")
+        return None if value is None else str(value).strip().lower()
+
+    def _resolve_capacity_clearing_mechanism(self, config: CaseConfig) -> str:
+        """Determine the aFRR-capacity clearing mechanism from configuration.
+
+        Resolution order (first match wins):
+        1. ``markets.afrr_capacity.clearing_mechanism`` — the preferred location,
+           since the clearing rule is a property of the market.
+        2. Legacy ``strategy.clearing_mechanism`` field.
+        3. Legacy strategy name ``hybrid_etes_gas_pay_as_cleared_capacity``.
+        4. Default ``"pay_as_bid"``.
+        """
+
+        mechanism = self._market_clearing_mechanism(config, _AFRR_CAPACITY_MARKET)
+        if mechanism is None:
+            strategy_cfg = config.case.get("strategy") or {}
+            legacy_field = strategy_cfg.get("clearing_mechanism")
+            if legacy_field is not None:
+                mechanism = str(legacy_field).strip().lower()
+            elif config.strategy_name == _PAY_AS_CLEARED_STRATEGY_NAME:
+                mechanism = "pay_as_cleared"
+            else:
+                mechanism = "pay_as_bid"
+        if mechanism not in _VALID_CLEARING_MECHANISMS:
+            options = ", ".join(_VALID_CLEARING_MECHANISMS)
+            raise ValueError(
+                f"Unknown afrr_capacity clearing_mechanism '{mechanism}'. Valid options: {options}."
+            )
+        return mechanism
+
+    def _resolve_energy_clearing_mechanism(self, config: CaseConfig) -> str:
+        """Determine the aFRR-energy clearing mechanism from configuration.
+
+        aFRR energy is settled at the market clearing price, so ``pay_as_cleared``
+        is the only mechanism implemented today. The field is accepted under
+        ``markets.afrr_energy.clearing_mechanism`` for symmetry with capacity;
+        a ``pay_as_bid`` value raises a clear error rather than silently being
+        ignored. Defaults to ``"pay_as_cleared"``.
+        """
+
+        mechanism = self._market_clearing_mechanism(config, _AFRR_ENERGY_MARKET)
+        if mechanism is None:
+            return "pay_as_cleared"
+        if mechanism not in _VALID_CLEARING_MECHANISMS:
+            options = ", ".join(_VALID_CLEARING_MECHANISMS)
+            raise ValueError(
+                f"Unknown afrr_energy clearing_mechanism '{mechanism}'. Valid options: {options}."
+            )
+        if mechanism != "pay_as_cleared":
+            raise ValueError(
+                "afrr_energy clearing_mechanism 'pay_as_bid' is not implemented; "
+                "aFRR energy is currently settled pay_as_cleared. "
+                "Set clearing_mechanism: pay_as_cleared or omit the field."
+            )
+        return mechanism
+
     @property
     def capacity_pricing_rule(self) -> str:
-        """Return the aFRR-capacity pricing rule implemented by this strategy."""
+        """Return the aFRR-capacity clearing mechanism in force for this case.
 
-        return "pay_as_bid"
+        Selected from configuration (``markets.afrr_capacity.clearing_mechanism``,
+        the legacy ``strategy.clearing_mechanism`` field, or the legacy
+        ``hybrid_etes_gas_pay_as_cleared_capacity`` strategy name) and defaulting
+        to ``"pay_as_bid"``. Reported in outputs as ``afrr_capacity_pricing_rule``.
+        """
+
+        return self._capacity_clearing_mechanism
 
     def capacity_settlement_price(
         self,
         capacity_bid_price_eur_per_mw_h: float,
         clearing_price_eur_per_mw_h: float,
     ) -> float:
-        """Return the awarded-capacity settlement price in EUR/MW/h."""
+        """Return the awarded-capacity settlement price in EUR/MW/h.
 
-        del clearing_price_eur_per_mw_h
+        - ``pay_as_bid``: the operator is paid its own submitted bid price.
+        - ``pay_as_cleared``: every awarded bid is paid the marginal clearing
+          price, independent of the submitted bid.
+        """
+
+        if self._capacity_clearing_mechanism == "pay_as_cleared":
+            return clearing_price_eur_per_mw_h
         return capacity_bid_price_eur_per_mw_h
 
     def capacity_bid_price(
@@ -66,14 +155,79 @@ class HybridETESGasStrategy(BaseStrategy):
         minimum_acceptable_price_eur_per_mw_h: float,
         market_reference_price_eur_per_mw_h: float,
     ) -> float:
-        """Return the submitted bid price for the capacity product.
+        """Return the submitted bid price for the capacity product in EUR/MW/h.
 
-        The existing pay-as-bid strategy interprets its configured capacity-price
-        signal as the submitted and awarded bid price, preserving prior behaviour.
+        - ``pay_as_bid``: the configured capacity-price signal is interpreted as
+          the submitted and awarded bid price, preserving prior behaviour.
+        - ``pay_as_cleared``: the operator bids its true reservation price (the
+          minimum acceptable price, i.e. opportunity cost plus capacity margin)
+          and is awarded whenever the clearing price covers it.
         """
 
-        del minimum_acceptable_price_eur_per_mw_h
+        if self._capacity_clearing_mechanism == "pay_as_cleared":
+            return minimum_acceptable_price_eur_per_mw_h
         return market_reference_price_eur_per_mw_h
+
+    # ─── Regulation-aware helpers ──────────────────────────────────
+
+    @staticmethod
+    def _get_tax_rate(plant: SteamGenerationPlant) -> float:
+        """Read the multiplicative electricity tax rate from the plant's regulation."""
+        regulation = getattr(plant, "grid_fee_regulation", None)
+        if regulation is None:
+            return 0.0
+        return float(getattr(regulation, "electricity_tax_rate", 0.0))
+
+    @staticmethod
+    def _get_dynamic_charge_column(plant: SteamGenerationPlant) -> str | None:
+        """Read the dynamic charge column name from the plant's regulation."""
+        regulation = getattr(plant, "grid_fee_regulation", None)
+        if regulation is None:
+            return None
+        return getattr(regulation, "dynamic_charge_column", None)
+
+    def calculate_additional_charges_t(
+        self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
+    ) -> pd.Series:
+        """Return per-timestep additional electricity charges.
+
+        - If the regulation declares a ``dynamic_charge_column``, that column must
+          be present in the forecasts and its time series is used. A declared but
+          missing column is a configuration error and raises — it is never
+          silently replaced by the scalar, which would zero the per-MWh grid fee
+          for countries whose charge lives entirely in that column (ES, FR).
+        - Otherwise (no dynamic column declared, e.g. Germany): use the scalar
+          marginal charge from the regulation.
+        """
+        ac_column = self._get_dynamic_charge_column(plant)
+        scalar = float(getattr(plant, "additional_electricity_charge_eur_per_mwh", 0.0))
+        if ac_column is not None:
+            if ac_column not in forecasts.columns:
+                raise DataValidationError(
+                    f"Grid-fee regulation for plant '{plant.name}' declares dynamic "
+                    f"charge column '{ac_column}', but it is missing from "
+                    "forecasts_df.csv. Add the column (or fix its name); falling back "
+                    "to the scalar charge would silently drop the per-MWh grid fee."
+                )
+            # The dynamic column carries the time-varying per-MWh grid charge. Any
+            # static EUR/MWh levy is a *separate* component and is added on top, so
+            # dispatch matches the ex-post settlement (which also sums both). For
+            # ES/FR the static levy is 0 today, so this is a no-op there.
+            if scalar != 0.0:
+                warnings.warn(
+                    f"Plant '{plant.name}' has a static per-MWh levy ({scalar} EUR/MWh) "
+                    f"alongside dynamic charge column '{ac_column}'; both are summed for "
+                    "dispatch and settlement. Verify the levy is not already included in "
+                    "the dynamic column to avoid double counting.",
+                    stacklevel=2,
+                )
+            charges = forecasts[ac_column].astype(float) + scalar
+            charges.name = "additional_charges_EUR_per_MWh"
+            return charges
+
+        return pd.Series(scalar, index=forecasts.index, name="additional_charges_EUR_per_MWh")
+
+    # ─── Core interface ────────────────────────────────────────────
 
     def required_forecast_columns(self) -> set[str]:
         required = {GAS_PRICE_SIGNAL}
@@ -96,10 +250,14 @@ class HybridETESGasStrategy(BaseStrategy):
         market_data = market.prepare_market_data(forecasts)
         price_col = market.signal_column("price")
 
+        tax_rate = self._get_tax_rate(plant)
+        additional_charges_t = self.calculate_additional_charges_t(plant, forecasts)
+
         benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         delivered_da_price = self._delivered_electricity_price(
-            plant,
             market_data["day_ahead_price_EUR_per_MWh"],
+            tax_rate,
+            additional_charges_t,
         )
         charge_allowed = self._calculate_charge_gate(
             plant=plant,
@@ -113,9 +271,8 @@ class HybridETESGasStrategy(BaseStrategy):
             gas_price_col=GAS_PRICE_SIGNAL,
             gas_benchmark_eur_per_mwh_th=benchmark,
             charge_allowed=charge_allowed,
-            additional_electricity_charge_eur_per_mwh=(
-                plant.additional_electricity_charge_eur_per_mwh
-            ),
+            additional_electricity_charge_eur_per_mwh=additional_charges_t,
+            tax_rate=tax_rate,
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
         if rolling:
@@ -152,9 +309,16 @@ class HybridETESGasStrategy(BaseStrategy):
             forecasts = forecasts.copy()
             forecasts[da_price_col] = 0.0
 
+        tax_rate = self._get_tax_rate(plant)
+        additional_charges_t = self.calculate_additional_charges_t(plant, forecasts)
+
         da_position = self._fixed_da_position(fixed_positions, forecasts.index)
         idc_price = idc_data["IDC_price_EUR_per_MWh"]
-        delivered_idc_price = self._delivered_electricity_price(plant, idc_price)
+        delivered_idc_price = self._delivered_electricity_price(
+            idc_price,
+            tax_rate,
+            additional_charges_t,
+        )
         gas_heat_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         electricity_benchmark = self.calculate_electricity_trading_benchmark(
             plant,
@@ -201,9 +365,8 @@ class HybridETESGasStrategy(BaseStrategy):
             idc_sell_upper_bound_mwh=idc_sell_upper_bound,
             gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
-            additional_electricity_charge_eur_per_mwh=(
-                plant.additional_electricity_charge_eur_per_mwh
-            ),
+            additional_electricity_charge_eur_per_mwh=additional_charges_t,
+            tax_rate=tax_rate,
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
         if rolling:
@@ -243,6 +406,9 @@ class HybridETESGasStrategy(BaseStrategy):
         min_bid_mw = float(product_rules.get("min_bid_mw", 0.0))
         bid_increment_mw = float(product_rules.get("bid_increment_mw", 1.0))
         _validate_bid_rules("afrr_energy", min_bid_mw, bid_increment_mw)
+
+        tax_rate = self._get_tax_rate(plant)
+        additional_charges_t = self.calculate_additional_charges_t(plant, forecasts)
 
         cleaned = self._prepare_afrr_down_energy_data(forecasts, timestep_hours)
         clean_afrr = cleaned.frame
@@ -309,8 +475,9 @@ class HybridETESGasStrategy(BaseStrategy):
         valid_price = clean_afrr["afrr_price_available"]
         afrr_energy_bid_price = electricity_benchmark + AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH
         delivered_afrr_price = self._delivered_electricity_price(
-            plant,
             clean_afrr["afrr_energy_down_price_EUR_per_MWh"],
+            tax_rate,
+            additional_charges_t,
         )
         # aFRR energy is offered only when the deal is profitable for the plant:
         # the market clearing price plus industrial electricity charges must stay
@@ -405,9 +572,8 @@ class HybridETESGasStrategy(BaseStrategy):
             afrr_curtailment_mwh=curtailed_activation,
             gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
-            additional_electricity_charge_eur_per_mwh=(
-                plant.additional_electricity_charge_eur_per_mwh
-            ),
+            additional_electricity_charge_eur_per_mwh=additional_charges_t,
+            tax_rate=tax_rate,
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
         if rolling:
@@ -601,20 +767,26 @@ class HybridETESGasStrategy(BaseStrategy):
                 },
                 index=forecasts.index,
             )
+
+        tax_rate = self._get_tax_rate(plant)
+        additional_charges_t = self.calculate_additional_charges_t(plant, forecasts)
+
         gas_heat_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         electricity_benchmark = self.calculate_electricity_trading_benchmark(
             plant,
             gas_heat_benchmark,
         )
         reference_price = self._delivered_electricity_price(
-            plant,
             forecasts[da_price_col].astype(float),
+            tax_rate,
+            additional_charges_t,
         )
         opportunity_cost = (electricity_benchmark - reference_price).clip(lower=0.0)
         afrr_energy_bid_price = electricity_benchmark + AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH
         delivered_afrr_energy_price = self._delivered_electricity_price(
-            plant,
             afrr_energy["afrr_energy_down_price_EUR_per_MWh"],
+            tax_rate,
+            additional_charges_t,
         )
         activation_relevant = (afrr_energy["afrr_system_activation_MWh"] > 1e-12) | afrr_energy[
             "afrr_activation_without_price"
@@ -840,12 +1012,18 @@ class HybridETESGasStrategy(BaseStrategy):
 
     @staticmethod
     def _delivered_electricity_price(
-        plant: SteamGenerationPlant,
         market_price: pd.Series,
+        tax_rate: float,
+        additional_charges: pd.Series,
     ) -> pd.Series:
-        """Return market electricity price plus plant consumption charges."""
+        """Return total delivered electricity price including charges and tax.
 
-        return market_price.astype(float) + float(plant.additional_electricity_charge_eur_per_mwh)
+        Formula: (market_price + additional_charges) × (1 + tax_rate)
+        - DE: tax_rate=0.0, charges=scalar → price + scalar
+        - ES: tax_rate>0, charges=time-series → (price + charges) × (1 + tax)
+        """
+        base = market_price.astype(float) + additional_charges.astype(float)
+        return base * (1.0 + tax_rate)
 
     @staticmethod
     def _grid_charging_block(
