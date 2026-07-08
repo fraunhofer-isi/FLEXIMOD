@@ -1,0 +1,4 @@
+name,unit_type,technology,node,objective,clinker_demand,raw_meal_to_clinker_ratio,waste_heat_per_t_clinker,fuel_type,max_heat_out,specific_heat_demand,eta_electric,eta_fossil,fossil_ng_share,calcination_emission_factor,natural_gas_co2_factor
+cement_1,cement_plant,preheater,north,min_variable_cost,4.0,1.5,0.0,electricity,10.0,0.1,1.0,,,,
+cement_1,cement_plant,calciner,north,min_variable_cost,4.0,1.5,0.0,fossil,10.0,0.5,,1.0,1.0,0.5,0.2
+cement_1,cement_plant,kiln,north,min_variable_cost,4.0,1.5,0.0,fossil,10.0,0.8,,1.0,1.0,,0.2

@@ -227,6 +227,8 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         grid_capacity_charge_low: float = 0.0,  # EUR/MW.a — < 2500 h/a
         special_network_use_a: float = 0.0,  # EUR/MWh  — group A (first 1 GWh)
         special_network_use_b: float = 0.0,  # EUR/MWh  — group B (remainder)
+        metering_and_operation: float = 0.0,  # EUR/MWh
+        surcharges_and_levies: float = 0.0,  # EUR/MWh, aggregate when no split is given
         chp_surcharge: float = 0.0,  # EUR/MWh
         offshore_grid_levy: float = 0.0,  # EUR/MWh
         concession_fee: float = 0.0,  # EUR/MWh
@@ -253,7 +255,14 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         self._capacity = {"high": grid_capacity_charge_high, "low": grid_capacity_charge_low}
         self._special_a = special_network_use_a
         self._special_b = special_network_use_b
-        self._levies = chp_surcharge + offshore_grid_levy + concession_fee + electricity_tax
+        self._levies = (
+            metering_and_operation
+            + surcharges_and_levies
+            + chp_surcharge
+            + offshore_grid_levy
+            + concession_fee
+            + electricity_tax
+        )
 
     # -------------------------------------------------------------- CSV adapter
     @classmethod
@@ -369,7 +378,11 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         ex_post_addition = capacity_charge + group_a_premium + tier_trueup
 
         result_warnings: list[str] = []
-        if not tier_held:
+        tier_rates_differ = (
+            self._energy[realized_tier] != self._energy[self._assumed_tier]
+            or self._capacity[realized_tier] != self._capacity[self._assumed_tier]
+        )
+        if not tier_held and tier_rates_differ:
             result_warnings.append(
                 f"Assumed {self._assumed_tier} full-load-hour tier did not hold "
                 f"(realized {full_load_hours:.0f} h/a -> '{realized_tier}'). The dispatch used "

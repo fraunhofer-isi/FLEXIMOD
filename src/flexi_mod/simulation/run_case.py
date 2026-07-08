@@ -57,6 +57,14 @@ available_examples: dict[str, dict[str, str]] = {
         "scenario": "hybrid_ETES_FR",
         "study_case": "hybrid_ETES_FR",
     },
+    "cement_DE_regulatory_charges": {
+        "scenario": "cement_DE_regulatory_charges",
+        "study_case": "cement_DE_regulatory_charges",
+    },
+    "steel_DE_regulatory_charges": {
+        "scenario": "steel_DE_regulatory_charges",
+        "study_case": "steel_DE_regulatory_charges",
+    },
 }
 
 # Select the example to run from the available examples above.

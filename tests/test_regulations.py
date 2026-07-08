@@ -54,6 +54,34 @@ def make_reg(**kwargs) -> GermanGridFeeRegulation:
     return GermanGridFeeRegulation.from_charges_frame(full_charges(), **kwargs)
 
 
+def aggregate_charges() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "component": [
+                "grid_energy_charge_high",
+                "grid_energy_charge_low",
+                "grid_capacity_charge_high",
+                "grid_capacity_charge_low",
+                "metering_and_operation",
+                "concession_fee",
+                "surcharges_and_levies",
+                "electricity_tax",
+            ],
+            "unit": [
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MW.a",
+                "EUR/MW.a",
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MWh",
+                "EUR/MWh",
+            ],
+            "value": [6.9, 6.9, 53060.0, 53060.0, 2.0, 1.1, 1.6, 0.5],
+        }
+    )
+
+
 def dispatch(index: pd.DatetimeIndex, consumption) -> pd.DataFrame:
     return pd.DataFrame(
         {"actual_electricity_consumption_MWh": np.asarray(consumption, dtype=float)},
@@ -76,6 +104,22 @@ def test_marginal_charge_low_tier():
     assert make_reg(assumed_tier="low").marginal_charge_eur_per_mwh() == pytest.approx(
         LEVIES + 45.6 + 0.5
     )
+
+
+def test_german_aggregate_metering_and_levy_components_are_counted():
+    reg = GermanGridFeeRegulation.from_charges_frame(aggregate_charges(), assumed_tier="high")
+
+    assert reg.marginal_charge_eur_per_mwh() == pytest.approx(6.9 + 2.0 + 1.1 + 1.6 + 0.5)
+
+
+def test_german_equal_tier_rates_do_not_emit_economic_tier_warning():
+    reg = GermanGridFeeRegulation.from_charges_frame(aggregate_charges(), assumed_tier="high")
+    idx = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
+    res = reg.settle(dispatch(idx, [1.0, 1.0, 1.0, 1.0]), timestep_minutes=15)
+
+    assert res.realized_tier == "low"
+    assert res.tier_assumption_held is False
+    assert res.warnings == []
 
 
 # -------------------------------------------------------- high-load-window rules

@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: FLEXIMOD Developers
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+cases:
+  cement_DE_regulatory_charges:
+    name: cement_DE_regulatory_charges
+    country: DE
+    timestep_minutes: 15
+    simulation_start: "2025-01-01 00:00"
+    simulation_end: "2025-01-01 00:45"
+    additional_charges: true
+    strategy:
+      name: cement_cost_minimization
+      dispatch:
+        dispatch_method: pyomo
+    solver:
+      name: highs
+      fallback_solvers: []
+      tee: false
+    market_sequence:
+      - day_ahead
+    markets:
+      day_ahead:
+        enabled: true
+        signals:
+          price: DE_DA_price

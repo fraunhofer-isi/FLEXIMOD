@@ -1,0 +1,5 @@
+name,unit_type,technology,node,objective,steel_demand,fuel_type,max_power,min_power,efficiency,specific_hydrogen_consumption,specific_natural_gas_consumption,specific_electricity_consumption,specific_iron_ore_consumption,natural_gas_co2_factor,specific_dri_demand,specific_lime_demand,lime_co2_factor,capacity,min_soc,max_soc,initial_soc,max_power_charge,max_power_discharge,efficiency_charge,efficiency_discharge,storage_loss_rate
+steel_1,steel_plant,electrolyser,north,min_variable_cost,4.0,,20.0,0.0,0.8,,,,,,,,,,,,,,,,
+steel_1,steel_plant,dri_plant,north,min_variable_cost,4.0,hydrogen,10.0,0.0,,2.0,3.0,0.2,1.5,0.2,,,,,,,,,,,,
+steel_1,steel_plant,eaf,north,min_variable_cost,4.0,,10.0,0.0,,,,0.5,,,1.0,0.05,0.1,,,,,,,,,
+steel_1,steel_plant,hydrogen_buffer_storage,north,min_variable_cost,4.0,,,,,,,,,,,,,10.0,0.0,1.0,0.0,10.0,10.0,1.0,1.0,0.0
