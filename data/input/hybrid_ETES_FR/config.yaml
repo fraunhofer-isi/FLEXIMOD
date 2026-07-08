@@ -47,7 +47,7 @@ cases:
           bid_increment_mw: 1.0
           divisible: true
         signals:
-          price: FR_aFRR_capacity_down_marginal_price
+          price: aFRR_capacity_down_price
       day_ahead:
         enabled: true
         product_resolution: 15min
