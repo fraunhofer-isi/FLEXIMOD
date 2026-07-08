@@ -178,6 +178,7 @@ class CaseConfig:
             "hybrid_etes_gas_pay_as_cleared_capacity",
             "steel_cost_minimization",
             "electrified_steel",
+            "cement_cost_minimization",
         }
         strategy_name = str(self.case["strategy"].get("name", ""))
         if strategy_name not in supported_strategies:
@@ -188,10 +189,14 @@ class CaseConfig:
         if dispatch.get("dispatch_method") != "pyomo":
             raise ConfigError("Only strategy.dispatch.dispatch_method='pyomo' is implemented")
 
-        if strategy_name in {"steel_cost_minimization", "electrified_steel"}:
+        if strategy_name in {
+            "steel_cost_minimization",
+            "electrified_steel",
+            "cement_cost_minimization",
+        }:
             if not bool(self.case["markets"].get("day_ahead", {}).get("enabled", False)):
                 raise ConfigError(f"{strategy_name} requires an enabled day_ahead market")
-        if strategy_name == "steel_cost_minimization":
+        if strategy_name in {"steel_cost_minimization", "cement_cost_minimization"}:
             unsupported_enabled_markets = [
                 name
                 for name in self.market_sequence
@@ -200,8 +205,8 @@ class CaseConfig:
             ]
             if unsupported_enabled_markets:
                 raise ConfigError(
-                    "steel_cost_minimization supports only day_ahead price-taking dispatch; "
-                    "disable other markets until a steel bidding strategy is configured"
+                    f"{strategy_name} supports only day_ahead price-taking dispatch; "
+                    "disable other markets until a market bidding strategy is configured"
                 )
         if strategy_name in {"steel_cost_minimization", "electrified_steel"}:
             horizon_hours = float(dispatch.get("dispatch_horizon_hours", 48))

@@ -17,6 +17,12 @@ NATURAL_GAS = "natural_gas"
 HYDROGEN = "hydrogen"
 HYBRID_HYDROGEN_NATURAL_GAS = "hybrid_hydrogen_natural_gas"
 STEEL_FUEL_TYPES = frozenset({COAL, NATURAL_GAS, HYDROGEN, HYBRID_HYDROGEN_NATURAL_GAS})
+CEMENT_ELECTRICITY = "electricity"
+CEMENT_FOSSIL = "fossil"
+CEMENT_HYBRID_ELECTRICITY_FOSSIL = "hybrid_electricity_fossil"
+CEMENT_FUEL_TYPES = frozenset(
+    {CEMENT_ELECTRICITY, CEMENT_FOSSIL, HYDROGEN, CEMENT_HYBRID_ELECTRICITY_FOSSIL}
+)
 
 
 class GenericStorage(ABC):
@@ -847,6 +853,252 @@ class BlastFurnaceBasicOxygenFurnace:
 
 
 @dataclass
+class CementPreheater:
+    """Fuel-switchable preheater converting raw-meal heat duty into raw meal output."""
+
+    max_heat_out_mw: float
+    specific_heat_demand_mwh_per_t: float
+    fuel_type: str = CEMENT_ELECTRICITY
+    eta_electric: float = 0.98
+    eta_fossil: float = 0.90
+    fossil_ng_share: float = 1.0
+    max_electric_power_mw: float | None = None
+    specific_electricity_aux_mwh_per_t: float = 0.0
+    ramp_up_mw_per_step: float | None = None
+    ramp_down_mw_per_step: float | None = None
+    natural_gas_co2_factor_t_per_mwh: float = 0.202
+    coal_co2_factor_t_per_mwh: float = 0.341
+    min_operating_steps: int = 0
+    min_down_steps: int = 0
+    initial_operational_status: int = 1
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> CementPreheater:
+        max_heat = _as_float(
+            _first_present(row.get("max_heat_out"), row.get("max_power")),
+            "max_heat_out",
+        )
+        return cls(
+            max_heat_out_mw=max_heat,
+            specific_heat_demand_mwh_per_t=_as_float(
+                row.get("specific_heat_demand"), "specific_heat_demand"
+            ),
+            fuel_type=_cement_fuel_type(row, "CementPreheater", default=CEMENT_ELECTRICITY),
+            eta_electric=_as_float(row.get("eta_electric"), "eta_electric", default=0.98),
+            eta_fossil=_as_float(row.get("eta_fossil"), "eta_fossil", default=0.90),
+            fossil_ng_share=_as_float(row.get("fossil_ng_share"), "fossil_ng_share", default=1.0),
+            max_electric_power_mw=_as_optional_float(
+                _first_present(row.get("max_electric_power"), row.get("max_power_electric"))
+            ),
+            specific_electricity_aux_mwh_per_t=_as_float(
+                row.get("specific_electricity_aux"), "specific_electricity_aux", default=0.0
+            ),
+            ramp_up_mw_per_step=_as_optional_float(row.get("ramp_up")),
+            ramp_down_mw_per_step=_as_optional_float(row.get("ramp_down")),
+            natural_gas_co2_factor_t_per_mwh=_as_float(
+                row.get("natural_gas_co2_factor"), "natural_gas_co2_factor", default=0.202
+            ),
+            coal_co2_factor_t_per_mwh=_as_float(
+                row.get("coal_co2_factor"), "coal_co2_factor", default=0.341
+            ),
+            min_operating_steps=_as_int(
+                _first_present(row.get("min_operating_steps"), row.get("min_operating_time")),
+                default=0,
+            ),
+            min_down_steps=_as_int(
+                _first_present(row.get("min_down_steps"), row.get("min_down_time")), default=0
+            ),
+            initial_operational_status=_as_int(row.get("initial_operational_status"), default=1),
+        )
+
+    def add_to_model(
+        self,
+        model: pyo.ConcreteModel,
+        block: pyo.Block,
+        time_steps: pyo.Set,
+        context: dict[str, Any],
+    ) -> pyo.Block:
+        _add_cement_heat_process(
+            self,
+            model,
+            block,
+            time_steps,
+            context,
+            output_name="raw_meal_out",
+            use_effective_heat=False,
+            process_co2_factor_t_per_t=0.0,
+            allow_external_heat=True,
+        )
+        return block
+
+
+@dataclass
+class CementCalciner:
+    """Fuel-switchable calciner with calcination process CO2."""
+
+    max_heat_out_mw: float
+    specific_heat_demand_mwh_per_t: float
+    fuel_type: str = CEMENT_ELECTRICITY
+    eta_electric: float = 0.95
+    eta_fossil: float = 0.90
+    fossil_ng_share: float = 1.0
+    max_electric_power_mw: float | None = None
+    specific_electricity_aux_mwh_per_t: float = 0.0
+    ramp_up_mw_per_step: float | None = None
+    ramp_down_mw_per_step: float | None = None
+    calcination_emission_factor_t_per_t: float = 0.525
+    natural_gas_co2_factor_t_per_mwh: float = 0.202
+    coal_co2_factor_t_per_mwh: float = 0.341
+    min_operating_steps: int = 0
+    min_down_steps: int = 0
+    initial_operational_status: int = 1
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> CementCalciner:
+        max_heat = _as_float(
+            _first_present(row.get("max_heat_out"), row.get("max_power")),
+            "max_heat_out",
+        )
+        return cls(
+            max_heat_out_mw=max_heat,
+            specific_heat_demand_mwh_per_t=_as_float(
+                row.get("specific_heat_demand"), "specific_heat_demand"
+            ),
+            fuel_type=_cement_fuel_type(row, "CementCalciner", default=CEMENT_ELECTRICITY),
+            eta_electric=_as_float(row.get("eta_electric"), "eta_electric", default=0.95),
+            eta_fossil=_as_float(row.get("eta_fossil"), "eta_fossil", default=0.90),
+            fossil_ng_share=_as_float(row.get("fossil_ng_share"), "fossil_ng_share", default=1.0),
+            max_electric_power_mw=_as_optional_float(
+                _first_present(row.get("max_electric_power"), row.get("max_power_electric"))
+            ),
+            specific_electricity_aux_mwh_per_t=_as_float(
+                row.get("specific_electricity_aux"), "specific_electricity_aux", default=0.0
+            ),
+            ramp_up_mw_per_step=_as_optional_float(row.get("ramp_up")),
+            ramp_down_mw_per_step=_as_optional_float(row.get("ramp_down")),
+            calcination_emission_factor_t_per_t=_as_float(
+                row.get("calcination_emission_factor"),
+                "calcination_emission_factor",
+                default=0.525,
+            ),
+            natural_gas_co2_factor_t_per_mwh=_as_float(
+                row.get("natural_gas_co2_factor"), "natural_gas_co2_factor", default=0.202
+            ),
+            coal_co2_factor_t_per_mwh=_as_float(
+                row.get("coal_co2_factor"), "coal_co2_factor", default=0.341
+            ),
+            min_operating_steps=_as_int(
+                _first_present(row.get("min_operating_steps"), row.get("min_operating_time")),
+                default=0,
+            ),
+            min_down_steps=_as_int(
+                _first_present(row.get("min_down_steps"), row.get("min_down_time")), default=0
+            ),
+            initial_operational_status=_as_int(row.get("initial_operational_status"), default=1),
+        )
+
+    def add_to_model(
+        self,
+        model: pyo.ConcreteModel,
+        block: pyo.Block,
+        time_steps: pyo.Set,
+        context: dict[str, Any],
+    ) -> pyo.Block:
+        _add_cement_heat_process(
+            self,
+            model,
+            block,
+            time_steps,
+            context,
+            output_name="clinker_out",
+            use_effective_heat=True,
+            process_co2_factor_t_per_t=self.calcination_emission_factor_t_per_t,
+            allow_external_heat=False,
+        )
+        return block
+
+
+@dataclass
+class CementKiln:
+    """Fuel-switchable rotary kiln for final clinkerisation."""
+
+    max_heat_out_mw: float
+    specific_heat_demand_mwh_per_t: float
+    fuel_type: str = CEMENT_FOSSIL
+    eta_electric: float = 0.95
+    eta_fossil: float = 0.90
+    fossil_ng_share: float = 1.0
+    max_electric_power_mw: float | None = None
+    specific_electricity_aux_mwh_per_t: float = 0.0
+    ramp_up_mw_per_step: float | None = None
+    ramp_down_mw_per_step: float | None = None
+    natural_gas_co2_factor_t_per_mwh: float = 0.202
+    coal_co2_factor_t_per_mwh: float = 0.341
+    min_operating_steps: int = 0
+    min_down_steps: int = 0
+    initial_operational_status: int = 1
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> CementKiln:
+        max_heat = _as_float(
+            _first_present(row.get("max_heat_out"), row.get("max_power")),
+            "max_heat_out",
+        )
+        return cls(
+            max_heat_out_mw=max_heat,
+            specific_heat_demand_mwh_per_t=_as_float(
+                row.get("specific_heat_demand"), "specific_heat_demand"
+            ),
+            fuel_type=_cement_fuel_type(row, "CementKiln", default=CEMENT_FOSSIL),
+            eta_electric=_as_float(row.get("eta_electric"), "eta_electric", default=0.95),
+            eta_fossil=_as_float(row.get("eta_fossil"), "eta_fossil", default=0.90),
+            fossil_ng_share=_as_float(row.get("fossil_ng_share"), "fossil_ng_share", default=1.0),
+            max_electric_power_mw=_as_optional_float(
+                _first_present(row.get("max_electric_power"), row.get("max_power_electric"))
+            ),
+            specific_electricity_aux_mwh_per_t=_as_float(
+                row.get("specific_electricity_aux"), "specific_electricity_aux", default=0.0
+            ),
+            ramp_up_mw_per_step=_as_optional_float(row.get("ramp_up")),
+            ramp_down_mw_per_step=_as_optional_float(row.get("ramp_down")),
+            natural_gas_co2_factor_t_per_mwh=_as_float(
+                row.get("natural_gas_co2_factor"), "natural_gas_co2_factor", default=0.202
+            ),
+            coal_co2_factor_t_per_mwh=_as_float(
+                row.get("coal_co2_factor"), "coal_co2_factor", default=0.341
+            ),
+            min_operating_steps=_as_int(
+                _first_present(row.get("min_operating_steps"), row.get("min_operating_time")),
+                default=0,
+            ),
+            min_down_steps=_as_int(
+                _first_present(row.get("min_down_steps"), row.get("min_down_time")), default=0
+            ),
+            initial_operational_status=_as_int(row.get("initial_operational_status"), default=1),
+        )
+
+    def add_to_model(
+        self,
+        model: pyo.ConcreteModel,
+        block: pyo.Block,
+        time_steps: pyo.Set,
+        context: dict[str, Any],
+    ) -> pyo.Block:
+        _add_cement_heat_process(
+            self,
+            model,
+            block,
+            time_steps,
+            context,
+            output_name="clinker_out",
+            use_effective_heat=False,
+            process_co2_factor_t_per_t=0.0,
+            allow_external_heat=False,
+        )
+        return block
+
+
+@dataclass
 class GenericInventoryStorage(GenericStorage):
     """Generic inventory store for hydrogen energy or DRI mass."""
 
@@ -1010,6 +1262,9 @@ TECHNOLOGY_REGISTRY = {
     "eaf": ElectricArcFurnace,
     "bof": BasicOxygenFurnace,
     "bf_bof": BlastFurnaceBasicOxygenFurnace,
+    "preheater": CementPreheater,
+    "calciner": CementCalciner,
+    "kiln": CementKiln,
     "generic_storage": GenericInventoryStorage,
     "hydrogen_buffer_storage": HydrogenBufferStorage,
     "dri_storage": DRIStorage,
@@ -1078,6 +1333,251 @@ def _fuel_specific_consumption(
             f"Plant parameter '{column}' must be positive when fuel_type='{fuel_type}'"
         )
     return value
+
+
+def _cement_fuel_type(row: pd.Series, owner: str, *, default: str) -> str:
+    fuel_type = _clean(row.get("fuel_type"), default).lower()
+    if fuel_type == "both":
+        raise ValueError(
+            f"{owner} fuel_type='both' is ambiguous; use fuel_type='hybrid_electricity_fossil'"
+        )
+    if fuel_type not in CEMENT_FUEL_TYPES:
+        allowed = ", ".join(sorted(CEMENT_FUEL_TYPES))
+        raise ValueError(f"{owner} fuel_type must be one of: {allowed}")
+    return fuel_type
+
+
+def _add_cement_heat_process(
+    component: Any,
+    model: pyo.ConcreteModel,
+    block: pyo.Block,
+    time_steps: pyo.Set,
+    context: dict[str, Any],
+    *,
+    output_name: str,
+    use_effective_heat: bool,
+    process_co2_factor_t_per_t: float,
+    allow_external_heat: bool,
+) -> None:
+    dt_hours = float(context["dt_hours"])
+    max_heat_mwh = component.max_heat_out_mw * dt_hours
+    max_electric_power_mw = (
+        component.max_electric_power_mw
+        if component.max_electric_power_mw is not None
+        else component.max_heat_out_mw / max(1e-9, component.eta_electric)
+    )
+    max_power_mwh = max_electric_power_mw * dt_hours
+    ramp_up = (
+        component.max_heat_out_mw
+        if component.ramp_up_mw_per_step is None
+        else component.ramp_up_mw_per_step
+    )
+    ramp_down = (
+        component.max_heat_out_mw
+        if component.ramp_down_mw_per_step is None
+        else component.ramp_down_mw_per_step
+    )
+    if not 0.0 <= component.fossil_ng_share <= 1.0:
+        raise ValueError("fossil_ng_share must be between 0 and 1")
+
+    block.max_heat_out = pyo.Param(initialize=max_heat_mwh)
+    block.max_power = pyo.Param(initialize=max_power_mwh)
+    block.specific_heat_demand = pyo.Param(initialize=component.specific_heat_demand_mwh_per_t)
+    block.specific_electricity_aux = pyo.Param(
+        initialize=component.specific_electricity_aux_mwh_per_t
+    )
+    block.eta_electric = pyo.Param(initialize=component.eta_electric)
+    block.eta_fossil = pyo.Param(initialize=component.eta_fossil)
+    block.fossil_ng_share = pyo.Param(initialize=component.fossil_ng_share, within=pyo.UnitInterval)
+    block.ramp_up = pyo.Param(initialize=ramp_up * dt_hours)
+    block.ramp_down = pyo.Param(initialize=ramp_down * dt_hours)
+    block.natural_gas_co2_factor = pyo.Param(initialize=component.natural_gas_co2_factor_t_per_mwh)
+    block.coal_co2_factor = pyo.Param(initialize=component.coal_co2_factor_t_per_mwh)
+    block.process_co2_factor = pyo.Param(initialize=process_co2_factor_t_per_t)
+    block.min_operating_steps = pyo.Param(initialize=component.min_operating_steps)
+    block.min_down_steps = pyo.Param(initialize=component.min_down_steps)
+    initial_status = int(
+        context.get("initial_operational_status", component.initial_operational_status)
+    )
+    default_consecutive_steps = max(
+        component.min_operating_steps,
+        component.min_down_steps,
+        1,
+    )
+    block.initial_operational_status = pyo.Param(initialize=initial_status)
+    block.initial_consecutive_status_steps = pyo.Param(
+        initialize=int(context.get("initial_consecutive_status_steps", default_consecutive_steps))
+    )
+    block.initial_heat_out = pyo.Param(initialize=float(context.get("initial_heat_out", 0.0)))
+
+    block.heat_out = pyo.Var(time_steps, within=pyo.NonNegativeReals, bounds=(0.0, max_heat_mwh))
+    if use_effective_heat:
+        block.effective_heat_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+    if allow_external_heat:
+        block.external_heat_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+    block.power_in = pyo.Var(time_steps, within=pyo.NonNegativeReals, bounds=(0.0, max_power_mwh))
+    block.aux_power_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+    block.natural_gas_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+    block.coal_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+    block.hydrogen_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+    block.fossil_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+    setattr(block, output_name, pyo.Var(time_steps, within=pyo.NonNegativeReals))
+    block.co2_process = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+    block.co2_energy = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+    block.co2_emission = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+    block.operating_cost = pyo.Var(time_steps, within=pyo.Reals)
+    block.operational_status = pyo.Var(time_steps, within=pyo.Binary)
+    block.start_up = pyo.Var(time_steps, within=pyo.Binary)
+    block.shut_down = pyo.Var(time_steps, within=pyo.Binary)
+
+    output = getattr(block, output_name)
+    ordered_steps = list(time_steps)
+
+    @block.Constraint(time_steps)
+    def heat_balance(b: pyo.Block, t: int) -> pyo.Constraint:
+        if component.fuel_type == CEMENT_ELECTRICITY:
+            generated_heat = b.power_in[t] * b.eta_electric
+        elif component.fuel_type == CEMENT_FOSSIL:
+            generated_heat = (b.natural_gas_in[t] + b.coal_in[t]) * b.eta_fossil
+        elif component.fuel_type == CEMENT_HYBRID_ELECTRICITY_FOSSIL:
+            generated_heat = (
+                b.power_in[t] * b.eta_electric + (b.natural_gas_in[t] + b.coal_in[t]) * b.eta_fossil
+            )
+        else:
+            generated_heat = b.hydrogen_in[t] * b.eta_fossil
+        if allow_external_heat:
+            generated_heat += b.external_heat_in[t]
+        return b.heat_out[t] == generated_heat
+
+    if component.fuel_type == CEMENT_ELECTRICITY:
+
+        @block.Constraint(time_steps)
+        def zero_non_electric_inputs(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.natural_gas_in[t] + b.coal_in[t] + b.hydrogen_in[t] + b.fossil_in[t] == 0
+
+    elif component.fuel_type == CEMENT_FOSSIL:
+
+        @block.Constraint(time_steps)
+        def zero_electric_and_hydrogen_inputs(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.power_in[t] + b.hydrogen_in[t] == 0
+
+    elif component.fuel_type == CEMENT_HYBRID_ELECTRICITY_FOSSIL:
+
+        @block.Constraint(time_steps)
+        def zero_hydrogen_input(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.hydrogen_in[t] == 0
+
+    else:
+
+        @block.Constraint(time_steps)
+        def zero_electric_and_fossil_inputs(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.power_in[t] + b.natural_gas_in[t] + b.coal_in[t] + b.fossil_in[t] == 0
+
+    if component.fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}:
+
+        @block.Constraint(time_steps)
+        def fossil_sum_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.fossil_in[t] == b.natural_gas_in[t] + b.coal_in[t]
+
+        @block.Constraint(time_steps)
+        def fossil_split_natural_gas(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.natural_gas_in[t] == b.fossil_ng_share * b.fossil_in[t]
+
+        @block.Constraint(time_steps)
+        def fossil_split_coal(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.coal_in[t] == (1.0 - b.fossil_ng_share) * b.fossil_in[t]
+
+    @block.Constraint(time_steps)
+    def output_from_heat(b: pyo.Block, t: int) -> pyo.Constraint:
+        heat_for_output = b.effective_heat_in[t] if use_effective_heat else b.heat_out[t]
+        return output[t] == heat_for_output / b.specific_heat_demand
+
+    @block.Constraint(time_steps)
+    def auxiliary_power_definition(b: pyo.Block, t: int) -> pyo.Constraint:
+        return b.aux_power_in[t] == output[t] * b.specific_electricity_aux
+
+    @block.Constraint(time_steps)
+    def max_heat_if_on(b: pyo.Block, t: int) -> pyo.Constraint:
+        return b.heat_out[t] <= b.max_heat_out * b.operational_status[t]
+
+    @block.Constraint(time_steps)
+    def heat_ramp_up(b: pyo.Block, t: int) -> pyo.Constraint:
+        position = ordered_steps.index(t)
+        previous = b.initial_heat_out if position == 0 else b.heat_out[ordered_steps[position - 1]]
+        return b.heat_out[t] - previous <= b.ramp_up
+
+    @block.Constraint(time_steps)
+    def heat_ramp_down(b: pyo.Block, t: int) -> pyo.Constraint:
+        position = ordered_steps.index(t)
+        if position == 0:
+            return b.initial_heat_out - b.heat_out[t] <= b.ramp_down
+        previous = b.heat_out[ordered_steps[position - 1]]
+        return previous - b.heat_out[t] <= b.ramp_down
+
+    @block.Constraint(time_steps)
+    def state_transition_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+        position = ordered_steps.index(t)
+        previous = (
+            b.initial_operational_status
+            if position == 0
+            else b.operational_status[ordered_steps[position - 1]]
+        )
+        return b.operational_status[t] - previous == b.start_up[t] - b.shut_down[t]
+
+    @block.Constraint(time_steps)
+    def prevent_simultaneous_startup_shutdown(b: pyo.Block, t: int) -> pyo.Constraint:
+        return b.start_up[t] + b.shut_down[t] <= 1
+
+    @block.Constraint(time_steps)
+    def min_operating_time_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+        min_steps = int(pyo.value(b.min_operating_steps))
+        if min_steps <= 1:
+            return pyo.Constraint.Skip
+        position = ordered_steps.index(t)
+        if position + 1 < min_steps:
+            return pyo.Constraint.Skip
+        window = ordered_steps[position - min_steps + 1 : position + 1]
+        return sum(b.start_up[i] for i in window) <= b.operational_status[t]
+
+    @block.Constraint(time_steps)
+    def min_down_time_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+        min_steps = int(pyo.value(b.min_down_steps))
+        if min_steps <= 1:
+            return pyo.Constraint.Skip
+        position = ordered_steps.index(t)
+        if position + 1 < min_steps:
+            return pyo.Constraint.Skip
+        window = ordered_steps[position - min_steps + 1 : position + 1]
+        return sum(b.shut_down[i] for i in window) <= 1 - b.operational_status[t]
+
+    @block.Constraint(time_steps)
+    def process_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+        return b.co2_process[t] == output[t] * b.process_co2_factor
+
+    @block.Constraint(time_steps)
+    def energy_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+        return b.co2_energy[t] == (
+            b.natural_gas_in[t] * b.natural_gas_co2_factor + b.coal_in[t] * b.coal_co2_factor
+        )
+
+    @block.Constraint(time_steps)
+    def co2_emission_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+        return b.co2_emission[t] == b.co2_process[t] + b.co2_energy[t]
+
+    @block.Constraint(time_steps)
+    def operating_cost_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+        cost = b.aux_power_in[t] * model.electricity_price[t]
+        if component.fuel_type in {CEMENT_ELECTRICITY, CEMENT_HYBRID_ELECTRICITY_FOSSIL}:
+            cost += b.power_in[t] * model.electricity_price[t]
+        if component.fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}:
+            cost += (
+                b.natural_gas_in[t] * model.natural_gas_price[t]
+                + b.coal_in[t] * model.coal_price[t]
+            )
+        if component.fuel_type == HYDROGEN:
+            cost += b.hydrogen_in[t] * model.hydrogen_price[t]
+        cost += b.co2_emission[t] * model.co2_price[t]
+        return b.operating_cost[t] == cost
 
 
 def _as_int(value: Any, default: int) -> int:

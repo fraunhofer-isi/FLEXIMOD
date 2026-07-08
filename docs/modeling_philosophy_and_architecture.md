@@ -387,6 +387,65 @@ capacity-block and aFRR-data-quality summaries, and the same rolling physical
 state. Its full-activation feasibility trajectory is discarded after each
 solve; only realised dispatch updates the rolling state.
 
+### Cement clinker dispatch
+
+`cement_plant` follows the same component-based input style as `steel_plant`.
+The current implementation models clinker production only; the grinding mill is
+intentionally excluded and `cement_mill` / `grinding_mill` rows fail clearly.
+
+Supported technologies are:
+
+```text
+preheater
+calciner
+kiln
+electrolyser
+hydrogen_buffer_storage
+thermal_storage
+```
+
+The terminal clinker output is `kiln.clinker_out` when a kiln is configured,
+otherwise `calciner.clinker_out`. A preheater currently requires a downstream
+calciner. Thermal storage buffers the calciner by adding discharge heat to
+calciner effective heat. Hydrogen follows the same rule used by steel: with an
+electrolyser, hydrogen consumption is constrained by electrolyser output and
+optional hydrogen storage; without an electrolyser, hydrogen is purchased
+externally at `hydrogen_price`.
+
+Fuel types for preheater, calciner and kiln are:
+
+```text
+electricity
+fossil
+hydrogen
+hybrid_electricity_fossil
+```
+
+The old `both` label is rejected because it is ambiguous. Fossil operation uses
+`fossil_ng_share` to split natural gas and coal. `coal_price` is required only
+when the configured fossil split uses coal.
+
+Demand is `clinker_demand` in `plants.csv`, interpreted as total tonnes over the
+loaded simulation period. If it is blank, `demand` points to a clinker-demand
+forecast column; if `demand` is blank too, the default is
+`<plant_name>_clinker_demand`. Forecast values are tonnes per timestep and are
+summed into a flexible cumulative clinker target.
+
+The temporary strategy is:
+
+```yaml
+strategy:
+  name: cement_cost_minimization
+  dispatch:
+    dispatch_method: pyomo
+```
+
+It uses the connected day-ahead market price for electricity and standard
+forecast columns `natural_gas_price`, `hydrogen_price`, `coal_price` when needed,
+and `co2_price`. It writes physical `dispatch_results.csv` and
+`summary_indicators.csv`; market ledgers and cement market bidding are later
+work.
+
 If the selected `cases.<case_name>` entry sets `additional_charges: true`,
 `additional_charges.csv` is interpreted by the network-tariff regulation selected
 from `case.country` (`src/flexi_mod/regulations.py`). The regulation is the single

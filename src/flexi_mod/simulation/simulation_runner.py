@@ -18,11 +18,15 @@ from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.markets import BaseMarket, build_markets
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
 from flexi_mod.plants.base_plant import BasePlant
+from flexi_mod.plants.cement_plant import CementPlant
 from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.steam_generation_plant import DispatchSignals, SteamGenerationPlant
 from flexi_mod.plants.steel_plant import SteelPlant
 from flexi_mod.regulations import GridFeeResult, build_grid_fee_regulation
 from flexi_mod.strategies import build_strategy
+from flexi_mod.strategies.cement_cost_minimization_strategy import (
+    CementCostMinimizationStrategy,
+)
 from flexi_mod.strategies.electrified_steel_strategy import ElectrifiedSteelStrategy
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.strategies.steel_cost_minimization_strategy import (
@@ -102,6 +106,11 @@ class SimulationRunner:
             return self._run_steel_case(
                 plants_df,
                 [plant for plant in built_plants if isinstance(plant, SteelPlant)],
+            )
+        if all(isinstance(plant, CementPlant) for plant in built_plants):
+            return self._run_cement_case(
+                plants_df,
+                [plant for plant in built_plants if isinstance(plant, CementPlant)],
             )
         if not all(isinstance(plant, SteamGenerationPlant) for plant in built_plants):
             raise ValueError("SimulationRunner encountered an unsupported plant family")
@@ -309,6 +318,51 @@ class SimulationRunner:
                 "storage-cost ledger and market plots remain unavailable for steel."
             )
         self._progress("Steel outputs saved")
+        return output_paths
+
+    def _run_cement_case(
+        self,
+        plants_df: pd.DataFrame,
+        plants: list[CementPlant],
+    ) -> dict[str, Path | list[Path]]:
+        strategy = build_strategy(self.config.strategy_name, self.config)
+        if not isinstance(strategy, CementCostMinimizationStrategy):
+            raise ValueError("Cement plants require strategy.name='cement_cost_minimization'")
+        required_columns = self.loader.required_forecast_columns(
+            plants_df,
+            extra_required_columns=strategy.required_forecast_columns(),
+        )
+        forecasts = self.loader.load_forecasts(required_columns=required_columns)
+        self._progress("Cement input data loaded")
+
+        dispatch_parts: list[pd.DataFrame] = []
+        for plant in plants:
+            self._progress(f"Cement dispatch started for {plant.name}")
+            dispatch_parts.append(strategy.dispatch(plant, forecasts))
+            self._progress(f"Cement dispatch completed for {plant.name}")
+        dispatch_results = pd.concat(dispatch_parts).sort_index()
+
+        output_dir = self.output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_paths: dict[str, Path | list[Path]] = {}
+        if self.output_options.save_dispatch_results:
+            path = output_dir / "dispatch_results.csv"
+            dispatch_results.reset_index().to_csv(path, index=False)
+            output_paths["dispatch_results"] = path
+        if self.output_options.save_summary_indicators:
+            path = output_dir / "summary_indicators.csv"
+            _cement_summary_frame(dispatch_results).to_csv(path, index=False)
+            output_paths["summary_indicators"] = path
+        if (
+            self.output_options.save_market_ledger
+            or self.output_options.save_storage_cost_ledger
+            or self.output_options.create_plots
+        ):
+            self._progress(
+                "Cement cost-minimization mode omits market ledger, storage-cost ledger, "
+                "grid-fee settlement, and market plots until cement market bidding is added."
+            )
+        self._progress("Cement outputs saved")
         return output_paths
 
     def _settle_grid_fees(
@@ -610,6 +664,43 @@ def _steel_summary_frame(dispatch_results: pd.DataFrame) -> pd.DataFrame:
                 ),
                 "gross_operating_cost_EUR": total("gross_operating_cost_EUR"),
                 "net_operating_cost_EUR": total("net_operating_cost_EUR"),
+            }
+        )
+    return pd.DataFrame(records)
+
+
+def _cement_summary_frame(dispatch_results: pd.DataFrame) -> pd.DataFrame:
+    records: list[dict[str, object]] = []
+    for plant_name, group in dispatch_results.groupby("plant_name", sort=False):
+        target = float(group["clinker_demand_total_t"].iloc[-1])
+        produced = float(group["clinker_output_t"].sum())
+
+        def total(column: str, frame: pd.DataFrame = group) -> float:
+            return float(frame[column].sum()) if column in frame else 0.0
+
+        records.append(
+            {
+                "plant_name": plant_name,
+                "plant_type": str(group["plant_type"].iloc[-1]),
+                "clinker_demand_total_t": target,
+                "total_clinker_production_t": produced,
+                "total_electricity_consumption_MWh": total("total_electricity_consumption_MWh"),
+                "total_natural_gas_consumption_MWh": total("natural_gas_consumption_MWh"),
+                "total_coal_consumption_MWh": total("coal_consumption_MWh"),
+                "total_hydrogen_consumption_MWh": total("hydrogen_consumption_MWh"),
+                "total_co2_emissions_t": total("co2_emissions_t"),
+                "total_variable_cost_EUR": total("variable_cost_EUR"),
+                "final_hydrogen_storage_soc": (
+                    float(group["hydrogen_storage_soc"].iloc[-1])
+                    if "hydrogen_storage_soc" in group
+                    else float("nan")
+                ),
+                "final_thermal_storage_soc_MWh": (
+                    float(group["thermal_storage_soc_MWh"].iloc[-1])
+                    if "thermal_storage_soc_MWh" in group
+                    else float("nan")
+                ),
+                "final_clinker_demand_balance_t": target - produced,
             }
         )
     return pd.DataFrame(records)

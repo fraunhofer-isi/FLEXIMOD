@@ -2,6 +2,9 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+from flexi_mod.strategies.cement_cost_minimization_strategy import (
+    CementCostMinimizationStrategy,
+)
 from flexi_mod.strategies.electrified_steel_strategy import ElectrifiedSteelStrategy
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.strategies.steel_cost_minimization_strategy import (
@@ -16,6 +19,7 @@ STRATEGY_REGISTRY = {
     "hybrid_etes_gas_pay_as_cleared_capacity": HybridETESGasStrategy,
     "steel_cost_minimization": SteelCostMinimizationStrategy,
     "electrified_steel": ElectrifiedSteelStrategy,
+    "cement_cost_minimization": CementCostMinimizationStrategy,
 }
 
 
@@ -32,6 +36,7 @@ def build_strategy(name: str, config):
 
 __all__ = [
     "HybridETESGasStrategy",
+    "CementCostMinimizationStrategy",
     "SteelCostMinimizationStrategy",
     "ElectrifiedSteelStrategy",
     "STRATEGY_REGISTRY",

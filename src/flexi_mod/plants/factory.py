@@ -7,6 +7,7 @@ from __future__ import annotations
 import pandas as pd
 
 from flexi_mod.plants.base_plant import BasePlant
+from flexi_mod.plants.cement_plant import CementPlant
 from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 from flexi_mod.plants.steel_plant import SteelPlant
 from flexi_mod.plants.technologies import first_non_empty
@@ -15,6 +16,7 @@ PLANT_REGISTRY = {
     "steam_plant": SteamGenerationPlant,
     "steam_generator_plant": SteamGenerationPlant,
     "steel_plant": SteelPlant,
+    "cement_plant": CementPlant,
 }
 
 

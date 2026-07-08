@@ -179,6 +179,8 @@ class DataLoader:
                 required.add(demand_column)
         if _steel_requires_coal_price(plants):
             required.add("coal_price")
+        if _cement_requires_coal_price(plants):
+            required.add("coal_price")
 
         return required
 
@@ -451,6 +453,25 @@ def _demand_column_for_plant(plant_name: str, plant_rows: pd.DataFrame) -> str |
                 return demand_columns[0]
         return f"{plant_name}_steel_demand"
 
+    if unit_types == {"cement_plant"}:
+        if "clinker_demand" in plant_rows.columns:
+            total_values = [
+                value
+                for value in plant_rows["clinker_demand"].tolist()
+                if not pd.isna(value) and str(value).strip()
+            ]
+            if total_values:
+                return None
+        if "demand" in plant_rows.columns:
+            demand_columns = [
+                str(value).strip()
+                for value in plant_rows["demand"].tolist()
+                if not pd.isna(value) and str(value).strip()
+            ]
+            if demand_columns:
+                return demand_columns[0]
+        return f"{plant_name}_clinker_demand"
+
     if "demand" in plant_rows.columns:
         values = [
             str(value).strip()
@@ -468,3 +489,18 @@ def _steel_requires_coal_price(plants: pd.DataFrame) -> bool:
     unit_type = plants["unit_type"].astype(str).str.strip().str.lower()
     fuel_type = plants["fuel_type"].astype(str).str.strip().str.lower()
     return bool(((unit_type == "steel_plant") & (fuel_type == "coal")).any())
+
+
+def _cement_requires_coal_price(plants: pd.DataFrame) -> bool:
+    if not {"unit_type", "fuel_type"}.issubset(plants.columns):
+        return False
+    unit_type = plants["unit_type"].astype(str).str.strip().str.lower()
+    fuel_type = plants["fuel_type"].astype(str).str.strip().str.lower()
+    if "fossil_ng_share" in plants.columns:
+        fossil_ng_share = pd.to_numeric(plants["fossil_ng_share"], errors="coerce").fillna(1.0)
+    else:
+        fossil_ng_share = pd.Series(1.0, index=plants.index)
+    cement = unit_type == "cement_plant"
+    fossil = fuel_type.isin({"fossil", "hybrid_electricity_fossil"})
+    coal_share = fossil_ng_share < 1.0
+    return bool((cement & fossil & coal_share).any())
