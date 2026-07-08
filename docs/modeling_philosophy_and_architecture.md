@@ -443,8 +443,9 @@ strategy:
 It uses the connected day-ahead market price for electricity and standard
 forecast columns `natural_gas_price`, `hydrogen_price`, `coal_price` when needed,
 and `co2_price`. It writes physical `dispatch_results.csv` and
-`summary_indicators.csv`; market ledgers and cement market bidding are later
-work.
+`summary_indicators.csv`. With `additional_charges: true`, cement also writes
+the common `grid_fee_summary.csv` and merges the German regulatory true-up into
+the summary. Market ledgers and cement market bidding are later work.
 
 If the selected `cases.<case_name>` entry sets `additional_charges: true`,
 `additional_charges.csv` is interpreted by the network-tariff regulation selected

@@ -156,8 +156,13 @@ class CementPlant(BasePlant):
         def values(column: str) -> dict[int, float]:
             return {t: float(forecasts[column].iloc[t]) for t in model.T}
 
+        electricity_market_prices = values(signals.electricity_price_col)
+        additional_charge = float(self.additional_electricity_charge_eur_per_mwh)
+        model.electricity_market_price = pyo.Param(model.T, initialize=electricity_market_prices)
+        model.additional_electricity_charge = pyo.Param(initialize=additional_charge)
         model.electricity_price = pyo.Param(
-            model.T, initialize=values(signals.electricity_price_col)
+            model.T,
+            initialize={t: electricity_market_prices[t] + additional_charge for t in model.T},
         )
         model.natural_gas_price = pyo.Param(
             model.T, initialize=values(signals.natural_gas_price_col)
@@ -383,12 +388,22 @@ class CementPlant(BasePlant):
             "clinker_demand_mode": [],
             "clinker_demand_total_t": [],
             "clinker_output_t": [],
+            "DA_position_MWh": [],
+            "final_planned_electricity_MWh": [],
+            "actual_electricity_consumption_MWh": [],
+            "day_ahead_price_EUR_per_MWh": [],
+            "day_ahead_delivered_price_EUR_per_MWh": [],
+            "additional_electricity_charge_EUR_per_MWh_el": [],
             "total_electricity_consumption_MWh": [],
             "natural_gas_consumption_MWh": [],
             "coal_consumption_MWh": [],
             "hydrogen_consumption_MWh": [],
             "co2_emissions_t": [],
             "variable_cost_EUR": [],
+            "electricity_market_cost_EUR": [],
+            "additional_electricity_charges_cost_EUR": [],
+            "gross_operating_cost_EUR": [],
+            "net_operating_cost_EUR": [],
             "preheater_heat_output_MWh": [],
             "preheater_raw_meal_output_t": [],
             "preheater_electricity_consumption_MWh": [],
@@ -417,6 +432,12 @@ class CementPlant(BasePlant):
                 data[column] = []
 
         for t in model.T:
+            total_electricity = _value(model.total_power_input[t])
+            market_price = _value(model.electricity_market_price[t])
+            additional_charge = _value(model.additional_electricity_charge)
+            market_cost = total_electricity * market_price
+            additional_charge_cost = total_electricity * additional_charge
+            variable_cost = _value(model.variable_cost[t])
             data["plant_name"].append(self.name)
             data["plant_type"].append(self.unit_type)
             data["clinker_demand_mode"].append(
@@ -426,7 +447,13 @@ class CementPlant(BasePlant):
             )
             data["clinker_demand_total_t"].append(_value(model.clinker_demand))
             data["clinker_output_t"].append(block_value(terminal, "clinker_out", t))
-            data["total_electricity_consumption_MWh"].append(_value(model.total_power_input[t]))
+            data["DA_position_MWh"].append(total_electricity)
+            data["final_planned_electricity_MWh"].append(total_electricity)
+            data["actual_electricity_consumption_MWh"].append(total_electricity)
+            data["day_ahead_price_EUR_per_MWh"].append(market_price)
+            data["day_ahead_delivered_price_EUR_per_MWh"].append(market_price + additional_charge)
+            data["additional_electricity_charge_EUR_per_MWh_el"].append(additional_charge)
+            data["total_electricity_consumption_MWh"].append(total_electricity)
             data["natural_gas_consumption_MWh"].append(
                 sum(
                     block_value(block, "natural_gas_in", t) for block in [preheater, calciner, kiln]
@@ -441,7 +468,11 @@ class CementPlant(BasePlant):
             data["co2_emissions_t"].append(
                 sum(block_value(block, "co2_emission", t) for block in [preheater, calciner, kiln])
             )
-            data["variable_cost_EUR"].append(_value(model.variable_cost[t]))
+            data["variable_cost_EUR"].append(variable_cost)
+            data["electricity_market_cost_EUR"].append(market_cost)
+            data["additional_electricity_charges_cost_EUR"].append(additional_charge_cost)
+            data["gross_operating_cost_EUR"].append(variable_cost)
+            data["net_operating_cost_EUR"].append(variable_cost)
             data["preheater_heat_output_MWh"].append(block_value(preheater, "heat_out", t))
             data["preheater_raw_meal_output_t"].append(block_value(preheater, "raw_meal_out", t))
             data["preheater_electricity_consumption_MWh"].append(

@@ -328,9 +328,25 @@ class SimulationRunner:
         strategy = build_strategy(self.config.strategy_name, self.config)
         if not isinstance(strategy, CementCostMinimizationStrategy):
             raise ValueError("Cement plants require strategy.name='cement_cost_minimization'")
+        additional_charges = self.loader.load_additional_charges(plants_df)
+        for plant in plants:
+            regulation = build_grid_fee_regulation(
+                self.config.country,
+                additional_charges.get(plant.name),
+                assumed_tier=self.assumed_grid_tier,
+            )
+            plant.grid_fee_regulation = regulation
+            plant.additional_electricity_charge_eur_per_mwh = (
+                regulation.marginal_charge_eur_per_mwh()
+            )
+        extra_required_columns = set(strategy.required_forecast_columns())
+        for plant in plants:
+            regulation = getattr(plant, "grid_fee_regulation", None)
+            dynamic_column = getattr(regulation, "dynamic_charge_column", None)
+            if dynamic_column:
+                extra_required_columns.add(dynamic_column)
         required_columns = self.loader.required_forecast_columns(
-            plants_df,
-            extra_required_columns=strategy.required_forecast_columns(),
+            plants_df, extra_required_columns=extra_required_columns
         )
         forecasts = self.loader.load_forecasts(required_columns=required_columns)
         self._progress("Cement input data loaded")
@@ -341,6 +357,7 @@ class SimulationRunner:
             dispatch_parts.append(strategy.dispatch(plant, forecasts))
             self._progress(f"Cement dispatch completed for {plant.name}")
         dispatch_results = pd.concat(dispatch_parts).sort_index()
+        grid_fee_results = self._settle_grid_fees(plants, dispatch_results)
 
         output_dir = self.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -349,9 +366,15 @@ class SimulationRunner:
             path = output_dir / "dispatch_results.csv"
             dispatch_results.reset_index().to_csv(path, index=False)
             output_paths["dispatch_results"] = path
+        summary = _cement_summary_frame(dispatch_results)
+        summary = _attach_grid_fee_summary(summary, grid_fee_results)
+        if grid_fee_results and self.output_options.save_summary_indicators:
+            path = output_dir / "grid_fee_summary.csv"
+            _grid_fee_summary_frame(grid_fee_results).to_csv(path, index=False)
+            output_paths["grid_fee_summary"] = path
         if self.output_options.save_summary_indicators:
             path = output_dir / "summary_indicators.csv"
-            _cement_summary_frame(dispatch_results).to_csv(path, index=False)
+            summary.to_csv(path, index=False)
             output_paths["summary_indicators"] = path
         if (
             self.output_options.save_market_ledger
@@ -360,7 +383,7 @@ class SimulationRunner:
         ):
             self._progress(
                 "Cement cost-minimization mode omits market ledger, storage-cost ledger, "
-                "grid-fee settlement, and market plots until cement market bidding is added."
+                "and market plots until cement market bidding is added."
             )
         self._progress("Cement outputs saved")
         return output_paths
@@ -690,6 +713,13 @@ def _cement_summary_frame(dispatch_results: pd.DataFrame) -> pd.DataFrame:
                 "total_hydrogen_consumption_MWh": total("hydrogen_consumption_MWh"),
                 "total_co2_emissions_t": total("co2_emissions_t"),
                 "total_variable_cost_EUR": total("variable_cost_EUR"),
+                "total_DA_electricity_MWh": total("DA_position_MWh"),
+                "total_electricity_market_cost_EUR": total("electricity_market_cost_EUR"),
+                "total_additional_electricity_charges_cost_EUR": total(
+                    "additional_electricity_charges_cost_EUR"
+                ),
+                "gross_operating_cost_EUR": total("gross_operating_cost_EUR"),
+                "net_operating_cost_EUR": total("net_operating_cost_EUR"),
                 "final_hydrogen_storage_soc": (
                     float(group["hydrogen_storage_soc"].iloc[-1])
                     if "hydrogen_storage_soc" in group
