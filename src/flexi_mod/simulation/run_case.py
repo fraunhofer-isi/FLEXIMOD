@@ -60,7 +60,7 @@ available_examples: dict[str, dict[str, str]] = {
 }
 
 # Select the example to run from the available examples above.
-example = "hybrid_ETES_FR"
+example = "hybrid_ETES_DA_ID_aFRR_energy_capacity"
 
 
 def resolve_example_paths(example: str) -> dict[str, Path | str]:
@@ -262,6 +262,7 @@ def _prompt_grid_tier(config: Any, settings: dict[str, Any]) -> str | None:
     for i, opt in enumerate(options, start=1):
         print(f"  [{i}] {opt['key']:5s}  {opt['label']:15s}  {opt['rate']}")
     print()
+    return('low')
     while True:
         raw = input(f"Which tier to assume for this run? [1-{len(options)}]: ").strip()
         if raw.isdigit() and 1 <= int(raw) <= len(options):

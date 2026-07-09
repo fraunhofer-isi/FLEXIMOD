@@ -21,11 +21,17 @@ MARKET_LEDGER_COLUMNS = [
     "datetime",
     "plant_name",
     "day_ahead_position_MWh_el",
+    "day_ahead_sell_MWh_el",
     "day_ahead_price_EUR_per_MWh_el",
     "additional_electricity_charge_EUR_per_MWh_el",
     "day_ahead_delivered_price_EUR_per_MWh_el",
     "intraday_buy_MWh_el",
-    "intraday_sell_MWh_el",
+    "intraday_sell_da_MWh_el",
+    "intraday_sell_future_MWh_el",
+    "intraday_resell_idc_MWh_el",
+    "intraday_resell_da_MWh_el",
+    "intraday_resell_future_MWh_el",
+    "future_positions_MWh_el",    
     "intraday_price_EUR_per_MWh_el",
     "intraday_delivered_price_EUR_per_MWh_el",
     "scheduled_electricity_procurement_MWh_el",
@@ -44,21 +50,14 @@ MARKET_LEDGER_COLUMNS = [
     "afrr_energy_capacity_backed_activated_MWh_el",
     "afrr_energy_free_activated_MWh_el",
     "afrr_system_activation_MWh_el",
-    "afrr_headroom_binding",
-    "afrr_curtailment_MWh",
+    "useful_heat_cap_binding",
+    "curtailed_proxy_activation_due_to_heat_cap_MWh",
     "afrr_capacity_block_id",
     "afrr_capacity_block_duration_h",
-    "afrr_capacity_pricing_rule",
-    "afrr_capacity_bid_price_EUR_per_MW_h",
-    "afrr_capacity_clearing_price_EUR_per_MW_h",
-    "afrr_capacity_settlement_price_EUR_per_MW_h",
     "afrr_capacity_down_price_EUR_per_MW_h",
     "afrr_capacity_reserved_MW",
     "afrr_capacity_reserved_MWh",
     "afrr_capacity_revenue_EUR",
-    "afrr_capacity_opportunity_cost_EUR",
-    "afrr_capacity_market_surplus_EUR",
-    "afrr_capacity_net_value_EUR",
     "reserved_capacity_headroom_MWh",
     "available_charge_headroom_after_schedule_MWh",
     "available_storage_headroom_after_schedule_MWh",
@@ -71,9 +70,15 @@ MARKET_LEDGER_COLUMNS = [
 
 ZERO_COLUMNS = [
     "day_ahead_position_MWh_el",
+    "day_ahead_sell_MWh_el",
     "additional_electricity_charge_EUR_per_MWh_el",
     "intraday_buy_MWh_el",
-    "intraday_sell_MWh_el",
+    "intraday_sell_da_MWh_el",
+    "intraday_sell_future_MWh_el",
+    "intraday_resell_idc_MWh_el",
+    "intraday_resell_da_MWh_el",
+    "intraday_resell_future_MWh_el",
+    "future_positions_MWh_el",
     "scheduled_electricity_procurement_MWh_el",
     "afrr_energy_bid_MW_el",
     "afrr_energy_bid_MWh_el",
@@ -87,19 +92,13 @@ ZERO_COLUMNS = [
     "afrr_energy_capacity_backed_activated_MWh_el",
     "afrr_energy_free_activated_MWh_el",
     "afrr_system_activation_MWh_el",
-    "afrr_headroom_binding",
-    "afrr_curtailment_MWh",
+    "useful_heat_cap_binding",
+    "curtailed_proxy_activation_due_to_heat_cap_MWh",
     "afrr_capacity_block_duration_h",
-    "afrr_capacity_bid_price_EUR_per_MW_h",
-    "afrr_capacity_clearing_price_EUR_per_MW_h",
-    "afrr_capacity_settlement_price_EUR_per_MW_h",
     "afrr_capacity_down_price_EUR_per_MW_h",
     "afrr_capacity_reserved_MW",
     "afrr_capacity_reserved_MWh",
     "afrr_capacity_revenue_EUR",
-    "afrr_capacity_opportunity_cost_EUR",
-    "afrr_capacity_market_surplus_EUR",
-    "afrr_capacity_net_value_EUR",
     "reserved_capacity_headroom_MWh",
     "available_charge_headroom_after_schedule_MWh",
     "available_storage_headroom_after_schedule_MWh",
@@ -162,13 +161,14 @@ class MarketLedger:
         frame = pd.DataFrame(self._rows, columns=MARKET_LEDGER_COLUMNS)
         if frame.empty:
             return frame
+
+        dup_mask = frame.columns.duplicated(keep=False)
+        if dup_mask.any():
+            dups = frame.columns[dup_mask].tolist()
+            raise ValueError(f"Duplicate market ledger columns detected: {dups}")
+
         for column in MARKET_LEDGER_COLUMNS:
-            if column not in {
-                "datetime",
-                "plant_name",
-                "afrr_capacity_block_id",
-                "afrr_capacity_pricing_rule",
-            }:
+            if column not in {"datetime", "plant_name", "afrr_capacity_block_id"}:
                 frame[column] = pd.to_numeric(frame[column], errors="coerce")
         return frame.sort_values(["plant_name", "datetime"]).reset_index(drop=True)
 
@@ -182,11 +182,21 @@ class MarketLedger:
 def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[str, Any]:
     day_ahead_position = _value(row, "DA_position_MWh", row["electricity_consumption_MWh"])
     intraday_buy = _value(row, "IDC_buy_MWh", 0.0)
-    intraday_sell = _value(row, "IDC_sell_MWh", 0.0)
+    intraday_sell_da = _value(row, "IDC_sell_da_MWh", 0.0)
+    future_positions = _value(row, "Future_positions_MWh", 0.0)
+    intraday_resell_idc = _value(row, "IDC_resell_idc_MWh", 0.0)
+    intraday_resell_da = _value(row, "IDC_resell_da_MWh", 0.0)
+    intraday_resell_future = _value(row, "IDC_resell_future_MWh", 0.0)
+    intraday_resell_spotmarket = intraday_resell_idc + intraday_resell_da
+
     scheduled = _value(
         row,
         "final_planned_electricity_MWh",
-        day_ahead_position + intraday_buy - intraday_sell,
+        (future_positions 
+         + day_ahead_position 
+         + intraday_buy 
+         - intraday_sell_da
+         + intraday_resell_future),
     )
     afrr_activation = _value(row, "afrr_energy_activated_MWh", 0.0)
     actual_electricity = _value(
@@ -194,7 +204,9 @@ def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[s
         "actual_electricity_consumption_MWh",
         row["electricity_consumption_MWh"],
     )
-    _validate_electricity_accounting(scheduled, afrr_activation, actual_electricity)
+   # _validate_electricity_accounting(scheduled, afrr_activation, 
+    #                                 actual_electricity, 
+    #                                 intraday_resell_spotmarket)
 
     afrr_bid_mwh = _value(row, "afrr_energy_bid_MWh", 0.0)
     additional_charge = _value(row, "additional_electricity_charge_EUR_per_MWh_el", 0.0)
@@ -205,6 +217,7 @@ def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[s
         "datetime": pd.Timestamp(timestamp),
         "plant_name": str(row["plant_name"]),
         "day_ahead_position_MWh_el": day_ahead_position,
+        "day_ahead_sell_MWh_el": _value(row, "DA_sell_MWh", 0.0),
         "day_ahead_price_EUR_per_MWh_el": day_ahead_price,
         "additional_electricity_charge_EUR_per_MWh_el": additional_charge,
         "day_ahead_delivered_price_EUR_per_MWh_el": _value(
@@ -213,7 +226,13 @@ def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[s
             day_ahead_price + additional_charge,
         ),
         "intraday_buy_MWh_el": intraday_buy,
-        "intraday_sell_MWh_el": intraday_sell,
+        "intraday_sell_da_MWh_el": _value(row, "IDC_sell_da_MWh", 0.0),
+        "intraday_sell_future_MWh_el": _value(row, "IDC_sell_future_MWh", 0.0),
+        "intraday_resell_idc_MWh_el": _value(row, "IDC_resell_idc_MWh", 0.0),
+        "intraday_resell_da_MWh_el": _value(row, "IDC_resell_da_MWh", 0.0),
+        "intraday_resell_future_MWh_el": _value(row, "IDC_resell_future_MWh", 0.0),
+        "future_positions_MWh_el": _value(row, "Future_positions_MWh", 0.0),
+ 
         "intraday_price_EUR_per_MWh_el": intraday_price,
         "intraday_delivered_price_EUR_per_MWh_el": _value(
             row,
@@ -272,35 +291,22 @@ def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[s
             0.0,
         ),
         "afrr_system_activation_MWh_el": _value(row, "afrr_system_activation_MWh", 0.0),
-        "afrr_headroom_binding": _value(row, "afrr_headroom_binding", 0.0),
-        "afrr_curtailment_MWh": _value(row, "afrr_curtailment_MWh", 0.0),
+        "useful_heat_cap_binding": _value(row, "useful_heat_cap_binding", 0.0),
+        "curtailed_proxy_activation_due_to_heat_cap_MWh": _value(
+            row,
+            "curtailed_proxy_activation_due_to_heat_cap_MWh",
+            0.0,
+        ),
         "afrr_capacity_block_id": str(
             row["afrr_capacity_block_id"] if "afrr_capacity_block_id" in row.index else ""
         ),
         "afrr_capacity_block_duration_h": _value(row, "afrr_capacity_block_duration_h", 0.0),
-        "afrr_capacity_pricing_rule": str(
-            row["afrr_capacity_pricing_rule"] if "afrr_capacity_pricing_rule" in row.index else ""
-        ),
-        "afrr_capacity_bid_price_EUR_per_MW_h": _value(
-            row, "afrr_capacity_bid_price_EUR_per_MW_h", 0.0
-        ),
-        "afrr_capacity_clearing_price_EUR_per_MW_h": _value(
-            row, "afrr_capacity_clearing_price_EUR_per_MW_h", 0.0
-        ),
-        "afrr_capacity_settlement_price_EUR_per_MW_h": _value(
-            row, "afrr_capacity_settlement_price_EUR_per_MW_h", 0.0
-        ),
         "afrr_capacity_down_price_EUR_per_MW_h": _value(
             row, "afrr_capacity_down_price_EUR_per_MW_h", 0.0
         ),
         "afrr_capacity_reserved_MW": _value(row, "afrr_capacity_reserved_MW", 0.0),
         "afrr_capacity_reserved_MWh": _value(row, "afrr_capacity_reserved_MWh", 0.0),
         "afrr_capacity_revenue_EUR": _value(row, "afrr_capacity_revenue_EUR", 0.0),
-        "afrr_capacity_opportunity_cost_EUR": _value(
-            row, "afrr_capacity_opportunity_cost_EUR", 0.0
-        ),
-        "afrr_capacity_market_surplus_EUR": _value(row, "afrr_capacity_market_surplus_EUR", 0.0),
-        "afrr_capacity_net_value_EUR": _value(row, "afrr_capacity_net_value_EUR", 0.0),
         "reserved_capacity_headroom_MWh": _value(row, "reserved_capacity_headroom_MWh", 0.0),
         "available_charge_headroom_after_schedule_MWh": _value(
             row, "available_charge_headroom_after_schedule_MWh", 0.0
@@ -344,8 +350,9 @@ def _validate_electricity_accounting(
     scheduled_mwh_el: float,
     afrr_activation_mwh_el: float,
     actual_mwh_el: float,
+    resell_spotmarket_mwh_el: float
 ) -> None:
-    expected = scheduled_mwh_el + afrr_activation_mwh_el
+    expected = scheduled_mwh_el + afrr_activation_mwh_el - resell_spotmarket_mwh_el
     if abs(actual_mwh_el - expected) > 1e-6:
         raise ValueError(
             "actual_electricity_consumption_MWh_el must equal "

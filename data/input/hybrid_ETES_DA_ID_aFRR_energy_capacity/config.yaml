@@ -25,13 +25,12 @@ cases:
       - gurobi
       tee: false
     market_sequence:
-    - afrr_capacity
     - day_ahead
     - intraday_continuous
     - afrr_energy
     markets:
       afrr_capacity:
-        enabled: true
+        enabled: False
         direction: down
         product_length: 4h
         price_unit: EUR_per_MW_per_h

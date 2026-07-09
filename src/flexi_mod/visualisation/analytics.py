@@ -317,8 +317,15 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
         "day_ahead_position_MWh_el",
         fallback=_sum(dispatch, "electricity_consumption_MWh"),
     )
+    da_sell = _sum(market, "day_ahead_sell_MWh_el")
     idc_buy = _sum(market, "intraday_buy_MWh_el")
-    idc_sell = _sum(market, "intraday_sell_MWh_el")
+    idc_sell_da = _sum(market, "intraday_sell_da_MWh_el")
+    idc_sell_future = _sum(market, "intraday_sell_future_MWh_el")
+    idc_resell_idc = _sum(market, "intraday_resell_idc_MWh_el")
+    idc_resell_da = _sum(market, "intraday_resell_da_MWh_el")
+    idc_resell_future = _sum(market, "intraday_resell_future_MWh_el")
+    idc_sell_total = idc_sell_da + idc_sell_future + idc_resell_idc + idc_resell_da + idc_resell_future
+    future_positions = _sum(market, "future_positions_MWh_el")
     afrr = _sum(market, "afrr_energy_activated_MWh_el")
     afrr_bid = _sum(market, "afrr_energy_bid_MWh_el")
     afrr_capacity_backed_bid = _sum(market, "afrr_energy_capacity_backed_bid_MWh_el")
@@ -330,7 +337,7 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
     final_planned = _sum(
         market,
         "scheduled_electricity_procurement_MWh_el",
-        fallback=da + idc_buy - idc_sell,
+        fallback=da + idc_buy - idc_sell_da + future_positions + idc_resell_future,
     )
     actual = _sum(
         market,
@@ -340,8 +347,15 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
     denominator = actual if abs(actual) > 1e-12 else 1.0
     return {
         "total_DA_electricity_MWh": da,
+        "total_DA_sell_MWh": da_sell,
         "total_IDC_buy_MWh": idc_buy,
-        "total_IDC_sell_MWh": idc_sell,
+        "total_IDC_sell_da_MWh": idc_sell_da,
+        "total_IDC_sell_future_MWh": idc_sell_future,
+        "total_IDC_resell_idc_MWh": idc_resell_idc,
+        "total_IDC_resell_da_MWh": idc_resell_da,
+        "total_IDC_resell_future_MWh": idc_resell_future,
+        "total_IDC_sell_total_MWh": idc_sell_total,
+        "total_future_positions_MWh": future_positions,
         "total_final_planned_electricity_MWh": final_planned,
         "total_afrr_energy_bid_MWh": afrr_bid,
         "total_afrr_energy_activated_MWh": afrr,
@@ -356,7 +370,13 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
         "number_of_capacity_blocks_with_bid": _capacity_blocks_with_bid(market),
         "total_actual_electricity_consumption_MWh": actual,
         "total_intraday_buy_MWh_el": idc_buy,
-        "total_intraday_sell_MWh_el": idc_sell,
+        "total_IDC_sell_da_MWh_el": idc_sell_da,
+        "total_IDC_sell_future_MWh_el": idc_sell_future,
+        "total_IDC_resell_idc_MWh_el": idc_resell_idc,
+        "total_IDC_resell_da_MWh_el": idc_resell_da,
+        "total_IDC_resell_future_MWh_el": idc_resell_future,
+        "total_IDC_sell_total_MWh_el": idc_sell_total,
+        "total_future_positions_MWh_el": future_positions,
         "total_scheduled_electricity_procurement_MWh_el": final_planned,
         "total_afrr_energy_bid_MWh_el": afrr_bid,
         "total_afrr_energy_activated_MWh_el": afrr,
@@ -365,11 +385,18 @@ def _market_indicators(dispatch: pd.DataFrame, market: pd.DataFrame) -> dict[str
         "total_afrr_energy_capacity_backed_activated_MWh_el": afrr_capacity_backed_activation,
         "total_afrr_energy_free_activated_MWh_el": afrr_free_activation,
         "total_IDC_buy_electricity_MWh": idc_buy,
-        "total_IDC_sell_electricity_MWh": idc_sell,
+        "total_IDC_sell_electricity_MWh": idc_sell_da,
+        "total_IDC_sell_future_electricity_MWh": idc_sell_future,
+        "total_IDC_resell_idc_electricity_MWh": idc_resell_idc,
+        "total_IDC_resell_da_electricity_MWh": idc_resell_da,
+        "total_IDC_resell_future_electricity_MWh": idc_resell_future,
+        "total_IDC_sell_total_electricity_MWh": idc_sell_total,
+        "total_future_positions_MWh_electricity": future_positions,
         "total_afrr_activated_electricity_MWh": afrr,
         "total_actual_electricity_consumption_MWh_el": actual,
-        "share_DA_electricity": da / denominator,
-        "share_IDC_net_electricity": (idc_buy - idc_sell) / denominator,
+        "share_DA_electricity": (da - idc_sell_da - idc_resell_da) / denominator,
+        "share_IDC_net_electricity": (idc_buy - idc_resell_idc) / denominator,
+        "share_future_electricity": (future_positions) / denominator,
         "share_afrr_activated_electricity": afrr / denominator,
     }
 
@@ -382,25 +409,63 @@ def _economic_indicators(
     heat_demand = _sum(dispatch, "heat_demand_MWh")
     total_operating_cost = _sum(dispatch, "operating_cost_EUR")
     total_electricity_cost = _sum(dispatch, "electricity_cost_EUR")
-    total_tax_cost = _sum(dispatch, "tax_cost_EUR")
     total_additional_charges = _sum(dispatch, "additional_electricity_charges_cost_EUR")
     total_electricity_market_cost = _sum(
         dispatch,
         "electricity_market_cost_EUR",
         fallback=total_electricity_cost - total_additional_charges,
     )
-    idc_buy_cost, idc_sell_revenue = _trading_cashflows(
+    da_buy_cost, da_sell_revenue = _trading_cashflows(
         market,
-        buy_col="intraday_buy_MWh_el",
-        sell_col="intraday_sell_MWh_el",
-        price_col="intraday_price_EUR_per_MWh_el",
+        buy_col="day_ahead_position_MWh_el",
+        sell_col="da_ahead_sell_MWh_el",
+        price_col="day_ahead_price_EUR_per_MWh_el",
     )
-    idc_value = _trading_value(
+    da_value = _trading_value(
         market,
-        buy_col="intraday_buy_MWh_el",
-        sell_col="intraday_sell_MWh_el",
-        price_col="intraday_price_EUR_per_MWh_el",
+        buy_col="day_ahead_position_MWh_el",
+        sell_col="day_ahead_sell_MWh_el",
+        price_col="day_ahead_price_EUR_per_MWh_el",
     )
+    idc_buy_cost = _energy_value(
+        market,
+        "intraday_buy_MWh_el",
+        "intraday_price_EUR_per_MWh_el",
+    )
+    idc_sell_da_revenue = _energy_value(
+        market,
+        "intraday_sell_da_MWh_el",
+        "intraday_price_EUR_per_MWh_el",
+    )
+    idc_sell_future_revenue = _energy_value(
+        market,
+        "intraday_sell_future_MWh_el",
+        "intraday_price_EUR_per_MWh_el",
+    )
+    idc_resell_da_revenue = _energy_value(
+        market,
+        "intraday_resell_da_MWh_el",
+        "intraday_price_EUR_per_MWh_el",
+    )
+    idc_resell_future_revenue = _energy_value(
+        market,
+        "intraday_resell_future_MWh_el",
+        "intraday_price_EUR_per_MWh_el",
+    )
+    idc_resell_idc_revenue = _energy_value(
+        market,
+        "intraday_resell_idc_MWh_el",
+        "intraday_price_EUR_per_MWh_el",
+    )
+    idc_sell_revenue = (
+        idc_sell_da_revenue
+        + idc_sell_future_revenue
+        + idc_resell_da_revenue
+        + idc_resell_future_revenue
+        + idc_resell_idc_revenue
+    )
+    idc_value = idc_sell_revenue - idc_buy_cost
+
     afrr_energy_cost = _sum(
         dispatch,
         "afrr_energy_cost_EUR",
@@ -426,21 +491,6 @@ def _economic_indicators(
         "afrr_capacity_revenue_EUR",
         fallback=_sum(dispatch, "afrr_capacity_revenue_EUR"),
     )
-    afrr_capacity_opportunity_cost = _sum(
-        market,
-        "afrr_capacity_opportunity_cost_EUR",
-        fallback=_sum(dispatch, "afrr_capacity_opportunity_cost_EUR"),
-    )
-    afrr_capacity_market_surplus = _sum(
-        market,
-        "afrr_capacity_market_surplus_EUR",
-        fallback=_sum(dispatch, "afrr_capacity_market_surplus_EUR"),
-    )
-    afrr_capacity_net_value = _sum(
-        market,
-        "afrr_capacity_net_value_EUR",
-        fallback=afrr_capacity_revenue - afrr_capacity_opportunity_cost,
-    )
     average_stored_heat_cost = _last_existing_non_missing(
         storage,
         ["weighted_average_inventory_cost_EUR_per_MWh_th"],
@@ -454,26 +504,31 @@ def _economic_indicators(
     return {
         "total_electricity_market_cost_EUR": total_electricity_market_cost,
         "total_additional_electricity_charges_cost_EUR": total_additional_charges,
-        "total_tax_cost_EUR": total_tax_cost,
         "total_electricity_procurement_cost_EUR": total_electricity_cost,
         "total_electricity_cost_EUR": total_electricity_cost,
         "total_gas_cost_EUR": _sum(dispatch, "gas_cost_EUR"),
         "total_co2_cost_EUR": _sum(dispatch, "co2_cost_EUR"),
+        "DA_buy_cost_EUR": da_buy_cost,
+        "DA_sell_revenue_EUR": da_sell_revenue,
+        "DA_net_cashflow_EUR": da_sell_revenue - da_buy_cost,
         "IDC_buy_cost_EUR": idc_buy_cost,
         "IDC_sell_revenue_EUR": idc_sell_revenue,
+        "IDC_sell_da_revenue_EUR": idc_sell_da_revenue,
+        "IDC_sell_future_revenue_EUR": idc_sell_future_revenue,
+        "IDC_resell_da_revenue_EUR": idc_resell_da_revenue,
+        "IDC_resell_future_revenue_EUR": idc_resell_future_revenue,
+        "IDC_resell_idc_revenue_EUR": idc_resell_idc_revenue,
         "IDC_net_cashflow_EUR": idc_sell_revenue - idc_buy_cost,
         "afrr_energy_cost_EUR": afrr_energy_cost,
         "afrr_energy_savings_vs_benchmark_EUR": afrr_savings,
         "afrr_energy_pay_as_cleared_reward_EUR": afrr_reward,
         "afrr_energy_net_value_after_charges_EUR": afrr_net_value,
         "total_IDC_trading_value_EUR": idc_value,
+        "total_DA_trading_value_EUR": da_value,
         "total_afrr_energy_value_EUR": afrr_net_value,
         "total_afrr_energy_pay_as_cleared_reward_EUR": afrr_reward,
         "total_afrr_energy_net_value_after_charges_EUR": afrr_net_value,
         "total_afrr_capacity_revenue_EUR": afrr_capacity_revenue,
-        "total_afrr_capacity_opportunity_cost_EUR": afrr_capacity_opportunity_cost,
-        "total_afrr_capacity_market_surplus_EUR": afrr_capacity_market_surplus,
-        "total_afrr_capacity_net_value_EUR": afrr_capacity_net_value,
         "gross_operating_cost_EUR": gross_operating_cost,
         "total_operating_cost_EUR": total_operating_cost,
         "total_net_operating_cost_EUR": total_net_operating_cost,

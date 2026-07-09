@@ -108,11 +108,11 @@ class ThermalStorage:
                 b.electricity_cost[t] == b.electricity_consumption[t] * model.electricity_price[t]
             )
 
-        if hasattr(model, "charge_allowed"):
+        #if hasattr(model, "charge_allowed"):
 
-            @block.Constraint(time_steps)
-            def charge_allowed_limit(b: pyo.Block, t: int) -> pyo.Constraint:
-                return b.electric_charge_to_storage[t] <= max_charge_mwh * model.charge_allowed[t]
+            #@block.Constraint(time_steps)
+            #def charge_allowed_limit(b: pyo.Block, t: int) -> pyo.Constraint:
+                #return b.electric_charge_to_storage[t] <= max_charge_mwh * model.charge_allowed[t]
 
         return block
 

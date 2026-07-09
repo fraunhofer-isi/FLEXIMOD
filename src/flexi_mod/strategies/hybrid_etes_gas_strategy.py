@@ -313,6 +313,8 @@ class HybridETESGasStrategy(BaseStrategy):
         additional_charges_t = self.calculate_additional_charges_t(plant, forecasts)
 
         da_position = self._fixed_da_position(fixed_positions, forecasts.index)
+        future_position = self._fixed_future_position(fixed_positions, forecasts.index)
+        da_sell = self._fixed_da_sell(fixed_positions, forecasts.index)
         idc_price = idc_data["IDC_price_EUR_per_MWh"]
         delivered_idc_price = self._delivered_electricity_price(
             idc_price,
@@ -361,6 +363,8 @@ class HybridETESGasStrategy(BaseStrategy):
             idc_price_col=idc_price_col,
             gas_price_col=GAS_PRICE_SIGNAL,
             da_position_mwh=da_position,
+            future_position_mwh=future_position,
+            da_sell_mwh= da_sell,            
             idc_buy_upper_bound_mwh=idc_buy_upper_bound,
             idc_sell_upper_bound_mwh=idc_sell_upper_bound,
             gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,
@@ -418,17 +422,33 @@ class HybridETESGasStrategy(BaseStrategy):
             "DA_position_MWh",
             forecasts.index,
         )
+        da_sell = self._series_from_fixed_positions(
+            fixed_positions,
+            "DA_sell_MWh",
+            forecasts.index,
+        )
         idc_buy = self._series_from_fixed_positions(
             fixed_positions,
             "IDC_buy_MWh",
             forecasts.index,
             default=0.0,
         )
-        idc_sell = self._series_from_fixed_positions(
+        idc_sell_da = self._series_from_fixed_positions(
             fixed_positions,
-            "IDC_sell_MWh",
+            "IDC_sell_da_MWh",
             forecasts.index,
             default=0.0,
+        )
+        idc_sell_future = self._series_from_fixed_positions(
+            fixed_positions,
+            "IDC_sell_future_MWh",
+            forecasts.index,
+            default=0.0,
+        )        
+        future_position = self._series_from_fixed_positions(
+            fixed_positions,
+            "Future_positions_MWh",
+            forecasts.index,
         )
         final_planned = self._series_from_fixed_positions(
             fixed_positions,
@@ -437,7 +457,7 @@ class HybridETESGasStrategy(BaseStrategy):
             default=None,
         )
         if final_planned is None:
-            final_planned = da_position + idc_buy - idc_sell
+            final_planned = da_position + idc_buy - idc_sell_da
 
         gas_heat_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         electricity_benchmark = self.calculate_electricity_trading_benchmark(
@@ -554,8 +574,11 @@ class HybridETESGasStrategy(BaseStrategy):
             idc_price_col=idc_price_col,
             gas_price_col=GAS_PRICE_SIGNAL,
             da_position_mwh=da_position,
+            da_sell_mwh=da_sell,
             idc_buy_mwh=idc_buy,
-            idc_sell_mwh=idc_sell,
+            idc_sell_da_mwh=idc_sell_da,
+            idc_sell_future_mwh=idc_sell_future,            
+            future_position_mwh=future_position,
             final_planned_electricity_mwh=final_planned,
             afrr_energy_price=clean_afrr["afrr_energy_down_price_EUR_per_MWh"],
             afrr_system_activation_mwh=clean_afrr["afrr_system_activation_MWh"],
@@ -1083,6 +1106,42 @@ class HybridETESGasStrategy(BaseStrategy):
             raise ValueError("Fixed day-ahead positions are not aligned with forecast timestamps")
         return da_position.clip(lower=0.0)
 
+    @staticmethod
+    def _fixed_da_sell(
+        fixed_positions: pd.DataFrame,
+        index: pd.DatetimeIndex,
+    ) -> pd.Series:
+        if "DA_sell_MWh" in fixed_positions.columns:
+            da_position = fixed_positions["DA_sell_MWh"]
+        else:
+            raise ValueError(
+                "IDC stage requires fixed day-ahead positions, but neither "
+                "'DA_sell_MWh' was found."
+            )
+
+        da_position = da_position.astype(float).reindex(index)
+        if da_position.isna().any():
+            raise ValueError("Fixed day-ahead positions are not aligned with forecast timestamps")
+        return da_position.clip(lower=0.0)
+    
+    @staticmethod
+    def _fixed_future_position(
+        fixed_positions: pd.DataFrame,
+        index: pd.DatetimeIndex,
+    ) -> pd.Series:
+        if "Future_positions_MWh" in fixed_positions.columns:
+            future_position = fixed_positions["Future_positions_MWh"]
+        else:
+            raise ValueError(
+                "IDC stage requires fixed future positions, but "
+                "was not found."
+            )
+
+        future_position = future_position.astype(float).reindex(index)
+        if future_position.isna().any():
+            raise ValueError("Fixed future positions are not aligned with forecast timestamps")
+        return future_position.clip(lower=0.0)
+    
     @staticmethod
     def _series_from_fixed_positions(
         fixed_positions: pd.DataFrame,
