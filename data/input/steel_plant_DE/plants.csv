@@ -1,0 +1,4 @@
+name,unit_type,technology,node,objective,steel_demand,fuel_type,max_power,min_power,ramp_up,ramp_down,min_operating_time,min_down_time,efficiency,specific_hydrogen_consumption,specific_natural_gas_consumption,specific_electricity_consumption,specific_iron_ore_consumption,natural_gas_co2_factor,specific_dri_demand,specific_lime_demand,lime_co2_factor,start_price,capacity,min_soc,max_soc,initial_soc,max_power_charge,max_power_discharge,efficiency_charge,efficiency_discharge,storage_loss_rate,max_operating_hours
+steel_1,steel_plant,dri_plant,Saarland,min_variable_cost,4.0,hydrogen,13.706043,0,13.706043,13.706043,0,0,,2.25,,0.09,1.4,,,,,5,,,,,,,,,,
+steel_1,steel_plant,eaf,Saarland,min_variable_cost,4.0,,67.007322,0,67.007322,67.007322,0,0,,,,0.44,,,1,0.05,0.1,5,,,,,,,,,,
+steel_1,steel_plant,electrolyser,Saarland,min_variable_cost,4.0,,489.501539,0,489.501539,489.501539,1,1,0.7,,,,,,,,,,,,,,,,,,
