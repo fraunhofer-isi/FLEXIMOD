@@ -1,4 +1,4 @@
-component,unit,steel_1
+component,unit,P100000120423_dri_eaf_coal_external
 grid_energy_charge_high,EUR/MWh,6.9
 grid_energy_charge_low,EUR/MWh,6.9
 grid_capacity_charge_high,EUR/MW.a,53060

@@ -61,14 +61,14 @@ available_examples: dict[str, dict[str, str]] = {
         "scenario": "cement_DE_regulatory_charges",
         "study_case": "cement_DE_regulatory_charges",
     },
-    "steel_DE_regulatory_charges": {
-        "scenario": "steel_DE_regulatory_charges",
-        "study_case": "steel_DE_regulatory_charges",
+    "steel_plant_DE": {
+        "scenario": "steel_plant_DE",
+        "study_case": "steel_plant_DE",
     },
 }
 
 # Select the example to run from the available examples above.
-example = "hybrid_ETES_FR"
+example = "steel_plant_DE"
 
 
 def resolve_example_paths(example: str) -> dict[str, Path | str]:
