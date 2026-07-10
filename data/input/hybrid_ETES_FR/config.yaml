@@ -34,7 +34,7 @@ cases:
         enabled: true
         direction: down
         clearing_mechanism: pay_as_cleared
-        product_length: 15min
+        product_length: 60min
         price_unit: EUR_per_MW_per_product
         gate_open:
           day_relation: D-8
