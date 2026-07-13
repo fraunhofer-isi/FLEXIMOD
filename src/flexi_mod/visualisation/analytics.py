@@ -115,6 +115,7 @@ def calculate_summary_indicators(
                 **_market_indicators(plant_dispatch, plant_market),
                 **_economic_indicators(plant_dispatch, plant_market, plant_storage),
                 **_storage_source_indicators(plant_storage),
+                **_emission_indicators(plant_dispatch),
                 **_afrr_data_quality_indicators(afrr_quality),
             }
         )
@@ -510,6 +511,15 @@ def _storage_source_indicators(storage: pd.DataFrame) -> dict[str, float]:
             storage,
             ["weighted_average_inventory_cost_EUR_per_MWh_th"],
         ),
+    }
+
+
+def _emission_indicators(dispatch: pd.DataFrame) -> dict[str, float]:
+    """Calculate emission indicators from dispatch results."""
+    return {
+        "total_electricity_emissions_kg": _sum(dispatch, "electricity_emissions_kg"),
+        "total_gas_emissions_kg": _sum(dispatch, "gas_emissions_kg"),
+        "total_emissions_kg": _sum(dispatch, "total_emissions_kg"),
     }
 
 
