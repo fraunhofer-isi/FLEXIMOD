@@ -1,8 +1,8 @@
 component,unit,plant_1
-grid_energy_charge_high,EUR/MWh,36.9
-grid_energy_charge_low,EUR/MWh,45.6
-grid_capacity_charge_high,EUR/MW.a,66570
-grid_capacity_charge_low,EUR/MW.a,44850
+grid_energy_charge_high,EUR/MWh,19.9
+grid_energy_charge_low,EUR/MWh,43.6
+grid_capacity_charge_high,EUR/MW.a,20094
+grid_capacity_charge_low,EUR/MW.a,8250
 chp_surcharge,EUR/MWh,2.77
 offshore_grid_levy,EUR/MWh,8.16
 special_network_use_a,EUR/MWh,15.58

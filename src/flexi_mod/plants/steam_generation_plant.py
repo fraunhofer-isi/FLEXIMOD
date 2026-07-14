@@ -17,7 +17,7 @@ from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.plants.base_plant import BasePlant
+from flexi_mod.plants.base_plant import DEFAULT_GAS_EMISSIONS_FACTOR_KG_PER_MWH, BasePlant
 from flexi_mod.plants.technologies import (
     TECHNOLOGY_REGISTRY,
     GasBoiler,
@@ -149,6 +149,15 @@ class SteamGenerationPlant(BasePlant):
         if not heat_demand_column:
             heat_demand_column = f"{plant_name}_heat_demand"
 
+        gas_emissions_factor = first_non_empty(
+            rows, "gas_emissions_factor_kg_per_mwh", default=DEFAULT_GAS_EMISSIONS_FACTOR_KG_PER_MWH
+        )
+        if gas_emissions_factor is not None:
+            try:
+                gas_emissions_factor = float(gas_emissions_factor)
+            except (ValueError, TypeError):
+                gas_emissions_factor = DEFAULT_GAS_EMISSIONS_FACTOR_KG_PER_MWH
+
         return cls(
             name=plant_name,
             unit_type=first_non_empty(rows, "unit_type", default="steam_plant"),
@@ -156,6 +165,7 @@ class SteamGenerationPlant(BasePlant):
             objective=first_non_empty(rows, "objective", default="min_variable_cost"),
             heat_demand_column=heat_demand_column,
             components=components,
+            gas_emissions_factor_kg_per_mwh=gas_emissions_factor,
         )
 
     @classmethod

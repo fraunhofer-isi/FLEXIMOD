@@ -114,6 +114,31 @@ class SimulationRunner:
         forecasts = self.loader.load_forecasts(required_columns=required_columns)
         self._progress("Input data loaded")
         dispatch_results = self._run_market_sequence(plants, forecasts, strategy)
+
+        # --- Emissionsberechnung ---
+        # Strom-Emissionsintensität aus forecasts (Spalte: co2_intensity_kgco2_MWh)
+        emission_col = "co2_intensity_kgco2_MWh"
+        if emission_col in forecasts.columns:
+            emission_factors = forecasts[emission_col].reindex(dispatch_results.index).fillna(0.0)
+            dispatch_results["electricity_emissions_kg"] = (
+                dispatch_results["etes_charge_MWh"] * emission_factors
+            )
+        else:
+            dispatch_results["electricity_emissions_kg"] = 0.0
+
+        # Gas-Emissionsfaktor aus plants.csv
+        # (Spalte: gas_emissions_factor_kg_per_mwh, Default: 201 kg/MWh)
+        gas_emission_factor = plants[0].gas_emissions_factor_kg_per_mwh if plants else 0.0
+        dispatch_results["gas_emissions_kg"] = (
+            dispatch_results["gas_input_MWh"] * gas_emission_factor
+        )
+
+        # Gesamtemissionen
+        dispatch_results["total_emissions_kg"] = (
+            dispatch_results["electricity_emissions_kg"] + dispatch_results["gas_emissions_kg"]
+        )
+        # ----------------------------
+
         if AFRR_ENERGY in self.config.enabled_markets:
             strategy.afrr_energy_data_quality_summary = _full_period_afrr_quality_summary(
                 self.config,
