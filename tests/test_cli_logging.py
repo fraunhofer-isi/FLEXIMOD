@@ -111,10 +111,11 @@ def test_run_case_direct_study_case_is_passed_to_runner(
 
 
 def test_example_registry_uses_study_case_key() -> None:
-    paths = run_case.resolve_example_paths("hybrid_ETES_DA_ID_buy")
+    case_name = "fokusH2_2030_dri_eaf_hydrogen_external"
+    paths = run_case.resolve_example_paths(case_name)
 
-    assert paths["case_dir"].name == "hybrid_ETES_DA_ID_buy"
-    assert paths["study_case"] == "hybrid_ETES_DA_ID_buy"
+    assert paths["case_dir"].name == case_name
+    assert paths["study_case"] == case_name
 
 
 def test_run_case_missing_additional_charges_is_actionable(

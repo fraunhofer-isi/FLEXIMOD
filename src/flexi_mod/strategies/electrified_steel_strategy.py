@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
@@ -47,7 +49,12 @@ class ElectrifiedSteelStrategy:
             CO2_PRICE_SIGNAL,
         }
 
-    def dispatch(self, plant: SteelPlant, forecasts: pd.DataFrame) -> pd.DataFrame:
+    def dispatch(
+        self,
+        plant: SteelPlant,
+        forecasts: pd.DataFrame,
+        progress_callback: Callable[[pd.Timestamp, pd.Timestamp], None] | None = None,
+    ) -> pd.DataFrame:
         timestep_hours = self.config.timestep_minutes / 60.0
         day_ahead = DayAheadMarket("day_ahead", self.config.market("day_ahead"))
         capacity = AFRRCapacityMarket("afrr_capacity", self.config.market("afrr_capacity"))
@@ -93,7 +100,12 @@ class ElectrifiedSteelStrategy:
             afrr_capacity_bid_increment_mw=float(capacity_rules.get("bid_increment_mw", 1.0)),
             afrr_capacity_product_duration_h=_duration_hours(capacity.product_length),
         )
-        dispatch = plant.solve_afrr_down_rolling(self.config, prepared, signals)
+        dispatch = plant.solve_afrr_down_rolling(
+            self.config,
+            prepared,
+            signals,
+            progress_callback=progress_callback,
+        )
         self.afrr_capacity_block_summary = _capacity_block_summary(dispatch)
         return dispatch
 

@@ -24,51 +24,68 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+# Explicit catalogue of the generated input folders. These names are expanded into
+# ``available_examples`` below rather than discovered from the file system, so the
+# runner registry remains visible and reproducible in version control.
+_GENERATED_STUDY_FAMILIES = ("fokusH2", "fokusstrom", "technologiemix")
+_GENERATED_YEARS = ("2030", "2035", "2040", "2045")
+_GENERATED_ROUTE_VARIANTS = (
+    "bf_bof_hybrid_hydrogen_natural_gas_electrolyser",
+    "bf_bof_hybrid_hydrogen_natural_gas_external",
+    "bf_bof_hydrogen_electrolyser",
+    "dri_bof_coal_external",
+    "dri_bof_hybrid_hydrogen_natural_gas_electrolyser",
+    "dri_bof_hydrogen_electrolyser",
+    "dri_bof_hydrogen_external",
+    "dri_bof_natural_gas_external",
+    "dri_eaf_coal_external",
+    "dri_eaf_hybrid_hydrogen_natural_gas_electrolyser",
+    "dri_eaf_hybrid_hydrogen_natural_gas_external",
+    "dri_eaf_hydrogen_electrolyser",
+    "dri_eaf_hydrogen_external",
+    "dri_eaf_natural_gas_external",
+)
+GENERATED_EXAMPLE_NAMES = tuple(
+    f"{family}_{year}_{variant}"
+    for family in _GENERATED_STUDY_FAMILIES
+    for year in _GENERATED_YEARS
+    for variant in _GENERATED_ROUTE_VARIANTS
+)
+
+
 available_examples: dict[str, dict[str, str]] = {
-    "hybrid_ETES_DA": {
-        "scenario": "hybrid_ETES_DA",
-        "study_case": "hybrid_ETES_DA",
-    },
-    "hybrid_ETES_DA_ID_buy": {
-        "scenario": "hybrid_ETES_DA_ID_buy",
-        "study_case": "hybrid_ETES_DA_ID_buy",
-    },
-    "hybrid_ETES_DA_ID_buy_sell": {
-        "scenario": "hybrid_ETES_DA_ID_buy_sell",
-        "study_case": "hybrid_ETES_DA_ID_buy_sell",
-    },
-    "hybrid_ETES_DA_ID_aFRR_energy": {
-        "scenario": "hybrid_ETES_DA_ID_aFRR_energy",
-        "study_case": "hybrid_ETES_DA_ID_aFRR_energy",
-    },
-    "hybrid_ETES_DA_ID_aFRR_energy_capacity": {
-        "scenario": "hybrid_ETES_DA_ID_aFRR_energy_capacity",
-        "study_case": "hybrid_ETES_DA_ID_aFRR_energy_capacity",
-    },
-    "hybrid_ETES_DA_ID_aFRR_energy_capacity_spain": {
-        "scenario": "hybrid_ETES_DA_ID_aFRR_energy_capacity_spain",
-        "study_case": "hybrid_ETES_DA_ID_aFRR_energy_capacity_spain",
-    },
-    "hybrid_ETES_ES": {
-        "scenario": "hybrid_ETES_ES",
-        "study_case": "hybrid_ETES_ES",
-    },
-    "hybrid_ETES_FR": {
-        "scenario": "hybrid_ETES_FR",
-        "study_case": "hybrid_ETES_FR",
-    },
-    "cement_DE_regulatory_charges": {
-        "scenario": "cement_DE_regulatory_charges",
-        "study_case": "cement_DE_regulatory_charges",
-    },
-    "steel_plant_DE": {
-        "scenario": "steel_plant_DE",
-        "study_case": "steel_plant_DE",
+    **{
+        name: {
+            "scenario": name,
+            "study_case": name,
+        }
+        for name in GENERATED_EXAMPLE_NAMES
     },
 }
 
-# Select the example to run from the available examples above.
-example = "steel_plant_DE"
+
+# Select the example to run when ``examples_to_run`` is empty.
+example = "fokusH2_2030_bf_bof_hybrid_hydrogen_natural_gas_electrolyser"
+
+# Run every generated case except the coal-based DRI-EAF route. Order is preserved.
+# Add further names to ``excluded_examples_from_run`` when a case should be skipped.
+excluded_examples_from_run = {
+    name for name in GENERATED_EXAMPLE_NAMES if name.endswith("_dri_eaf_coal_external")
+}
+examples_to_run: list[str] = [
+    name for name in GENERATED_EXAMPLE_NAMES if name not in excluded_examples_from_run
+]
+
+
+def selected_examples() -> tuple[str, ...]:
+    """Validate and return the user-selected sequence of examples to run."""
+    unknown = [name for name in examples_to_run if name not in available_examples]
+    if unknown:
+        options = ", ".join(sorted(available_examples))
+        raise ValueError(
+            f"Unknown selected example(s): {', '.join(unknown)}. Available examples: {options}"
+        )
+    return tuple(examples_to_run)
 
 
 def resolve_example_paths(example: str) -> dict[str, Path | str]:
@@ -94,7 +111,10 @@ def resolve_example_paths(example: str) -> dict[str, Path | str]:
     }
 
 
-def build_runner_settings(args: argparse.Namespace) -> dict[str, Any]:
+def build_runner_settings(
+    args: argparse.Namespace,
+    selected_example: str | None = None,
+) -> dict[str, Any]:
     from flexi_mod.simulation.simulation_runner import OutputOptions
 
     if args.case:
@@ -105,7 +125,7 @@ def build_runner_settings(args: argparse.Namespace) -> dict[str, Any]:
             "study_case": args.study_case,
         }
     else:
-        paths = resolve_example_paths(args.example)
+        paths = resolve_example_paths(selected_example or args.example)
         if args.study_case:
             paths["study_case"] = args.study_case
 
@@ -147,13 +167,7 @@ def _default_output_options() -> Any:
 
 
 def main() -> None:
-    from flexi_mod.config.case_config import CaseConfig
-    from flexi_mod.simulation.cli_logging import (
-        CliLogger,
-        output_summary,
-        print_verbose_outputs,
-    )
-    from flexi_mod.simulation.simulation_runner import SimulationRunner
+    from flexi_mod.simulation.cli_logging import CliLogger
 
     parser = argparse.ArgumentParser(description="Run a FLEXIMOD case.")
     parser.add_argument(
@@ -181,12 +195,11 @@ def main() -> None:
     parser.add_argument(
         "--assumed-grid-tier",
         choices=["high", "low"],
-        default=None,
+        default="high",
         help=(
             "Full-load-hour tier assumed for the per-MWh grid energy charge in the dispatch "
-            "strike price. If omitted and tiered rates are present in additional_charges.csv, "
-            "you will be prompted interactively. The bill is corrected ex-post if the realized "
-            "tier differs."
+            "strike price. Defaults to 'high' (option 1); use '--assumed-grid-tier low' to "
+            "select the low tier. The bill is corrected ex-post if the realized tier differs."
         ),
     )
     parser.add_argument("--no-plots", action="store_true")
@@ -202,7 +215,55 @@ def main() -> None:
     args = parser.parse_args()
     logger = CliLogger(verbose=args.verbose)
 
-    settings = build_runner_settings(args)
+    if args.case:
+        _run_one_case(args, logger)
+    elif examples_to_run:
+        _run_selected_examples(args, logger)
+    else:
+        _run_one_case(args, logger)
+
+
+def _run_selected_examples(args: argparse.Namespace, logger: Any) -> None:
+    """Run the explicitly selected examples in order and report failures at the end."""
+    selected = selected_examples()
+    if args.case or args.study_case or args.output_dir:
+        raise ValueError(
+            "examples_to_run cannot be combined with --case, --study-case, or --output-dir."
+        )
+
+    logger.info(f"Sequential run started: {len(selected)} selected example(s).")
+    failures: list[tuple[str, Exception]] = []
+    for number, selected_example in enumerate(selected, start=1):
+        logger.info(
+            f"\nSelected example {number}/{len(selected)}: {selected_example}"
+        )
+        try:
+            _run_one_case(args, logger, selected_example=selected_example)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            failures.append((selected_example, exc))
+            logger.error(f"Example '{selected_example}' failed: {exc}")
+
+    if failures:
+        failed_names = ", ".join(name for name, _ in failures)
+        raise RuntimeError(
+            f"Sequential run completed with {len(failures)} failed example(s): {failed_names}"
+        )
+    logger.success(f"Sequential run completed: {len(selected)} examples succeeded.")
+
+
+def _run_one_case(
+    args: argparse.Namespace,
+    logger: Any,
+    selected_example: str | None = None,
+) -> None:
+    """Run one named or directly specified case using the normal CLI reporting."""
+    from flexi_mod.config.case_config import CaseConfig
+    from flexi_mod.simulation.cli_logging import output_summary, print_verbose_outputs
+    from flexi_mod.simulation.simulation_runner import SimulationRunner
+
+    settings = build_runner_settings(args, selected_example=selected_example)
     config = CaseConfig.from_case_dir(settings["case_dir"], study_case=settings["study_case"])
     if settings["output_dir"] is None:
         settings["output_dir"] = PROJECT_ROOT / "data" / "output" / config.output_folder_name
@@ -223,6 +284,10 @@ def main() -> None:
 
     if settings["assumed_grid_tier"] is None:
         settings["assumed_grid_tier"] = _prompt_grid_tier(config, settings) or "high"
+        # Reuse the selected tier for the remainder of a sequential run, so a
+        # user selecting several tariffed cases is prompted only once.
+        if selected_example is not None:
+            args.assumed_grid_tier = settings["assumed_grid_tier"]
 
     runner = SimulationRunner(**settings, progress_callback=logger.progress)
     with logger.capture_warnings():

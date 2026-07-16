@@ -282,9 +282,32 @@ class SimulationRunner:
         self._progress("Steel input data loaded")
 
         dispatch_parts: list[pd.DataFrame] = []
+        windows_per_plant = len(_decision_windows(self.config, forecasts))
+        total_windows = len(plants) * windows_per_plant
+        progress_counter = 0
         for plant in plants:
             self._progress(f"Rolling steel dispatch started for {plant.name}")
-            dispatch_parts.append(strategy.dispatch(plant, forecasts))
+
+            def report_window(
+                window_start: pd.Timestamp,
+                window_end: pd.Timestamp,
+                plant_name: str = plant.name,
+            ) -> None:
+                nonlocal progress_counter
+                progress_counter += 1
+                self._progress(
+                    _window_progress_message(
+                        current=progress_counter,
+                        total=total_windows,
+                        plant_name=plant_name,
+                        window_start=window_start,
+                        window_end=window_end,
+                    )
+                )
+
+            dispatch_parts.append(
+                strategy.dispatch(plant, forecasts, progress_callback=report_window)
+            )
             self._progress(f"Rolling steel dispatch completed for {plant.name}")
         dispatch_results = pd.concat(dispatch_parts).sort_index()
         grid_fee_results = (

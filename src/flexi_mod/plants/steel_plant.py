@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -204,6 +205,7 @@ class SteelPlant(BasePlant):
         forecasts: pd.DataFrame,
         signals: SteelDispatchSignals,
         initial_state: SteelRollingState | None = None,
+        progress_callback: Callable[[pd.Timestamp, pd.Timestamp], None] | None = None,
     ) -> pd.DataFrame:
         if forecasts.empty:
             raise ValueError("Steel rolling dispatch requires at least one timestep")
@@ -233,6 +235,11 @@ class SteelPlant(BasePlant):
             horizon_schedule = demand_schedule.iloc[position : position + len(horizon)]
             commit_schedule = horizon_schedule.iloc[:commit_count]
             is_final_window = position + commit_count >= len(forecasts)
+            if progress_callback is not None:
+                progress_callback(
+                    pd.Timestamp(horizon.index[0]),
+                    pd.Timestamp(horizon.index[commit_count - 1]),
+                )
             remaining_demand = max(0.0, total_demand - state.cumulative_steel_output_t)
             horizon_target = max(0.0, state.demand_balance_t + float(horizon_schedule.sum()))
             if is_final_window:
@@ -305,6 +312,7 @@ class SteelPlant(BasePlant):
         forecasts: pd.DataFrame,
         signals: SteelAFRRDownSignals,
         initial_state: SteelRollingState | None = None,
+        progress_callback: Callable[[pd.Timestamp, pd.Timestamp], None] | None = None,
     ) -> pd.DataFrame:
         """Optimize the next-day DA and aFRR-down portfolio on a rolling horizon."""
 
@@ -347,6 +355,11 @@ class SteelPlant(BasePlant):
             horizon_schedule = demand_schedule.iloc[position : position + len(horizon)]
             commit_schedule = horizon_schedule.iloc[:commit_count]
             is_final_window = position + commit_count >= len(forecasts)
+            if progress_callback is not None:
+                progress_callback(
+                    pd.Timestamp(horizon.index[0]),
+                    pd.Timestamp(horizon.index[commit_count - 1]),
+                )
             remaining_demand = max(0.0, total_demand - state.cumulative_steel_output_t)
             horizon_target = max(0.0, state.demand_balance_t + float(horizon_schedule.sum()))
             if is_final_window:
