@@ -348,9 +348,16 @@ class DRIPlant:
             natural_gas_co2_factor_t_per_mwh=_as_float(
                 row.get("natural_gas_co2_factor"),
                 "natural_gas_co2_factor",
+                # TODO: Make this input mandatory for natural-gas and hybrid DRI
+                # routes once all generated plants.csv files provide explicit,
+                # literature-grounded emission factors. Do not retain a hidden
+                # route-independent default.
                 default=0.5,
             ),
             coal_co2_factor_t_per_mwh=_as_float(
+                # TODO: Make this input mandatory for coal DRI routes. The current
+                # generated plants.csv files omit the column, so the zero fallback
+                # excludes coal emissions and their CO2 cost.
                 row.get("coal_co2_factor"), "coal_co2_factor", default=0.0
             ),
         )
@@ -719,11 +726,17 @@ class BlastFurnaceBasicOxygenFurnace:
             min_power_mw=_as_float(row.get("min_power"), "min_power", default=0.0),
             fuel_type=fuel_type,
             coal_co2_factor_t_per_mwh=_as_float(
+                # TODO: Make this input mandatory for coal BF-BOF routes when the
+                # generated input matrix includes them; zero would omit material
+                # direct emissions and their CO2 cost.
                 row.get("coal_co2_factor"), "coal_co2_factor", default=0.0
             ),
             natural_gas_co2_factor_t_per_mwh=_as_float(
                 row.get("natural_gas_co2_factor"),
                 "natural_gas_co2_factor",
+                # TODO: Make this input mandatory for natural-gas and hybrid BF-BOF
+                # routes. Current generated plants.csv files omit it, so the zero
+                # fallback excludes natural-gas emissions and their CO2 cost.
                 default=0.0,
             ),
             lime_co2_factor_t_per_t=_as_float(row.get("lime_co2_factor"), "lime_co2_factor"),
