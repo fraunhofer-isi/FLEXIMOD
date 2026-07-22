@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +27,10 @@ from flexi_mod.plants.technologies import (
 )
 
 DEFAULT_CO2_EMISSION_FACTOR_T_PER_MWH_FUEL = 0.0
+
+# Penalty on the delivery-guarantee slack: high enough that the optimizer only
+# uses the slack to avert an infeasible model, never as an economic trade-off.
+DELIVERY_GUARANTEE_SLACK_PENALTY_EUR_PER_MWH = 1_000_000.0
 
 
 @dataclass
@@ -710,6 +715,8 @@ class SteamGenerationPlant(BasePlant):
                 <= storage.max_capacity_mwh
             )
 
+        self._add_reserved_capacity_delivery_guarantee(m, heat_demand_mwh, dt_hours)
+
         @m.Expression(m.T)
         def electricity_market_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return mm.electricity_consumption[t] * mm.market_electricity_price[t]
@@ -741,11 +748,87 @@ class SteamGenerationPlant(BasePlant):
         def objective(mm: pyo.ConcreteModel) -> pyo.Expression:
             return pyo.quicksum(
                 # CO2 cost is disabled for the first MVP and kept as a zero output column.
-                mm.electricity_cost[t] + mm.gas_cost[t] + mm.tax_cost[t]
+                mm.electricity_cost[t]
+                + mm.gas_cost[t]
+                + mm.tax_cost[t]
+                + DELIVERY_GUARANTEE_SLACK_PENALTY_EUR_PER_MWH * mm.delivery_guarantee_slack_mwh[t]
                 for t in mm.T
             )
 
         return m
+
+    def _add_reserved_capacity_delivery_guarantee(
+        self,
+        m: pyo.ConcreteModel,
+        heat_demand_mwh: Any,
+        dt_hours: float,
+    ) -> None:
+        """Keep reserved aFRR-down capacity deliverable under continuous activation.
+
+        A capacity bid promises to absorb the reserved power in every interval it
+        is called. ``soc_under_full_activation_mwh`` tracks the SOC that would
+        result if activation ran continuously from any point onward while the
+        plant drains as much as possible into the heat demand
+        (``max_heat_outlet_mwh``). Bounding that trajectory by the storage
+        capacity forces the schedule to leave enough room or displaceable gas
+        heat for the promise; with nothing reserved the bound is inactive. The
+        slack only keeps pathological cases solvable and is reported by
+        :func:`_warn_if_delivery_guarantee_relaxed`.
+        """
+        storage_component = self.components["thermal_storage"]
+        max_discharge_mwh = storage_component.max_power_discharge_mw * dt_hours
+        max_heat_outlet_values = {
+            t: min(float(heat_demand_mwh[t]), max_discharge_mwh)
+            / storage_component.efficiency_discharge
+            for t in m.T
+        }
+        m.max_heat_outlet_mwh = pyo.Param(m.T, initialize=max_heat_outlet_values)
+        m.soc_under_full_activation_mwh = pyo.Var(m.T, within=pyo.NonNegativeReals)
+        m.delivery_guarantee_slack_mwh = pyo.Var(m.T, within=pyo.NonNegativeReals)
+
+        @m.Constraint(m.T)
+        def full_activation_soc_tracks_schedule(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            storage = mm.technology_blocks["thermal_storage"]
+            return mm.soc_under_full_activation_mwh[t] >= storage.soc[t]
+
+        @m.Constraint(m.T)
+        def full_activation_soc_balance(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            storage = mm.technology_blocks["thermal_storage"]
+            previous = (
+                storage.initial_soc_mwh if t == 0 else mm.soc_under_full_activation_mwh[t - 1]
+            )
+            return mm.soc_under_full_activation_mwh[t] >= (
+                previous * (1.0 - storage.storage_loss_rate)
+                + (storage.electric_charge_to_storage[t] + mm.reserved_capacity_mwh[t])
+                * storage.efficiency_charge
+                - mm.max_heat_outlet_mwh[t]
+            )
+
+        @m.Constraint(m.T)
+        def reserve_delivery_headroom(mm: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+            storage = mm.technology_blocks["thermal_storage"]
+            return (
+                mm.soc_under_full_activation_mwh[t]
+                <= storage.max_capacity_mwh + mm.delivery_guarantee_slack_mwh[t]
+            )
+
+    @staticmethod
+    def _warn_if_delivery_guarantee_relaxed(m: pyo.ConcreteModel, model_label: str) -> None:
+        """Report if the delivery guarantee had to be relaxed to stay solvable."""
+        if not hasattr(m, "delivery_guarantee_slack_mwh"):
+            return
+        worst = max(
+            (float(pyo.value(m.delivery_guarantee_slack_mwh[t])) for t in m.T),
+            default=0.0,
+        )
+        if worst > 1e-6:
+            warnings.warn(
+                f"{model_label}: reserved aFRR-down capacity exceeds what the plant "
+                f"can deliver under continuous activation by up to {worst:.3f} MWh "
+                "per step even after rescheduling. The capacity bid sizing and the "
+                "plant parameters are inconsistent.",
+                stacklevel=2,
+            )
 
     def _build_intraday_adjustment_model(
         self,
@@ -888,6 +971,8 @@ class SteamGenerationPlant(BasePlant):
                 <= storage.max_capacity_mwh
             )
 
+        self._add_reserved_capacity_delivery_guarantee(m, heat_demand_mwh, dt_hours)
+
         @m.Expression(m.T)
         def da_electricity_cost(mm: pyo.ConcreteModel, t: int) -> pyo.Expression:
             return mm.da_position_mwh[t] * mm.da_price[t]
@@ -931,7 +1016,10 @@ class SteamGenerationPlant(BasePlant):
         def objective(mm: pyo.ConcreteModel) -> pyo.Expression:
             return pyo.quicksum(
                 # TODO: Add CO2 cost consistently to the gas benchmark and plant objective.
-                mm.electricity_cost[t] + mm.gas_cost[t] + mm.tax_cost[t]
+                mm.electricity_cost[t]
+                + mm.gas_cost[t]
+                + mm.tax_cost[t]
+                + DELIVERY_GUARANTEE_SLACK_PENALTY_EUR_PER_MWH * mm.delivery_guarantee_slack_mwh[t]
                 for t in mm.T
             )
 
@@ -1114,6 +1202,7 @@ class SteamGenerationPlant(BasePlant):
         signals: DispatchSignals,
         solver_name: str,
     ) -> pd.DataFrame:
+        self._warn_if_delivery_guarantee_relaxed(model, "day-ahead dispatch")
         storage = model.technology_blocks["thermal_storage"]
         boiler = model.technology_blocks["boiler"]
         dt_hours = config.timestep_minutes / 60.0
@@ -1221,6 +1310,7 @@ class SteamGenerationPlant(BasePlant):
         signals: IDCAdjustmentSignals,
         solver_name: str,
     ) -> pd.DataFrame:
+        self._warn_if_delivery_guarantee_relaxed(model, "intraday adjustment")
         storage = model.technology_blocks["thermal_storage"]
         boiler = model.technology_blocks["boiler"]
         dt_hours = config.timestep_minutes / 60.0

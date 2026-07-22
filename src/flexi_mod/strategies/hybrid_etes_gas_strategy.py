@@ -641,6 +641,18 @@ class HybridETESGasStrategy(BaseStrategy):
             baseline_soc=baseline_soc_values,
             replaceable_gas_heat=replaceable_gas_heat,
         )
+        # Free bids only get room the standing capacity promise does not claim.
+        claimed_soc, remaining_gas_heat = _project_reserved_capacity_claim(
+            plant=plant,
+            capacity_backed_bid=capacity_backed_bid,
+            baseline_soc=baseline_soc_values,
+            replaceable_gas_heat=replaceable_gas_heat,
+        )
+        unclaimed_future_headroom = _future_storage_input_headroom_mwh(
+            plant=plant,
+            baseline_soc=claimed_soc,
+            replaceable_gas_heat=remaining_gas_heat,
+        )
         additional_soc_mwh = 0.0
 
         for position, timestamp in enumerate(forecasts.index):
@@ -673,7 +685,12 @@ class HybridETESGasStrategy(BaseStrategy):
             capacity_bid = max(0.0, float(capacity_backed_bid.loc[timestamp]))
             free_bid = max(0.0, float(free_bid_upper_bound.loc[timestamp]))
             free_room_after_capacity = max(0.0, horizon_activation_cap - capacity_bid)
-            feasible_free_bid_mwh = min(free_bid, free_room_after_capacity)
+            unclaimed_future_cap = max(
+                0.0,
+                (float(unclaimed_future_headroom.iloc[position]) - additional_soc_mwh)
+                / plant.etes.efficiency_charge,
+            )
+            feasible_free_bid_mwh = min(free_bid, free_room_after_capacity, unclaimed_future_cap)
             free_bid = (
                 _round_bid_down_to_increment(
                     feasible_free_bid_mwh / timestep_hours,
@@ -836,15 +853,18 @@ class HybridETESGasStrategy(BaseStrategy):
                 (plant.etes.max_capacity_mwh - expected_soc)
                 / (plant.etes.efficiency_charge * block_duration_h),
             )
-            # Energy that can be absorbed by charging *directly into the heat demand*
-            # (charge and discharge in the same step) — deliverable even when the ETES
-            # is full. Together with the free storage room this is the physical ceiling
-            # on how much extra aFRR-down charging the plant can actually take.
+            # Direct use: charging straight into the heat demand is deliverable even
+            # when the ETES is full. The bid must survive continuous activation, so
+            # the block's weakest step (min of heat demand and discharge power) sets
+            # this ceiling, not the block average.
             round_trip = plant.etes.efficiency_charge * plant.etes.efficiency_discharge
-            block_heat_demand_mwh = float(heat_demand_mwh.loc[mask].sum())
+            max_discharge_mwh_step = plant.etes.max_power_discharge_mw * timestep_hours
+            block_min_heat_outlet_mwh = float(
+                heat_demand_mwh.loc[mask].clip(upper=max_discharge_mwh_step).min()
+            )
             direct_use_mw = (
-                block_heat_demand_mwh / (round_trip * block_duration_h)
-                if round_trip > 0 and block_duration_h > 0
+                block_min_heat_outlet_mwh / (round_trip * timestep_hours)
+                if round_trip > 0 and timestep_hours > 0
                 else 0.0
             )
             deliverable_capacity_mw = min(max_charge_power_mw, storage_capacity_mw + direct_use_mw)
@@ -1235,6 +1255,39 @@ def _future_storage_input_headroom_mwh(
         next_allowed_before = allowed_before[position]
 
     return pd.Series(allowed_before, index=baseline_soc.index)
+
+
+def _project_reserved_capacity_claim(
+    plant: SteamGenerationPlant,
+    capacity_backed_bid: pd.Series,
+    baseline_soc: pd.Series,
+    replaceable_gas_heat: pd.Series,
+) -> tuple[pd.Series, pd.Series]:
+    """Project the baseline SOC as if every reserved interval were fully activated.
+
+    Returns the claimed SOC trajectory and the replaceable gas heat left over
+    for free bids. Sizing free bids against these keeps them out of the storage
+    room a later capacity-backed activation is entitled to.
+    """
+
+    retention = 1.0 - plant.etes.storage_loss_rate
+    charge_efficiency = plant.etes.efficiency_charge
+    discharge_efficiency = plant.etes.efficiency_discharge
+    max_capacity = plant.etes.max_capacity_mwh
+    claim = 0.0
+    claimed_soc = []
+    remaining_gas_heat = []
+
+    for position in range(len(baseline_soc)):
+        claim *= retention
+        claim += max(0.0, float(capacity_backed_bid.iloc[position])) * charge_efficiency
+        outlet = min(float(replaceable_gas_heat.iloc[position]), claim * discharge_efficiency)
+        claim -= outlet / discharge_efficiency
+        claimed_soc.append(min(max_capacity, float(baseline_soc.iloc[position]) + claim))
+        remaining_gas_heat.append(float(replaceable_gas_heat.iloc[position]) - outlet)
+
+    index = baseline_soc.index
+    return pd.Series(claimed_soc, index=index), pd.Series(remaining_gas_heat, index=index)
 
 
 def _capacity_column(

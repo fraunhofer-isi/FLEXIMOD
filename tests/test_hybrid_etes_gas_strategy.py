@@ -891,6 +891,59 @@ def test_afrr_capacity_reserves_headroom_and_caps_activation(
     assert block["reserved_capacity_MW"] == pytest.approx(block["compliant_capacity_MW"])
 
 
+def test_reserved_capacity_survives_continuous_activation_with_full_storage(
+    afrr_capacity_case: Path,
+    tmp_path: Path,
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    """A capacity bid must stay deliverable under continuous activation.
+
+    Cheap-then-expensive prices push the schedule to fill the small ETES just
+    when the reservation needs the room. The delivery guarantee must hold the
+    schedule back so the full promise is delivered in every interval.
+    """
+    _write_plants(
+        afrr_capacity_case / "plants.csv",
+        storage_initial_soc=1.5,
+        storage_capacity=4.0,
+    )
+    _write_forecasts(
+        afrr_capacity_case / "forecasts_df.csv",
+        da_prices=[10.0] * 4 + [120.0] * 4,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[5.0] * 8,
+        afrr_capacity_prices=[500.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+
+    results = _run_case(afrr_capacity_case, tmp_path)
+    dispatch = results["dispatch"]
+    market = results["market"]
+    blocks = results["afrr_capacity_blocks"]
+
+    # First window: direct use 2.0/0.8464 = 2.36 MW plus the initial storage
+    # room -> 3 MW. Later windows re-size from the realized SOC but keep bidding.
+    assert market["afrr_capacity_reserved_MW"].iloc[:4].eq(3.0).all()
+    assert market["afrr_capacity_reserved_MW"].gt(0.0).all()
+    assert blocks.loc[blocks["bid_eligible"], "reserved_capacity_MW"].gt(0.0).all()
+
+    # The system calls more than the reservation, so the full promise is delivered.
+    assert market["afrr_energy_capacity_backed_activated_MWh_el"].to_numpy() == pytest.approx(
+        market["afrr_capacity_reserved_MWh"].to_numpy()
+    )
+
+    # Continuous activation never overflows the storage and nothing is curtailed.
+    assert (dispatch["etes_soc_MWh"] <= 4.0 + 1e-6).all()
+    assert dispatch["afrr_curtailment_MWh"].sum() == pytest.approx(0.0)
+
+    # Cheap-phase charging must leave the promised room free.
+    assert market["scheduled_electricity_procurement_MWh_el"].sum() < 2.0
+
+    # The delivery guarantee never had to be relaxed.
+    assert not [w for w in recwarn if "deliver under continuous activation" in str(w.message)]
+
+
 def test_pay_as_cleared_capacity_strategy_uses_marginal_price(
     tmp_path: Path,
 ) -> None:
@@ -986,9 +1039,16 @@ def test_pay_as_cleared_capacity_strategy_supports_spanish_product_prices(
     )
 
 
-def test_afrr_capacity_allows_profitable_free_energy_bid_above_reserved_capacity(
+def test_afrr_capacity_free_bids_use_only_unreserved_capacity(
     tmp_path: Path,
 ) -> None:
+    """Reserved capacity is bid in full as energy; free bids only get the rest.
+
+    The mandatory energy bid equals the awarded capacity, optional free bids
+    come on top of it from the remaining unreserved charge power — the same
+    megawatt is never offered twice.
+    """
+
     case_dir = tmp_path / "afrr_capacity_with_free_energy_case"
     case_dir.mkdir()
     _write_config(
@@ -1011,17 +1071,25 @@ def test_afrr_capacity_allows_profitable_free_energy_bid_above_reserved_capacity
     results = _run_case(case_dir, tmp_path)
     market = results["market"]
 
-    assert market["afrr_capacity_reserved_MWh"].sum() > 0.0
-    assert market["afrr_energy_capacity_backed_bid_MWh_el"].sum() == pytest.approx(
-        market["afrr_capacity_reserved_MWh"].sum()
+    reserved = market["afrr_capacity_reserved_MWh"]
+    assert reserved.sum() > 0.0
+    # The awarded capacity is bid in full as the mandatory energy bid.
+    assert market["afrr_energy_capacity_backed_bid_MWh_el"].to_numpy() == pytest.approx(
+        reserved.to_numpy()
     )
+    # Free bids use the remaining unreserved capacity.
     assert market["afrr_energy_free_bid_MWh_el"].sum() > 0.0
-    assert market["afrr_energy_bid_MWh_el"].sum() == pytest.approx(
+    assert market["afrr_energy_bid_MWh_el"].to_numpy() == pytest.approx(
         (
             market["afrr_energy_capacity_backed_bid_MWh_el"] + market["afrr_energy_free_bid_MWh_el"]
-        ).sum()
+        ).to_numpy()
     )
-    assert market["afrr_energy_free_activated_MWh_el"].sum() > 0.0
+    # No megawatt is offered twice: schedule + all energy bids fit the charge power.
+    max_charge_mwh_per_step = 7.0 * 0.25
+    assert (
+        market["scheduled_electricity_procurement_MWh_el"] + market["afrr_energy_bid_MWh_el"]
+        <= max_charge_mwh_per_step + 1e-8
+    ).all()
 
 
 def test_afrr_capacity_low_capacity_price_blocks_reservation(
