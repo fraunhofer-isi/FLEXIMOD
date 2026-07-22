@@ -799,6 +799,7 @@ class HybridETESGasStrategy(BaseStrategy):
         min_bid_mw = float(capacity_market.product_rules.get("min_bid_mw", 0.0))
         bid_increment_mw = float(capacity_market.product_rules.get("bid_increment_mw", 1.0))
         _validate_bid_rules("afrr_capacity", min_bid_mw, bid_increment_mw)
+        heat_demand_mwh = forecasts[plant.heat_demand_column].astype(float) * timestep_hours
         expected_soc = plant.etes.initial_soc_mwh if initial_soc_mwh is None else initial_soc_mwh
         # Under atypical grid use, do not commit aFRR-down capacity in blocks that overlap a
         # high-load window: a mandatory capacity-backed activation there would raise the billed
@@ -835,15 +836,35 @@ class HybridETESGasStrategy(BaseStrategy):
                 (plant.etes.max_capacity_mwh - expected_soc)
                 / (plant.etes.efficiency_charge * block_duration_h),
             )
+            # Energy that can be absorbed by charging *directly into the heat demand*
+            # (charge and discharge in the same step) — deliverable even when the ETES
+            # is full. Together with the free storage room this is the physical ceiling
+            # on how much extra aFRR-down charging the plant can actually take.
+            round_trip = plant.etes.efficiency_charge * plant.etes.efficiency_discharge
+            block_heat_demand_mwh = float(heat_demand_mwh.loc[mask].sum())
+            direct_use_mw = (
+                block_heat_demand_mwh / (round_trip * block_duration_h)
+                if round_trip > 0 and block_duration_h > 0
+                else 0.0
+            )
+            deliverable_capacity_mw = min(max_charge_power_mw, storage_capacity_mw + direct_use_mw)
             max_activation_need_mwh = float(
                 afrr_energy["afrr_system_activation_MWh"].loc[mask].max()
             )
             max_activation_need_mw = (
                 max_activation_need_mwh / timestep_hours if timestep_hours > 0 else 0.0
             )
-            technical_capacity = min(max_charge_power_mw, storage_capacity_mw)
+            # Reserve the volume the market will actually activate (the block's peak
+            # 15-min activation), floored at the minimum bid for market compliance, and
+            # never beyond what the plant can physically deliver. Reserving the full
+            # deliverable capacity (ignoring the activation volume) over-reserves — and
+            # is paid for — capacity that will never be called.
+            technical_capacity = deliverable_capacity_mw
+            target_capacity_mw = min(
+                deliverable_capacity_mw, max(max_activation_need_mw, min_bid_mw)
+            )
             compliant_capacity = _round_bid_down_to_increment(
-                technical_capacity,
+                target_capacity_mw,
                 min_bid_mw=min_bid_mw,
                 bid_increment_mw=bid_increment_mw,
             )

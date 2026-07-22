@@ -47,9 +47,19 @@ def test_spanish_pay_as_cleared_example_runs(tmp_path: Path) -> None:
             * 0.25
         ).to_numpy()
     )
+    # The capacity-backed part of the activation is fully covered by the reserved
+    # capacity; any activation above it is a separate energy-only (free) bid drawn
+    # from spare charging headroom, so total activation may exceed the reservation.
     assert (
-        market["afrr_energy_activated_MWh_el"] <= market["afrr_capacity_reserved_MWh"] + 1e-8
+        market["afrr_energy_capacity_backed_activated_MWh_el"]
+        <= market["afrr_capacity_reserved_MWh"] + 1e-8
     ).all()
+    assert market["afrr_energy_activated_MWh_el"].to_numpy() == pytest.approx(
+        (
+            market["afrr_energy_capacity_backed_activated_MWh_el"]
+            + market["afrr_energy_free_activated_MWh_el"]
+        ).to_numpy()
+    )
     assert market["actual_electricity_consumption_MWh_el"].to_numpy() == pytest.approx(
         (
             market["scheduled_electricity_procurement_MWh_el"]

@@ -1116,7 +1116,7 @@ def test_afrr_capacity_no_activation_block_does_not_reserve(
     assert not bool(block["bid_eligible"])
 
 
-def test_afrr_capacity_activation_forecast_does_not_size_bid(
+def test_afrr_capacity_bid_is_capped_by_activation_volume(
     afrr_capacity_case: Path,
     tmp_path: Path,
 ) -> None:
@@ -1133,9 +1133,14 @@ def test_afrr_capacity_activation_forecast_does_not_size_bid(
     results = _run_case(afrr_capacity_case, tmp_path)
     block = results["afrr_capacity_blocks"].iloc[0]
 
+    # The plant can physically deliver more than the activation (technical_capacity is
+    # the flexibility ceiling), but it only reserves the volume the market will
+    # actually activate, rounded down to the bid increment (2.7 MW peak -> 2 MW at a
+    # 1 MW increment). It does not reserve — and get paid for — the unused headroom.
     assert block["peak_activation_MW"] == pytest.approx(2.7)
     assert block["technical_capacity_MW"] > block["peak_activation_MW"]
-    assert block["compliant_capacity_MW"] > block["peak_activation_MW"]
+    assert block["compliant_capacity_MW"] == pytest.approx(2.0)
+    assert block["compliant_capacity_MW"] <= block["peak_activation_MW"] + 1e-9
     assert block["reserved_capacity_MW"] == pytest.approx(block["compliant_capacity_MW"])
 
 
