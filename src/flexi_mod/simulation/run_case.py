@@ -60,7 +60,7 @@ available_examples: dict[str, dict[str, str]] = {
 }
 
 # Select the example to run from the available examples above.
-example = "hybrid_ETES_FR"
+example = "hybrid_ETES_ES"
 
 
 def resolve_example_paths(example: str) -> dict[str, Path | str]:
