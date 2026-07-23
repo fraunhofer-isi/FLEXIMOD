@@ -13,7 +13,7 @@ dist/
 playground/
 *.egg-info/
 
-data/input/Archive/
+data/input/
 data/output/Archive/
 data/output/reports/
 data/processed/

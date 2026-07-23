@@ -151,6 +151,59 @@ def test_bf_bof_single_fuel_routes_leave_unused_fuels_zero(fuel_type: str) -> No
     assert result["coal_consumption_MWh"].sum() == pytest.approx(0.0)
 
 
+@pytest.mark.parametrize(
+    ("fuel_type", "factor_column"),
+    [
+        ("coal", "coal_co2_factor"),
+        ("natural_gas", "natural_gas_co2_factor"),
+        ("hybrid_hydrogen_natural_gas", "natural_gas_co2_factor"),
+    ],
+)
+def test_bf_bof_requires_explicit_applicable_fuel_co2_factor(
+    fuel_type: str,
+    factor_column: str,
+) -> None:
+    rows = _bf_bof_rows(fuel_type)
+    rows.loc[rows["technology"] == "bf_bof", factor_column] = float("nan")
+
+    with pytest.raises(ValueError, match=factor_column):
+        SteelPlant.from_rows("steel_1", rows)
+
+
+@pytest.mark.parametrize(
+    ("fuel_type", "factor_column"),
+    [
+        ("coal", "coal_co2_factor"),
+        ("natural_gas", "natural_gas_co2_factor"),
+        ("hybrid_hydrogen_natural_gas", "natural_gas_co2_factor"),
+    ],
+)
+def test_dri_requires_explicit_applicable_fuel_co2_factor(
+    fuel_type: str,
+    factor_column: str,
+) -> None:
+    rows = _steel_rows(include_optional=False)
+    dri = rows["technology"] == "dri_plant"
+    rows.loc[dri, "fuel_type"] = fuel_type
+    rows.loc[dri, "specific_coal_consumption"] = 4.0
+    rows.loc[dri, factor_column] = float("nan")
+
+    with pytest.raises(ValueError, match=factor_column):
+        SteelPlant.from_rows("steel_1", rows)
+
+
+def test_hydrogen_dri_does_not_require_fossil_fuel_co2_factors() -> None:
+    rows = _steel_rows(include_optional=False).drop(
+        columns=["natural_gas_co2_factor"], errors="ignore"
+    )
+
+    plant = SteelPlant.from_rows("steel_1", rows)
+
+    assert plant.dri_plant is not None
+    assert plant.dri_plant.coal_co2_factor_t_per_mwh == pytest.approx(0.0)
+    assert plant.dri_plant.natural_gas_co2_factor_t_per_mwh == pytest.approx(0.0)
+
+
 def test_bf_bof_hybrid_fuel_selects_cheaper_feasible_mix() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
     plant = SteelPlant.from_rows("steel_1", _bf_bof_rows("hybrid_hydrogen_natural_gas"))

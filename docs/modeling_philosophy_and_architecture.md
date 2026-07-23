@@ -292,6 +292,16 @@ hard-code one universal recipe; case-specific coefficients such as
 `specific_natural_gas_consumption`, `specific_iron_ore_consumption`, and
 `specific_lime_demand` remain plant inputs.
 
+Fuel-related direct emissions are also explicit `plants.csv` inputs in
+`tCO2/MWh_fuel`. `coal_co2_factor` is mandatory for coal-fuelled DRI and
+BF-BOF rows. `natural_gas_co2_factor` is mandatory for natural-gas and
+`hybrid_hydrogen_natural_gas` DRI and BF-BOF rows. Hydrogen-only routes do not
+require either fossil-fuel factor. The steel case generator writes explicit
+defaults of `0.34 tCO2/MWh_fuel` for coal and `0.20 tCO2/MWh_fuel` for natural
+gas; both can be overridden through its command-line options or by explicit
+columns in the steel master workbook. The plant model has no applicable-fuel
+fallback, so incomplete manual cases fail during input validation.
+
 Common dispatch columns across steel routes include:
 
 ```text

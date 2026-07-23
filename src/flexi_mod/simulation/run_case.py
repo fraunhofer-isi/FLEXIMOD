@@ -27,7 +27,7 @@ if str(SRC_DIR) not in sys.path:
 # Explicit catalogue of the generated input folders. These names are expanded into
 # ``available_examples`` below rather than discovered from the file system, so the
 # runner registry remains visible and reproducible in version control.
-_GENERATED_STUDY_FAMILIES = ("fokusH2", "fokusstrom", "technologiemix")
+_GENERATED_STUDY_FAMILIES = ("aktuellepolitiken", "hohenachfrage", "niedrigenachfrage") #"fokusH2", "fokusstrom", "technologiemix"
 _GENERATED_YEARS = ("2030", "2035", "2040", "2045")
 _GENERATED_ROUTE_VARIANTS = (
     "bf_bof_hybrid_hydrogen_natural_gas_electrolyser",
@@ -65,7 +65,7 @@ available_examples: dict[str, dict[str, str]] = {
 
 
 # Select the example to run when ``examples_to_run`` is empty.
-example = "fokusH2_2030_bf_bof_hybrid_hydrogen_natural_gas_electrolyser"
+example = "aktuellepolitiken_2030_bf_bof_hybrid_hydrogen_natural_gas_electrolyser"
 
 # Run every generated case except the coal-based DRI-EAF route. Order is preserved.
 # Add further names to ``excluded_examples_from_run`` when a case should be skipped.

@@ -41,7 +41,7 @@ import pandas as pd
 
 DEFAULT_INPUT_PATH = Path(
     r"C:\Users\khm\ownCloud\Dropbox\Ph.D\My publications\Journal paper\4\Data"
-    r"\Assume\Output\fokusH2_2045\market_meta.csv"
+    r"\Assume\Output\niedrigenachfrage_2045\market_meta.csv"
 )
 
 OUTPUT_COLUMNS = [

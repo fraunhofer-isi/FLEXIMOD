@@ -295,13 +295,13 @@ class DRIPlant:
     max_power_mw: float
     min_power_mw: float
     fuel_type: str
+    natural_gas_co2_factor_t_per_mwh: float
+    coal_co2_factor_t_per_mwh: float
     ramp_up_mw_per_step: float | None = None
     ramp_down_mw_per_step: float | None = None
     min_operating_steps: int = 0
     min_down_steps: int = 0
     initial_operational_status: int = 1
-    natural_gas_co2_factor_t_per_mwh: float = 0.5
-    coal_co2_factor_t_per_mwh: float = 0.0
 
     @classmethod
     def from_row(cls, row: pd.Series) -> DRIPlant:
@@ -345,20 +345,17 @@ class DRIPlant:
                 _first_present(row.get("min_down_steps"), row.get("min_down_time")), default=0
             ),
             initial_operational_status=_as_int(row.get("initial_operational_status"), default=1),
-            natural_gas_co2_factor_t_per_mwh=_as_float(
-                row.get("natural_gas_co2_factor"),
+            natural_gas_co2_factor_t_per_mwh=_fuel_co2_factor(
+                row,
                 "natural_gas_co2_factor",
-                # TODO: Make this input mandatory for natural-gas and hybrid DRI
-                # routes once all generated plants.csv files provide explicit,
-                # literature-grounded emission factors. Do not retain a hidden
-                # route-independent default.
-                default=0.5,
+                fuel_type,
+                required_for={NATURAL_GAS, HYBRID_HYDROGEN_NATURAL_GAS},
             ),
-            coal_co2_factor_t_per_mwh=_as_float(
-                # TODO: Make this input mandatory for coal DRI routes. The current
-                # generated plants.csv files omit the column, so the zero fallback
-                # excludes coal emissions and their CO2 cost.
-                row.get("coal_co2_factor"), "coal_co2_factor", default=0.0
+            coal_co2_factor_t_per_mwh=_fuel_co2_factor(
+                row,
+                "coal_co2_factor",
+                fuel_type,
+                required_for={COAL},
             ),
         )
 
@@ -725,19 +722,17 @@ class BlastFurnaceBasicOxygenFurnace:
             max_power_mw=_as_float(row.get("max_power"), "max_power"),
             min_power_mw=_as_float(row.get("min_power"), "min_power", default=0.0),
             fuel_type=fuel_type,
-            coal_co2_factor_t_per_mwh=_as_float(
-                # TODO: Make this input mandatory for coal BF-BOF routes when the
-                # generated input matrix includes them; zero would omit material
-                # direct emissions and their CO2 cost.
-                row.get("coal_co2_factor"), "coal_co2_factor", default=0.0
+            coal_co2_factor_t_per_mwh=_fuel_co2_factor(
+                row,
+                "coal_co2_factor",
+                fuel_type,
+                required_for={COAL},
             ),
-            natural_gas_co2_factor_t_per_mwh=_as_float(
-                row.get("natural_gas_co2_factor"),
+            natural_gas_co2_factor_t_per_mwh=_fuel_co2_factor(
+                row,
                 "natural_gas_co2_factor",
-                # TODO: Make this input mandatory for natural-gas and hybrid BF-BOF
-                # routes. Current generated plants.csv files omit it, so the zero
-                # fallback excludes natural-gas emissions and their CO2 cost.
-                default=0.0,
+                fuel_type,
+                required_for={NATURAL_GAS, HYBRID_HYDROGEN_NATURAL_GAS},
             ),
             lime_co2_factor_t_per_t=_as_float(row.get("lime_co2_factor"), "lime_co2_factor"),
             ramp_up_mw_per_step=_as_optional_float(row.get("ramp_up")),
@@ -1340,6 +1335,23 @@ def _fuel_specific_consumption(
     *,
     required_for: set[str],
 ) -> float:
+    value = _as_float(row.get(column), column, default=None if fuel_type in required_for else 0.0)
+    if fuel_type in required_for and value <= 0:
+        raise ValueError(
+            f"Plant parameter '{column}' must be positive when fuel_type='{fuel_type}'"
+        )
+    return value
+
+
+def _fuel_co2_factor(
+    row: pd.Series,
+    column: str,
+    fuel_type: str,
+    *,
+    required_for: set[str],
+) -> float:
+    """Load an explicit positive fuel-emission factor when that fuel can be consumed."""
+
     value = _as_float(row.get(column), column, default=None if fuel_type in required_for else 0.0)
     if fuel_type in required_for and value <= 0:
         raise ValueError(
