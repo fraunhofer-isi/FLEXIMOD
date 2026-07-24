@@ -818,6 +818,13 @@ class HybridETESGasStrategy(BaseStrategy):
         _validate_bid_rules("afrr_capacity", min_bid_mw, bid_increment_mw)
         heat_demand_mwh = forecasts[plant.heat_demand_column].astype(float) * timestep_hours
         expected_soc = plant.etes.initial_soc_mwh if initial_soc_mwh is None else initial_soc_mwh
+        # Chain the projected storage level across blocks. A block's charge headroom is what
+        # remains after the earlier reserved blocks are (worst-case) fully activated and the
+        # process has drained the store. Sizing every block against the same day-start
+        # snapshot instead lets consecutive reserved blocks each claim the one shared buffer
+        # in full, over-committing capacity the plant cannot sustain under continuous
+        # activation (the store saturates and the surplus is curtailed).
+        projected_soc = expected_soc
         # Under atypical grid use, do not commit aFRR-down capacity in blocks that overlap a
         # high-load window: a mandatory capacity-backed activation there would raise the billed
         # window peak and forfeit the §19(2) capacity-charge saving.
@@ -850,7 +857,7 @@ class HybridETESGasStrategy(BaseStrategy):
                 min_activation_price_margin = float("nan")
             storage_capacity_mw = max(
                 0.0,
-                (plant.etes.max_capacity_mwh - expected_soc)
+                (plant.etes.max_capacity_mwh - projected_soc)
                 / (plant.etes.efficiency_charge * block_duration_h),
             )
             # Direct use: charging straight into the heat demand is deliverable even
@@ -912,6 +919,20 @@ class HybridETESGasStrategy(BaseStrategy):
                 reserved_mw = 0.0
             else:
                 reserved_mw = compliant_capacity
+            # Advance the projected storage level for the next block, assuming this block's
+            # reserved capacity is fully activated (the worst case a delivery guarantee must
+            # survive) while the process keeps draining the store. Mirrors the dispatch-side
+            # projection in _project_reserved_capacity_claim so sizing and delivery agree.
+            block_heat_thermal_mwh = float(heat_demand_mwh.loc[mask].sum())
+            soc_in_mwh = reserved_mw * block_duration_h * plant.etes.efficiency_charge
+            soc_out_mwh = min(
+                block_heat_thermal_mwh / plant.etes.efficiency_discharge,
+                plant.etes.max_power_discharge_mw * block_duration_h,
+            )
+            projected_soc = min(
+                plant.etes.max_capacity_mwh,
+                max(0.0, projected_soc + soc_in_mwh - soc_out_mwh),
+            )
             settlement_price = self.capacity_settlement_price(
                 capacity_bid_price,
                 clearing_price,

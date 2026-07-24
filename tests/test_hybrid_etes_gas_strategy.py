@@ -944,6 +944,68 @@ def test_reserved_capacity_survives_continuous_activation_with_full_storage(
     assert not [w for w in recwarn if "deliver under continuous activation" in str(w.message)]
 
 
+def test_consecutive_capacity_blocks_share_one_storage_buffer(
+    tmp_path: Path,
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    """Consecutive reserved blocks must chain the storage projection, not each
+    claim the full day-start buffer.
+
+    Eight back-to-back 15-min capacity products face continuous full activation
+    against a small ETES. Sizing every block off the same start-of-window SOC
+    would let each block promise the whole free buffer, so the store saturates a
+    few blocks in and the later promises are curtailed. Chaining the projected
+    SOC across blocks shrinks the later bids to what the process throughput can
+    still absorb, so every reserved MW stays deliverable.
+    """
+    case_dir = tmp_path / "consecutive_capacity_case"
+    case_dir.mkdir()
+    _write_config(
+        case_dir / "config.yaml",
+        idc_enabled=True,
+        afrr_enabled=True,
+        afrr_capacity_enabled=True,
+        afrr_capacity_product_length="15min",
+    )
+    # Small store relative to sustained charging: one 15-min block never fills it,
+    # but several consecutive fully-activated blocks do.
+    _write_plants(case_dir / "plants.csv", storage_initial_soc=0.0, storage_capacity=4.0)
+    _write_forecasts(
+        case_dir / "forecasts_df.csv",
+        da_prices=[120.0] * 8,  # expensive DA -> the only storage fill is aFRR activation
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[7.0] * 8,  # system calls the full charge power every step
+        afrr_capacity_prices=[100.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+
+    results = _run_case(case_dir, tmp_path)
+    dispatch = results["dispatch"]
+    market = results["market"]
+    blocks = results["afrr_capacity_blocks"]
+
+    reserved = blocks.loc[blocks["bid_eligible"]].reset_index(drop=True)
+    # More than one consecutive block is actually bid, so the chaining is exercised.
+    assert len(reserved) >= 3
+
+    # The chained projection downsizes later blocks once the buffer is claimed:
+    # a later reserved block must promise strictly less than the first.
+    assert reserved["reserved_capacity_MW"].iloc[-1] < reserved["reserved_capacity_MW"].iloc[0]
+
+    # Every reserved MW stays deliverable: continuous activation never overflows
+    # the store and nothing is curtailed.
+    assert (dispatch["etes_soc_MWh"] <= 4.0 + 1e-6).all()
+    assert dispatch["afrr_curtailment_MWh"].sum() == pytest.approx(0.0)
+    assert market["afrr_energy_capacity_backed_activated_MWh_el"].to_numpy() == pytest.approx(
+        market["afrr_capacity_reserved_MWh"].to_numpy()
+    )
+
+    # The bid sizing is now self-consistent with the plant, so the delivery
+    # guarantee never has to warn that it cannot honour the reservation.
+    assert not [w for w in recwarn if "deliver under continuous activation" in str(w.message)]
+
+
 def test_pay_as_cleared_capacity_strategy_uses_marginal_price(
     tmp_path: Path,
 ) -> None:
