@@ -29,6 +29,9 @@ from flexi_mod.plants.technologies import (
     first_non_empty,
 )
 
+ROLLING_DEMAND_TOLERANCE_T = 1e-6
+FINAL_WINDOW_RECONCILIATION_T = 1e-7
+
 
 @dataclass(frozen=True)
 class SteelDispatchSignals:
@@ -262,11 +265,37 @@ class SteelPlant(BasePlant):
             try:
                 horizon_result = self._solve_model(config, horizon, model)
             except RuntimeError as exc:
-                raise RuntimeError(
-                    f"Steel rolling window {window_number} starting "
-                    f"{horizon.index[0]} is infeasible: target={horizon_target:g} t, "
-                    f"inherited backlog={max(0.0, state.demand_balance_t):g} t"
-                ) from exc
+                if is_final_window and remaining_demand > FINAL_WINDOW_RECONCILIATION_T:
+                    reconciled_target = remaining_demand - FINAL_WINDOW_RECONCILIATION_T
+                    reconciled_model = self._build_model(
+                        config,
+                        horizon,
+                        signals,
+                        initial_state=state,
+                        steel_demand_override_t=reconciled_target,
+                        commit_steps=commit_count,
+                        minimum_commit_output_t=reconciled_target,
+                        demand_mode=demand_mode,
+                    )
+                    try:
+                        horizon_result = self._solve_model(
+                            config,
+                            horizon,
+                            reconciled_model,
+                        )
+                    except RuntimeError:
+                        raise RuntimeError(
+                            f"Steel rolling window {window_number} starting "
+                            f"{horizon.index[0]} is infeasible: target={horizon_target:g} t, "
+                            f"inherited backlog={max(0.0, state.demand_balance_t):g} t"
+                        ) from exc
+                    horizon_target = reconciled_target
+                else:
+                    raise RuntimeError(
+                        f"Steel rolling window {window_number} starting "
+                        f"{horizon.index[0]} is infeasible: target={horizon_target:g} t, "
+                        f"inherited backlog={max(0.0, state.demand_balance_t):g} t"
+                    ) from exc
 
             implemented = horizon_result.iloc[:commit_count].copy()
             produced_before = state.cumulative_steel_output_t
@@ -295,12 +324,12 @@ class SteelPlant(BasePlant):
             window_number += 1
 
         result = pd.concat(implemented_frames).sort_index()
-        if abs(state.cumulative_steel_output_t - total_demand) > 1e-6:
+        if abs(state.cumulative_steel_output_t - total_demand) > ROLLING_DEMAND_TOLERANCE_T:
             raise RuntimeError(
                 "Steel rolling dispatch ended without satisfying total demand: "
                 f"produced={state.cumulative_steel_output_t:g} t, target={total_demand:g} t"
             )
-        if abs(state.demand_balance_t) > 1e-6:
+        if abs(state.demand_balance_t) > ROLLING_DEMAND_TOLERANCE_T:
             raise RuntimeError(
                 f"Steel rolling dispatch ended with demand balance {state.demand_balance_t:g} t"
             )
@@ -435,12 +464,12 @@ class SteelPlant(BasePlant):
             window_number += 1
 
         result = pd.concat(implemented_frames).sort_index()
-        if abs(state.cumulative_steel_output_t - total_demand) > 1e-6:
+        if abs(state.cumulative_steel_output_t - total_demand) > ROLLING_DEMAND_TOLERANCE_T:
             raise RuntimeError(
                 "Electrified-steel dispatch ended without satisfying total demand: "
                 f"produced={state.cumulative_steel_output_t:g} t, target={total_demand:g} t"
             )
-        if abs(state.demand_balance_t) > 1e-6:
+        if abs(state.demand_balance_t) > ROLLING_DEMAND_TOLERANCE_T:
             raise RuntimeError(
                 f"Electrified-steel dispatch ended with demand balance {state.demand_balance_t:g} t"
             )
@@ -795,6 +824,12 @@ class SteelPlant(BasePlant):
                 if solver is None or not solver.available(exception_flag=False):
                     errors.append(f"{solver_name}: unavailable")
                     continue
+                if solver_name.lower() in {"highs", "appsi_highs"}:
+                    # Thousands of rolling solves feed committed output into the
+                    # next demand balance. Tighten HiGHS' primal tolerance so those
+                    # per-window residuals remain below the model's 1e-6 t annual
+                    # demand-reconciliation tolerance.
+                    solver.options["primal_feasibility_tolerance"] = 1e-9
                 result = solver.solve(model, tee=config.solver_tee)
             except (ApplicationError, NoFeasibleSolutionError, RuntimeError) as exc:
                 errors.append(f"{solver_name}: {exc}")

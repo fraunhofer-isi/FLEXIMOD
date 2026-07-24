@@ -420,6 +420,30 @@ def test_rolling_scalar_target_is_committed_once_and_completed_exactly() -> None
     assert set(result["steel_demand_total_t"]) == {4.0}
 
 
+def test_final_rolling_window_reconciles_only_numerical_infeasibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _rolling_config(horizon_hours=2.0, step_hours=2.0)
+    plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=False))
+    forecasts = _extended_steel_forecasts()
+    solve_model = plant._solve_model
+    attempted_targets: list[float] = []
+
+    def fail_exact_target_once(config, forecasts, model):
+        attempted_targets.append(float(model.steel_demand.value))
+        if len(attempted_targets) == 1:
+            raise RuntimeError("synthetic numerical boundary")
+        return solve_model(config, forecasts, model)
+
+    monkeypatch.setattr(plant, "_solve_model", fail_exact_target_once)
+
+    result = plant.solve_rolling(config, forecasts, _signals())
+
+    assert attempted_targets == pytest.approx([4.0, 3.9999999])
+    assert result["steel_output_t"].sum() == pytest.approx(4.0, abs=1e-6)
+    assert result["steel_demand_balance_t"].iloc[-1] == pytest.approx(0.0, abs=1e-6)
+
+
 def test_rolling_profile_carries_backlog_and_credit_between_windows() -> None:
     config = _rolling_config(horizon_hours=1.0, step_hours=0.5)
     rows = _steel_rows(include_optional=False)
