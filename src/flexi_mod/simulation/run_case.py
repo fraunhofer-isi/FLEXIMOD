@@ -27,23 +27,33 @@ if str(SRC_DIR) not in sys.path:
 # Explicit catalogue of the generated input folders. These names are expanded into
 # ``available_examples`` below rather than discovered from the file system, so the
 # runner registry remains visible and reproducible in version control.
-_GENERATED_STUDY_FAMILIES = ("aktuellepolitiken", "hohenachfrage", "niedrigenachfrage") #"fokusH2", "fokusstrom", "technologiemix"
+_GENERATED_STUDY_FAMILIES = (
+    "aktuellepolitiken",
+    # "hohenachfrage",
+    # "niedrigenachfrage",
+)
+# Other generated families available for later selection:
+# "fokusH2", "fokusstrom", "technologiemix"
 _GENERATED_YEARS = ("2030", "2035", "2040", "2045")
 _GENERATED_ROUTE_VARIANTS = (
-    "bf_bof_hybrid_hydrogen_natural_gas_electrolyser",
-    "bf_bof_hybrid_hydrogen_natural_gas_external",
-    "bf_bof_hydrogen_electrolyser",
-    "dri_bof_coal_external",
-    "dri_bof_hybrid_hydrogen_natural_gas_electrolyser",
-    "dri_bof_hydrogen_electrolyser",
-    "dri_bof_hydrogen_external",
-    "dri_bof_natural_gas_external",
-    "dri_eaf_coal_external",
-    "dri_eaf_hybrid_hydrogen_natural_gas_electrolyser",
-    "dri_eaf_hybrid_hydrogen_natural_gas_external",
-    "dri_eaf_hydrogen_electrolyser",
-    "dri_eaf_hydrogen_external",
-    "dri_eaf_natural_gas_external",
+    # "bf_bof_coal_external",
+    # "bf_bof_hybrid_hydrogen_natural_gas_electrolyser",
+    # "bf_bof_hybrid_hydrogen_natural_gas_external",
+    # "bf_bof_hydrogen_electrolyser",
+    # "bf_bof_hydrogen_external",
+    # "bf_bof_natural_gas_external",
+    # "dri_bof_coal_external",
+    # "dri_bof_hybrid_hydrogen_natural_gas_electrolyser",
+    "dri_bof_hybrid_hydrogen_natural_gas_external",
+    # "dri_bof_hydrogen_electrolyser",
+    # "dri_bof_hydrogen_external",
+    # "dri_bof_natural_gas_external",
+    # "dri_eaf_coal_external",
+    # "dri_eaf_hybrid_hydrogen_natural_gas_electrolyser",
+    # "dri_eaf_hybrid_hydrogen_natural_gas_external", #todo
+    # "dri_eaf_hydrogen_electrolyser",
+    # "dri_eaf_hydrogen_external",
+    # "dri_eaf_natural_gas_external",
 )
 GENERATED_EXAMPLE_NAMES = tuple(
     f"{family}_{year}_{variant}"
@@ -65,13 +75,11 @@ available_examples: dict[str, dict[str, str]] = {
 
 
 # Select the example to run when ``examples_to_run`` is empty.
-example = "aktuellepolitiken_2030_bf_bof_hybrid_hydrogen_natural_gas_electrolyser"
+example = "aktuellepolitiken_2030_dri_eaf_hybrid_hydrogen_natural_gas_external"
 
-# Run every generated case except the coal-based DRI-EAF route. Order is preserved.
+# Run every generated case. Order is preserved.
 # Add further names to ``excluded_examples_from_run`` when a case should be skipped.
-excluded_examples_from_run = {
-    name for name in GENERATED_EXAMPLE_NAMES if name.endswith("_dri_eaf_coal_external")
-}
+excluded_examples_from_run: set[str] = set()
 examples_to_run: list[str] = [
     name for name in GENERATED_EXAMPLE_NAMES if name not in excluded_examples_from_run
 ]
@@ -234,9 +242,7 @@ def _run_selected_examples(args: argparse.Namespace, logger: Any) -> None:
     logger.info(f"Sequential run started: {len(selected)} selected example(s).")
     failures: list[tuple[str, Exception]] = []
     for number, selected_example in enumerate(selected, start=1):
-        logger.info(
-            f"\nSelected example {number}/{len(selected)}: {selected_example}"
-        )
+        logger.info(f"\nSelected example {number}/{len(selected)}: {selected_example}")
         try:
             _run_one_case(args, logger, selected_example=selected_example)
         except KeyboardInterrupt:
