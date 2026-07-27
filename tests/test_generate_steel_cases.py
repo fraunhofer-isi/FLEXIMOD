@@ -13,9 +13,42 @@ from scripts.generate_steel_cases import (
     CO2_FACTOR_COLUMNS,
     add_missing_material_prices,
     load_scenario_forecast,
+    steel_database_for_scenario,
     write_forecasts,
     write_plants_csv,
 )
+
+
+@pytest.mark.parametrize(
+    ("scenario", "workbook_name"),
+    [
+        ("aktuellepolitiken", "industrial_dsm_units_steel_AktuellePolitiken_sized.xlsx"),
+        ("hohenachfrage", "industrial_dsm_units_steel_HoheNachfrage_sized.xlsx"),
+        ("niedrigenachfrage", "industrial_dsm_units_steel_Niedrigenachfrage_sized.xlsx"),
+        (
+            "fokusH2",
+            "industrial_dsm_units_steel_fokusStrom_fokusH2_technologiemix_sized.xlsx",
+        ),
+        (
+            "fokusStrom",
+            "industrial_dsm_units_steel_fokusStrom_fokusH2_technologiemix_sized.xlsx",
+        ),
+        (
+            "technologiemix",
+            "industrial_dsm_units_steel_fokusStrom_fokusH2_technologiemix_sized.xlsx",
+        ),
+    ],
+)
+def test_scenario_family_selects_sized_steel_workbook(
+    scenario: str,
+    workbook_name: str,
+) -> None:
+    assert steel_database_for_scenario(scenario).name == workbook_name
+
+
+def test_unknown_scenario_family_has_no_silent_workbook_fallback() -> None:
+    with pytest.raises(ValueError, match="No steel-plant workbook.*unknown"):
+        steel_database_for_scenario("unknown")
 
 
 def test_missing_material_prices_are_added_without_overwriting_sources() -> None:

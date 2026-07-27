@@ -10,9 +10,11 @@ Source data lives OUTSIDE the repository (a PhD dataset):
   ``<EXTERNAL_OUTPUT_DIR>/<scenario>_<year>/forecasts_df.csv`` — 15-min market/commodity
   prices plus one demand column per physical plant. Demand headers may be bare IDs such as
   ``P100000120423`` or already end in ``_steel_demand``.
-* Plant master:
-  ``industrial_dsm_units_steel.xlsx`` (sheet ``industrial_dsm_units``), keyed by route in the
-  ``name`` column (``P<id>_<route>``); the ``technology`` column is the process step.
+* Scenario-sized plant masters:
+  ``industrial_dsm_units_steel_scenarios_sized/*.xlsx`` (sheet
+  ``industrial_dsm_units``), keyed by route in the ``name`` column
+  (``P<id>_<route>``); the ``technology`` column is the process step. Each
+  scenario family is mapped explicitly to its correctly sized workbook.
 
 Key fact: steel demand is **year-specific and per physical plant, not route-specific**. Every
 route uses the same 9 physical plant IDs, so each (scenario, year, route) case reuses that year's
@@ -51,7 +53,21 @@ import pandas as pd
 # Machine-specific external source paths — adjust if the dataset moves.
 EXTERNAL_BASE = Path(r"C:/Users/khm/ownCloud/Dropbox/Ph.D/My publications/Journal paper/4/Data")
 EXTERNAL_OUTPUT_DIR = EXTERNAL_BASE / "Assume" / "Output"
-STEEL_DB_XLSX = EXTERNAL_BASE / "steel plant database" / "industrial_dsm_units_steel.xlsx"
+STEEL_DB_DIR = EXTERNAL_BASE / "steel plant database" / "industrial_dsm_units_steel_scenarios_sized"
+STEEL_DB_BY_SCENARIO = {
+    "aktuellepolitiken": STEEL_DB_DIR / "industrial_dsm_units_steel_AktuellePolitiken_sized.xlsx",
+    "hohenachfrage": STEEL_DB_DIR / "industrial_dsm_units_steel_HoheNachfrage_sized.xlsx",
+    "niedrigenachfrage": (STEEL_DB_DIR / "industrial_dsm_units_steel_Niedrigenachfrage_sized.xlsx"),
+    "fokush2": (
+        STEEL_DB_DIR / "industrial_dsm_units_steel_fokusStrom_fokusH2_technologiemix_sized.xlsx"
+    ),
+    "fokusstrom": (
+        STEEL_DB_DIR / "industrial_dsm_units_steel_fokusStrom_fokusH2_technologiemix_sized.xlsx"
+    ),
+    "technologiemix": (
+        STEEL_DB_DIR / "industrial_dsm_units_steel_fokusStrom_fokusH2_technologiemix_sized.xlsx"
+    ),
+}
 EXCEL_SHEET = "industrial_dsm_units"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -166,8 +182,29 @@ def load_template_config_text() -> str:
 
 
 # --------------------------------------------------------------------------- excel
-def load_excel_plants() -> pd.DataFrame:
-    frame = pd.read_excel(STEEL_DB_XLSX, sheet_name=EXCEL_SHEET, engine="openpyxl")
+def steel_database_for_scenario(scenario: str) -> Path:
+    """Return the explicitly configured plant workbook for a scenario family."""
+    scenario_key = scenario.strip().casefold()
+    try:
+        return STEEL_DB_BY_SCENARIO[scenario_key]
+    except KeyError as exc:
+        supported = ", ".join(sorted(STEEL_DB_BY_SCENARIO))
+        raise ValueError(
+            f"No steel-plant workbook is configured for scenario family '{scenario}'. "
+            f"Supported families: {supported}"
+        ) from exc
+
+
+def load_excel_plants(workbook: Path) -> pd.DataFrame:
+    """Load and annotate one scenario-sized steel-plant workbook."""
+    frame = pd.read_excel(workbook, sheet_name=EXCEL_SHEET, engine="openpyxl")
+    required = {"name", "technology"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(
+            f"Steel-plant workbook '{workbook}' is missing required column(s): "
+            + ", ".join(sorted(missing))
+        )
     routes = frame["name"].map(parse_plant_name)
     frame = frame.copy()
     frame["_pid"] = [pid for pid, _ in routes]
@@ -372,17 +409,9 @@ def main() -> None:
 
     if not EXTERNAL_OUTPUT_DIR.exists():
         raise SystemExit(f"External scenario dir not found: {EXTERNAL_OUTPUT_DIR}")
-    if not STEEL_DB_XLSX.exists():
-        raise SystemExit(f"Steel plant Excel not found: {STEEL_DB_XLSX}")
+    if not STEEL_DB_DIR.exists():
+        raise SystemExit(f"Scenario-sized steel plant directory not found: {STEEL_DB_DIR}")
 
-    excel = load_excel_plants()
-    excel_routes = set(excel["_route"].dropna().unique())
-    missing_excel_routes = sorted(set(TECHNOLOGY_ROUTES) - excel_routes)
-    if missing_excel_routes:
-        raise SystemExit(
-            "Configured technology routes are missing from the steel plant database: "
-            + ", ".join(missing_excel_routes)
-        )
     template_cols = load_template_plants_columns()
     charge_specs = load_template_charge_specs()
     config_text = load_template_config_text()
@@ -395,12 +424,34 @@ def main() -> None:
 
     written = 0
     skipped: list[str] = []
+    excel_cache: dict[Path, pd.DataFrame] = {}
     for folder in scenario_folders:
         forecast_path = folder / "forecasts_df.csv"
         if not forecast_path.exists():
             skipped.append(f"{folder.name}: no forecasts_df.csv")
             continue
-        _, year = scenario_year(folder.name)
+        scenario, year = scenario_year(folder.name)
+        try:
+            workbook = steel_database_for_scenario(scenario)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        if not workbook.exists():
+            raise SystemExit(
+                f"Steel plant Excel for scenario family '{scenario}' not found: {workbook}"
+            )
+        if workbook not in excel_cache:
+            excel = load_excel_plants(workbook)
+            excel_routes = set(excel["_route"].dropna().unique())
+            missing_excel_routes = sorted(set(TECHNOLOGY_ROUTES) - excel_routes)
+            if missing_excel_routes:
+                raise SystemExit(
+                    f"Steel plant Excel '{workbook}' is missing configured technology routes: "
+                    + ", ".join(missing_excel_routes)
+                )
+            excel_cache[workbook] = excel
+        excel = excel_cache[workbook]
+        print(f"{folder.name}: plant workbook = {workbook.name}")
+
         time_col, market_cols, demand_by_id, frame = load_scenario_forecast(folder)
         missing_material_prices = [
             column for column in ("iron_ore_price", "lime_price") if column not in frame.columns

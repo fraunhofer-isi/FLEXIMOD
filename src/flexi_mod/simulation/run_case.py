@@ -28,14 +28,14 @@ if str(SRC_DIR) not in sys.path:
 # ``available_examples`` below rather than discovered from the file system, so the
 # runner registry remains visible and reproducible in version control.
 _GENERATED_STUDY_FAMILIES = (
-    "aktuellepolitiken",
+    # "aktuellepolitiken",
     "hohenachfrage",
-    "niedrigenachfrage",
+    # "niedrigenachfrage",
 )
 # Other generated families available for later selection:
 # "fokusH2", "fokusstrom", "technologiemix"
 _GENERATED_YEARS = (
-                    "2030", 
+                    # "2030", 
                     "2035", 
                     "2040", 
                     "2045"
