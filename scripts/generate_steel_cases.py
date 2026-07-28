@@ -51,7 +51,7 @@ import pandas as pd
 
 # --------------------------------------------------------------------------- config
 # Machine-specific external source paths — adjust if the dataset moves.
-EXTERNAL_BASE = Path(r"C:/Users/khm/ownCloud/Dropbox/Ph.D/My publications/Journal paper/4/Data")
+EXTERNAL_BASE = Path(r"C:/Users/khm/ownCloud (2)/Dropbox/Ph.D/My publications/Journal paper/4/Data")
 EXTERNAL_OUTPUT_DIR = EXTERNAL_BASE / "Assume" / "Output"
 STEEL_DB_DIR = EXTERNAL_BASE / "steel plant database" / "industrial_dsm_units_steel_scenarios_sized"
 STEEL_DB_BY_SCENARIO = {
