@@ -56,7 +56,7 @@ _GENERATED_ROUTE_VARIANTS = (
     # "dri_bof_natural_gas_external",
     # "dri_eaf_coal_external",
     # "dri_eaf_hybrid_hydrogen_natural_gas_electrolyser",
-    "dri_eaf_hybrid_hydrogen_natural_gas_external",
+    # "dri_eaf_hybrid_hydrogen_natural_gas_external",
     "dri_eaf_hydrogen_electrolyser",
     "dri_eaf_hydrogen_external",
     "dri_eaf_natural_gas_external",
