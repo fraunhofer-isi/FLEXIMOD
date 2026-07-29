@@ -29,37 +29,37 @@ if str(SRC_DIR) not in sys.path:
 # runner registry remains visible and reproducible in version control.
 _GENERATED_STUDY_FAMILIES = (
     # "aktuellepolitiken",
-    "hohenachfrage",
+    "fokusH2",
     # "niedrigenachfrage",
 )
 # Other generated families available for later selection:
 # "fokusH2", "fokusstrom", "technologiemix"
 _GENERATED_YEARS = (
-    # "2030",
-    # "2035",
-    # "2040",
+    "2030",
+    "2035",
+    "2040",
     "2045",
 )
 
 _GENERATED_ROUTE_VARIANTS = (
-    # "bf_bof_coal_external",
-    "bf_bof_hybrid_hydrogen_natural_gas_electrolyser",  #this
-    "bf_bof_hybrid_hydrogen_natural_gas_external",  #this
-    # "bf_bof_hydrogen_electrolyser", #this
-    # # "bf_bof_hydrogen_external",
-    # # "bf_bof_natural_gas_external",
-    # "dri_bof_coal_external", #this
-    # "dri_bof_hybrid_hydrogen_natural_gas_electrolyser",  #this
-    # # "dri_bof_hybrid_hydrogen_natural_gas_external",
-    # "dri_bof_hydrogen_electrolyser",  #this
-    # "dri_bof_hydrogen_external",  #this
-    # "dri_bof_natural_gas_external",  #this
-    # # "dri_eaf_coal_external",
-    # "dri_eaf_hybrid_hydrogen_natural_gas_electrolyser",  #this
-    # "dri_eaf_hybrid_hydrogen_natural_gas_external", #this
-    # "dri_eaf_hydrogen_electrolyser",  #this
-    # "dri_eaf_hydrogen_external", #this
-    # "dri_eaf_natural_gas_external",  #this
+    "bf_bof_coal_external",
+    "bf_bof_hybrid_hydrogen_natural_gas_electrolyser",
+    "bf_bof_hybrid_hydrogen_natural_gas_external",
+    "bf_bof_hydrogen_electrolyser",
+    "bf_bof_hydrogen_external",
+    "bf_bof_natural_gas_external",
+    "dri_bof_coal_external", 
+    "dri_bof_hybrid_hydrogen_natural_gas_electrolyser",
+    "dri_bof_hybrid_hydrogen_natural_gas_external",
+    "dri_bof_hydrogen_electrolyser", 
+    "dri_bof_hydrogen_external",
+    "dri_bof_natural_gas_external",
+    "dri_eaf_coal_external",
+    "dri_eaf_hybrid_hydrogen_natural_gas_electrolyser", 
+    "dri_eaf_hybrid_hydrogen_natural_gas_external",
+    "dri_eaf_hydrogen_electrolyser",
+    "dri_eaf_hydrogen_external",
+    "dri_eaf_natural_gas_external",
 )
 GENERATED_EXAMPLE_NAMES = tuple(
     f"{family}_{year}_{variant}"
