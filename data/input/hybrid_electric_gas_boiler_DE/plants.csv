@@ -1,0 +1,3 @@
+name,unit_type,technology,node,objective,demand,fuel_type,max_power,min_power,ramp_up,ramp_down,efficiency,gas_emissions_factor_kg_per_mwh
+plant_1,steam_plant,boiler,north,min_variable_cost,plant_1_heat_demand,natural_gas,8,0,,,0.90,201
+plant_1,steam_plant,electric_boiler,north,min_variable_cost,plant_1_heat_demand,electricity,8,0,,,0.95,
