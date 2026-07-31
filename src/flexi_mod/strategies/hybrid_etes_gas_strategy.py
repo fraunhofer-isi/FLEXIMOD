@@ -30,6 +30,7 @@ ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH = 0.0
 IDC_MARGIN_EUR_PER_MWH = 0.0
 AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH = 0.0
 AFRR_CAPACITY_MARGIN_EUR_PER_MW_H = 0.0
+AFRR_ENERGY_BID_MARGIN_SETTING = "afrr_energy_bid_margin_eur_per_mwh"
 
 # aFRR clearing mechanisms. ``pay_as_bid`` pays each awarded bid its own
 # submitted price; ``pay_as_cleared`` pays every awarded bid the marginal
@@ -56,6 +57,7 @@ class HybridETESGasStrategy(BaseStrategy):
         self.config = config
         self._capacity_clearing_mechanism = self._resolve_capacity_clearing_mechanism(config)
         self._energy_clearing_mechanism = self._resolve_energy_clearing_mechanism(config)
+        self.afrr_energy_bid_margin_eur_per_mwh = configured_afrr_energy_bid_margin(config)
         self.afrr_energy_data_quality_summary = pd.DataFrame()
         self.afrr_capacity_block_summary = pd.DataFrame()
         self._afrr_down_energy_data_cache = {}
@@ -473,7 +475,14 @@ class HybridETESGasStrategy(BaseStrategy):
         ) / plant.etes.efficiency_charge
 
         valid_price = clean_afrr["afrr_price_available"]
-        afrr_energy_bid_price = electricity_benchmark + AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH
+        afrr_energy_delivered_bid_price = (
+            electricity_benchmark - self.afrr_energy_bid_margin_eur_per_mwh
+        )
+        afrr_energy_bid_price = raw_electricity_bid_price(
+            afrr_energy_delivered_bid_price,
+            tax_rate,
+            additional_charges_t,
+        )
         delivered_afrr_price = self._delivered_electricity_price(
             clean_afrr["afrr_energy_down_price_EUR_per_MWh"],
             tax_rate,
@@ -483,7 +492,7 @@ class HybridETESGasStrategy(BaseStrategy):
         # the market clearing price plus industrial electricity charges must stay
         # below the benchmark bid price derived from gas-based heat value.
         price_allowed = (
-            (delivered_afrr_price <= afrr_energy_bid_price)
+            (delivered_afrr_price <= afrr_energy_delivered_bid_price)
             & valid_price
             & ~self._grid_charging_block(plant, forecasts)
         )
@@ -562,6 +571,7 @@ class HybridETESGasStrategy(BaseStrategy):
             afrr_energy_bid_mwh=bid_upper_bound,
             afrr_energy_activated_mwh=activated,
             afrr_energy_bid_price=afrr_energy_bid_price,
+            afrr_energy_delivered_bid_price=afrr_energy_delivered_bid_price,
             afrr_energy_capacity_backed_bid_mwh=split["afrr_energy_capacity_backed_bid_MWh"],
             afrr_energy_free_bid_mwh=split["afrr_energy_free_bid_MWh"],
             afrr_energy_capacity_backed_activated_mwh=split[
@@ -799,7 +809,9 @@ class HybridETESGasStrategy(BaseStrategy):
             additional_charges_t,
         )
         opportunity_cost = (electricity_benchmark - reference_price).clip(lower=0.0)
-        afrr_energy_bid_price = electricity_benchmark + AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH
+        afrr_energy_delivered_bid_price = (
+            electricity_benchmark - self.afrr_energy_bid_margin_eur_per_mwh
+        )
         delivered_afrr_energy_price = self._delivered_electricity_price(
             afrr_energy["afrr_energy_down_price_EUR_per_MWh"],
             tax_rate,
@@ -809,7 +821,7 @@ class HybridETESGasStrategy(BaseStrategy):
             "afrr_activation_without_price"
         ].astype(bool)
         activation_price_allowed = afrr_energy["afrr_price_available"].astype(bool) & (
-            delivered_afrr_energy_price <= afrr_energy_bid_price
+            delivered_afrr_energy_price <= afrr_energy_delivered_bid_price
         )
 
         max_charge_power_mw = plant.etes.max_power_charge_mw
@@ -848,7 +860,8 @@ class HybridETESGasStrategy(BaseStrategy):
             relevant_with_price = block_relevant & afrr_energy["afrr_price_available"].loc[mask]
             if relevant_with_price.any():
                 activation_price_margin = (
-                    afrr_energy_bid_price.loc[mask] - delivered_afrr_energy_price.loc[mask]
+                    afrr_energy_delivered_bid_price.loc[mask]
+                    - delivered_afrr_energy_price.loc[mask]
                 )
                 min_activation_price_margin = float(
                     activation_price_margin.loc[relevant_with_price].min()
@@ -1028,17 +1041,20 @@ class HybridETESGasStrategy(BaseStrategy):
         forecasts: pd.DataFrame,
         timestep_hours: float,
     ):
-        cache_key = (id(forecasts), timestep_hours)
-        if cache_key not in self._afrr_down_energy_data_cache:
-            afrr_energy_market = AFRRDownEnergyMarket(
-                "afrr_energy",
-                self.config.market("afrr_energy"),
-            )
-            self._afrr_down_energy_data_cache[cache_key] = afrr_energy_market.prepare_market_data(
-                forecasts,
-                timestep_hours=timestep_hours,
-            )
-        cleaned = self._afrr_down_energy_data_cache[cache_key]
+        # NOTE: do not memoize by id(forecasts). CPython reuses object ids after
+        # garbage collection, so a transient per-window forecasts copy (the direct
+        # boiler strategy always copies) can collide with a stale cache entry from an
+        # earlier window — returning aFRR data for the wrong index/length (e.g. across
+        # a DST-shortened window) and silently corrupting results or raising an
+        # index-mismatch. prepare_market_data is a cheap, pure function of forecasts.
+        afrr_energy_market = AFRRDownEnergyMarket(
+            "afrr_energy",
+            self.config.market("afrr_energy"),
+        )
+        cleaned = afrr_energy_market.prepare_market_data(
+            forecasts,
+            timestep_hours=timestep_hours,
+        )
         self.afrr_energy_data_quality_summary = cleaned.quality_summary
         return cleaned
 
@@ -1163,6 +1179,54 @@ class HybridETESGasStrategy(BaseStrategy):
         return series
 
 
+def configured_afrr_energy_bid_margin(config: CaseConfig) -> float:
+    """Return the required aFRR-energy saving margin in EUR/MWh_el.
+
+    The margin is a positive deduction from the plant's delivered-electricity
+    strike price. A zero default preserves the historical break-even bid.
+    """
+
+    raw_value = config.dispatch_setting(
+        AFRR_ENERGY_BID_MARGIN_SETTING,
+        AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH,
+    )
+    if isinstance(raw_value, bool):
+        raise ValueError(
+            f"strategy.dispatch.{AFRR_ENERGY_BID_MARGIN_SETTING} must be a finite "
+            "non-negative number"
+        )
+    try:
+        margin = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"strategy.dispatch.{AFRR_ENERGY_BID_MARGIN_SETTING} must be a finite "
+            "non-negative number"
+        ) from exc
+    if not math.isfinite(margin) or margin < 0.0:
+        raise ValueError(
+            f"strategy.dispatch.{AFRR_ENERGY_BID_MARGIN_SETTING} must be a finite "
+            "non-negative number"
+        )
+    return margin
+
+
+def raw_electricity_bid_price(
+    delivered_strike_price: pd.Series,
+    tax_rate: float,
+    additional_charges: pd.Series,
+) -> pd.Series:
+    """Convert a delivered-price ceiling into the submitted market bid price."""
+
+    tax_multiplier = 1.0 + float(tax_rate)
+    if not math.isfinite(tax_multiplier) or tax_multiplier <= 0.0:
+        raise ValueError("Electricity tax rate must be finite and greater than -1")
+    raw_bid = delivered_strike_price.astype(float) / tax_multiplier - additional_charges.astype(
+        float
+    )
+    raw_bid.name = "afrr_energy_bid_price_EUR_per_MWh"
+    return raw_bid
+
+
 def _capacity_signal_kwargs(
     capacity_reservation: pd.DataFrame | None,
     index: pd.DatetimeIndex,
@@ -1222,6 +1286,10 @@ def _capacity_signal_kwargs(
 
 
 def _validate_bid_rules(market_name: str, min_bid_mw: float, bid_increment_mw: float) -> None:
+    if not math.isfinite(min_bid_mw):
+        raise ValueError(f"{market_name}.product_rules.min_bid_mw must be finite")
+    if not math.isfinite(bid_increment_mw):
+        raise ValueError(f"{market_name}.product_rules.bid_increment_mw must be finite")
     if min_bid_mw < 0:
         raise ValueError(f"{market_name}.product_rules.min_bid_mw cannot be negative")
     if bid_increment_mw <= 0:

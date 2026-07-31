@@ -118,19 +118,31 @@ class SimulationRunner:
         # --- Emissionsberechnung ---
         # Strom-Emissionsintensität aus forecasts (Spalte: co2_intensity_kgco2_MWh)
         emission_col = "co2_intensity_kgco2_MWh"
+        # Grid electricity drawn per timestep. The ETES route charges the store
+        # (etes_charge_MWh); the storage-less direct route draws straight into the
+        # electric boiler (actual_electricity_consumption_MWh). Both equal the grid
+        # draw for their route, so pick whichever column the dispatch produced.
+        electricity_col = (
+            "etes_charge_MWh"
+            if "etes_charge_MWh" in dispatch_results.columns
+            else "actual_electricity_consumption_MWh"
+        )
         if emission_col in forecasts.columns:
             emission_factors = forecasts[emission_col].reindex(dispatch_results.index).fillna(0.0)
             dispatch_results["electricity_emissions_kg"] = (
-                dispatch_results["etes_charge_MWh"] * emission_factors
+                dispatch_results[electricity_col] * emission_factors
             )
         else:
             dispatch_results["electricity_emissions_kg"] = 0.0
 
-        # Gas-Emissionsfaktor aus plants.csv
-        # (Spalte: gas_emissions_factor_kg_per_mwh, Default: 201 kg/MWh)
-        gas_emission_factor = plants[0].gas_emissions_factor_kg_per_mwh if plants else 0.0
+        # Gas emission factor per plant (kg/MWh fuel), mapped by plant name so a
+        # multi-plant case uses each plant's own factor rather than the first plant's.
+        gas_factor_by_plant = {
+            plant.name: plant.gas_emissions_factor_kg_per_mwh for plant in plants
+        }
+        gas_emission_factors = dispatch_results["plant_name"].map(gas_factor_by_plant).fillna(0.0)
         dispatch_results["gas_emissions_kg"] = (
-            dispatch_results["gas_input_MWh"] * gas_emission_factor
+            dispatch_results["gas_input_MWh"] * gas_emission_factors
         )
 
         # Gesamtemissionen
@@ -267,7 +279,8 @@ class SimulationRunner:
         progress_counter = 0
 
         for plant in plants:
-            current_soc = plant.etes.initial_soc_mwh
+            has_storage = plant.has_thermal_storage
+            current_soc = plant.etes.initial_soc_mwh if has_storage else 0.0
             for window in windows:
                 progress_counter += 1
                 window_forecasts = window.forecasts
@@ -283,10 +296,10 @@ class SimulationRunner:
                         window_end=window_end,
                     )
                 )
+                soc_note = f"; initial ETES SoC = {current_soc:.3f} MWh_th" if has_storage else ""
                 self._progress(
                     f"Delivery window {window.number} for {plant.name}: "
-                    f"{window_start:%Y-%m-%d %H:%M} to {window_end:%Y-%m-%d %H:%M}; "
-                    f"initial ETES SoC = {current_soc:.3f} MWh_th"
+                    f"{window_start:%Y-%m-%d %H:%M} to {window_end:%Y-%m-%d %H:%M}{soc_note}"
                 )
 
                 fixed_positions = _zero_market_positions(window_forecasts.index)
@@ -341,11 +354,14 @@ class SimulationRunner:
                 committed = fixed_positions.reindex(commit_index).copy()
                 committed = _add_stage_dispatch_columns(committed, stage_outputs)
                 dispatch_parts.append(committed)
-                current_soc = float(committed["etes_soc_MWh"].iloc[-1])
-                self._progress(
-                    f"Delivery window {window.number} completed for {plant.name}; "
-                    f"final ETES SoC = {current_soc:.3f} MWh_th"
-                )
+                if has_storage:
+                    current_soc = float(committed["etes_soc_MWh"].iloc[-1])
+                    self._progress(
+                        f"Delivery window {window.number} completed for {plant.name}; "
+                        f"final ETES SoC = {current_soc:.3f} MWh_th"
+                    )
+                else:
+                    self._progress(f"Delivery window {window.number} completed for {plant.name}")
 
         if capacity_summary_parts:
             strategy.afrr_capacity_block_summary = _combine_capacity_summaries(
