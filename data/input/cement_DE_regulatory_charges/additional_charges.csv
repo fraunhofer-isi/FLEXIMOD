@@ -1,9 +1,0 @@
-component,unit,cement_1
-grid_energy_charge_high,EUR/MWh,6.9
-grid_energy_charge_low,EUR/MWh,6.9
-grid_capacity_charge_high,EUR/MW.a,53060
-grid_capacity_charge_low,EUR/MW.a,53060
-metering_and_operation,EUR/MWh,2
-concession_fee,EUR/MWh,1.1
-surcharges_and_levies,EUR/MWh,1.6
-electricity_tax,EUR/MWh,0.5

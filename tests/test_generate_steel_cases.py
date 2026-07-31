@@ -11,12 +11,82 @@ import pytest
 
 from scripts.generate_steel_cases import (
     CO2_FACTOR_COLUMNS,
+    TEMPLATE_CASE_NAME,
+    TEMPLATE_YEAR,
     add_missing_material_prices,
     load_scenario_forecast,
     steel_database_for_scenario,
+    write_config,
     write_forecasts,
     write_plants_csv,
 )
+
+# Mirrors the literal structure of data/input/steel_plant_DE/config.yaml (the real
+# generator template) so these tests don't depend on that file existing on disk.
+_TEMPLATE_CONFIG_TEXT = f"""\
+cases:
+  {TEMPLATE_CASE_NAME}:
+    name: {TEMPLATE_CASE_NAME}
+    country: DE
+    timestep_minutes: 15
+    simulation_start: "{TEMPLATE_YEAR}-01-02 00:00"
+    simulation_end: "{TEMPLATE_YEAR}-12-30 23:45"
+    additional_charges: true
+    strategy:
+      name: steel_cost_minimization
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 48
+        rolling_step_hours: 24
+    solver:
+      name: highs
+      fallback_solvers: []
+      tee: false
+    market_sequence:
+      - day_ahead
+    markets:
+      afrr_capacity:
+        enabled: false
+        direction: down
+        product_length: 4h
+        price_unit: EUR_per_MW_per_h
+        gate_open:
+          day_relation: D-7
+          time: "10:00"
+        gate_close:
+          day_relation: D-1
+          time: "09:00"
+        product_rules:
+          min_bid_mw: 1.0
+          bid_increment_mw: 1.0
+          divisible: true
+        signals:
+          price: aFRR_capacity_down_price
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        gate_close:
+          day_relation: D-1
+          time: "12:00"
+        signals:
+          price: DE_DA_price
+      afrr_energy:
+        enabled: false
+        direction: down
+        product_resolution: 15min
+        gate_close:
+          relative_to_delivery_start_minutes: -25
+        product_rules:
+          min_bid_mw: 1.0
+          bid_increment_mw: 1.0
+          validity_period_minutes: 15
+        signals:
+          price: aFRR_energy_down_price
+          system_activation: aFRR_energy_down_quantity
+        interpretation:
+          activation_unit: MW
+"""
 
 
 @pytest.mark.parametrize(
@@ -156,6 +226,27 @@ def test_generated_plants_have_explicit_applicable_fuel_co2_factors(tmp_path: Pa
     assert pd.isna(coal_rows.iloc[1]["coal_co2_factor"])
     assert pd.isna(generated.loc["steel_hydrogen", "coal_co2_factor"])
     assert pd.isna(generated.loc["steel_hydrogen", "natural_gas_co2_factor"])
+
+
+@pytest.mark.parametrize(
+    "route",
+    ["bf_bof_hydrogen_electrolyser", "dri_eaf_hydrogen_electrolyser", "dri_bof_coal_external"],
+)
+def test_write_config_enables_electrified_steel_for_every_route(
+    tmp_path: Path,
+    route: str,
+) -> None:
+    output_path = tmp_path / "config.yaml"
+    write_config(output_path, f"fokusH2_2030_{route}", "2030", _TEMPLATE_CONFIG_TEXT)
+
+    text = output_path.read_text(encoding="utf-8")
+    assert "name: electrified_steel" in text
+    assert "name: steel_cost_minimization" not in text
+    assert (
+        "market_sequence:\n      - afrr_capacity\n      - day_ahead\n      - afrr_energy\n" in text
+    )
+    assert "afrr_capacity:\n        enabled: true" in text
+    assert "afrr_energy:\n        enabled: true" in text
 
 
 def test_generated_plants_preserve_explicit_master_factor(tmp_path: Path) -> None:

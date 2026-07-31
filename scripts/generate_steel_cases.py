@@ -21,8 +21,11 @@ route uses the same 9 physical plant IDs, so each (scenario, year, route) case r
 demand, re-keyed by physical plant id onto the route's plant names.
 
 For each (scenario, year, route) the script writes a self-contained case folder
-``data/input/<scenario>_<year>_<route>/`` with ``config.yaml`` (template, only name+year changed),
-``plants.csv`` (Excel rows for the route, ``demand`` -> blanked ``steel_demand``),
+``data/input/<scenario>_<year>_<route>/`` with ``config.yaml`` (template with name+year
+substituted, then switched from day-ahead-only ``steel_cost_minimization`` to the
+cross-market ``electrified_steel`` strategy with aFRR capacity/energy enabled --
+see ``_apply_electrified_steel_overrides``), ``plants.csv`` (Excel rows for the
+route, ``demand`` -> blanked ``steel_demand``),
 ``additional_charges.csv`` (template values, one column per plant) and ``forecasts_df.csv``
 (market columns verbatim + re-keyed demand columns), plus REUSE ``.license`` sidecars.
 
@@ -352,8 +355,38 @@ def write_forecasts(
     out.to_csv(path, index=False)
 
 
+def _apply_electrified_steel_overrides(text: str) -> str:
+    """Switch the template's day-ahead-only config to electrified_steel + aFRR capacity/energy.
+
+    Applied to every generated route: SteelPlant's aFRR-down dispatch model is generic
+    over technology mix (electricity draw is priced and ramp/power-bound per component
+    regardless of route), so any steel plant that consumes electricity can bid into it.
+    """
+    replacements = (
+        ("      name: steel_cost_minimization\n", "      name: electrified_steel\n"),
+        (
+            "    market_sequence:\n      - day_ahead\n",
+            "    market_sequence:\n      - afrr_capacity\n      - day_ahead\n      - afrr_energy\n",
+        ),
+        (
+            "      afrr_capacity:\n        enabled: false\n",
+            "      afrr_capacity:\n        enabled: true\n",
+        ),
+        (
+            "      afrr_energy:\n        enabled: false\n",
+            "      afrr_energy:\n        enabled: true\n",
+        ),
+    )
+    for old, new in replacements:
+        if old not in text:
+            raise ValueError(f"electrified_steel override target not found in template: {old!r}")
+        text = text.replace(old, new, 1)
+    return text
+
+
 def write_config(path: Path, case_name: str, year: str, template_text: str) -> None:
     text = template_text.replace(TEMPLATE_CASE_NAME, case_name).replace(TEMPLATE_YEAR, year)
+    text = _apply_electrified_steel_overrides(text)
     path.write_text(text, encoding="utf-8")
 
 

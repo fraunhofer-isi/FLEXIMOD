@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m flexi_mod.simulation.run_case --case \"data/input/fokusH2_2030_bf_bof_hydrogen_electrolyser\" --study-case fokusH2_2030_bf_bof_hydrogen_electrolyser --no-plots --skip-dispatch-results --skip-market-ledger --skip-storage-cost-ledger --skip-summary-indicators)",
+      "Bash(ls \"C:/Users/khm/ownCloud \\(2\\)/Dropbox/Ph.D/My publications/Journal paper/4/Data/Assume/Output\" 2>&1 | head -5; echo \"---steel db---\"; ls \"C:/Users/khm/ownCloud \\(2\\)/Dropbox/Ph.D/My publications/Journal paper/4/Data/steel plant database/industrial_dsm_units_steel_scenarios_sized\" 2>&1 | head -5)",
+      "Read(//c/Users/khm/ownCloud \\\\\\(2\\\\\\)/Dropbox/Ph.D/My publications/Journal paper/4/Data/Assume/Output/**)",
+      "Read(//c/Users/khm/ownCloud \\\\\\(2\\\\\\)/Dropbox/Ph.D/My publications/Journal paper/4/Data/steel plant database/industrial_dsm_units_steel_scenarios_sized/**)",
+      "Bash(python -m pytest tests/test_generate_steel_cases.py -q)",
+      "Bash(grep -i \"hydrogen_price\\\\|natural_gas_price\\\\|coal_price\\\\|^coal\\\\|^natural_gas$\")",
+      "Bash(python -m pytest tests/test_electrified_steel_strategy.py -q)",
+      "Bash(python -m pytest tests/test_electrified_steel_strategy.py -q -k \"not gas_fallback\")",
+      "Bash(powershell -Command 'Get-Process | Where-Object {$_.ProcessName -like '\\\\''*python*'\\\\'' -or $_.ProcessName -like '\\\\''*highs*'\\\\''} | Select-Object Id,ProcessName,CPU,StartTime')",
+      "Bash(powershell -Command \"Stop-Process -Id 33348 -Force\")",
+      "Bash(python -m pytest tests/ -q -x --timeout=300)",
+      "Bash(python -m pytest tests/test_electrified_steel_strategy.py tests/test_generate_steel_cases.py tests/test_steel_simulation_runner.py tests/test_steel_plant.py -q)",
+      "Bash(python -m pytest tests/test_steel_plant.py::test_steel_plant_hydrogen_route_and_material_balances_solve -q)"
+    ]
+  }
+}

@@ -57,7 +57,8 @@ def test_electrified_steel_cross_market_dispatch_and_ontology(tmp_path: Path) ->
     assert capacity["capacity_pricing_rule"].eq("pay_as_bid").all()
 
 
-def test_electrified_steel_rejects_gas_fallback(tmp_path: Path) -> None:
+def test_electrified_steel_allows_hybrid_fuel_dri(tmp_path: Path) -> None:
+    """Hybrid hydrogen/natural-gas DRI is a supported route now, not just pure hydrogen."""
     case_dir = tmp_path / "gas_fallback"
     case_dir.mkdir()
     (case_dir / "config.yaml").write_text(_config(), encoding="utf-8")
@@ -66,8 +67,10 @@ def test_electrified_steel_rejects_gas_fallback(tmp_path: Path) -> None:
     plants.to_csv(case_dir / "plants.csv", index=False)
     _forecasts().to_csv(case_dir / "forecasts_df.csv", index=False)
 
-    with pytest.raises(ValueError, match="fuel_type.*hydrogen"):
-        SimulationRunner(case_dir, output_dir=tmp_path / "output").run()
+    outputs = SimulationRunner(case_dir, output_dir=tmp_path / "output").run()
+    dispatch = pd.read_csv(outputs["dispatch_results"])
+
+    assert dispatch["steel_output_t"].sum() == pytest.approx(4.0)
 
 
 def test_free_energy_bid_is_compliant_and_activation_can_be_partial(tmp_path: Path) -> None:
@@ -290,6 +293,8 @@ def _forecasts() -> pd.DataFrame:
             "iron_ore_price": [100.0] * periods,
             "lime_price": [20.0] * periods,
             "co2_price": [80.0] * periods,
+            "natural_gas_price": [50.0] * periods,
+            "hydrogen_price": [60.0] * periods,
         }
     )
 

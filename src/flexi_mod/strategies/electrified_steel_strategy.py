@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Perfect-foresight German DA and aFRR-down strategy for electrified steel."""
+"""Perfect-foresight German DA and aFRR-down strategy for any steel production route."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from flexi_mod.plants.steel_plant import SteelAFRRDownSignals, SteelPlant
 IRON_ORE_PRICE_SIGNAL = "iron_ore_price"
 LIME_PRICE_SIGNAL = "lime_price"
 CO2_PRICE_SIGNAL = "co2_price"
+NATURAL_GAS_PRICE_SIGNAL = "natural_gas_price"
+HYDROGEN_PRICE_SIGNAL = "hydrogen_price"
 
 _AFRR_ENERGY_PRICE = "__afrr_energy_price_EUR_per_MWh"
 _AFRR_SYSTEM_ACTIVATION = "__afrr_system_activation_MWh"
@@ -30,7 +32,11 @@ _AFRR_CAPACITY_MISSING_PRICE = "__afrr_capacity_missing_price"
 
 
 class ElectrifiedSteelStrategy:
-    """Cross-market next-day portfolio strategy for hydrogen-based steelmaking."""
+    """Cross-market next-day DA + aFRR-capacity + aFRR-energy strategy for steelmaking.
+
+    Applies to any steel production route (BF-BOF, DRI+BOF, DRI+EAF; any fuel mix) that
+    consumes electricity, not only hydrogen/electrolyser routes.
+    """
 
     def __init__(self, config: CaseConfig):
         self.config = config
@@ -47,6 +53,8 @@ class ElectrifiedSteelStrategy:
             IRON_ORE_PRICE_SIGNAL,
             LIME_PRICE_SIGNAL,
             CO2_PRICE_SIGNAL,
+            NATURAL_GAS_PRICE_SIGNAL,
+            HYDROGEN_PRICE_SIGNAL,
         }
 
     def dispatch(
@@ -91,6 +99,8 @@ class ElectrifiedSteelStrategy:
             iron_ore_price_col=IRON_ORE_PRICE_SIGNAL,
             lime_price_col=LIME_PRICE_SIGNAL,
             co2_price_col=CO2_PRICE_SIGNAL,
+            natural_gas_price_col=NATURAL_GAS_PRICE_SIGNAL,
+            hydrogen_price_col=HYDROGEN_PRICE_SIGNAL,
             additional_electricity_charge_eur_per_mwh=(
                 plant.additional_electricity_charge_eur_per_mwh
             ),

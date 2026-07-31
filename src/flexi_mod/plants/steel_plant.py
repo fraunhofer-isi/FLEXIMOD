@@ -62,12 +62,15 @@ class SteelAFRRDownSignals:
     iron_ore_price_col: str
     lime_price_col: str
     co2_price_col: str
+    natural_gas_price_col: str
+    hydrogen_price_col: str
     additional_electricity_charge_eur_per_mwh: float = 0.0
     afrr_energy_min_bid_mw: float = 1.0
     afrr_energy_bid_increment_mw: float = 1.0
     afrr_capacity_min_bid_mw: float = 1.0
     afrr_capacity_bid_increment_mw: float = 1.0
     afrr_capacity_product_duration_h: float = 4.0
+    coal_price_col: str = "coal_price"
 
 
 @dataclass(frozen=True)
@@ -347,7 +350,6 @@ class SteelPlant(BasePlant):
 
         if forecasts.empty:
             raise ValueError("Electrified-steel rolling dispatch requires at least one timestep")
-        self._validate_electrified_steel()
         self._validate_afrr_signal_columns(forecasts, signals)
         _validate_bid_rules(
             "afrr_energy",
@@ -495,12 +497,26 @@ class SteelPlant(BasePlant):
         def values(column: str) -> dict[int, float]:
             return {t: float(forecasts[column].iloc[t]) for t in model.T}
 
-        # Electricity is settled once at plant level below. Component electricity prices
-        # are therefore zero to avoid double counting in technology operating costs.
+        # Electricity is settled once at plant level below. The component electricity
+        # price is therefore zero to avoid double counting in technology operating costs.
+        # Other fuels (coal, natural gas, purchased hydrogen) are priced like the
+        # cost-minimization model: real market price unless produced on-site.
         model.electricity_price = pyo.Param(model.T, initialize={t: 0.0 for t in model.T})
-        model.natural_gas_price = pyo.Param(model.T, initialize={t: 0.0 for t in model.T})
-        model.hydrogen_price = pyo.Param(model.T, initialize={t: 0.0 for t in model.T})
-        model.coal_price = pyo.Param(model.T, initialize={t: 0.0 for t in model.T})
+        model.natural_gas_price = pyo.Param(
+            model.T, initialize=values(signals.natural_gas_price_col)
+        )
+        hydrogen_prices = (
+            {t: 0.0 for t in model.T}
+            if "electrolyser" in self.components
+            else values(signals.hydrogen_price_col)
+        )
+        model.hydrogen_price = pyo.Param(model.T, initialize=hydrogen_prices)
+        coal_prices = (
+            values(signals.coal_price_col)
+            if self._requires_coal_price()
+            else {t: 0.0 for t in model.T}
+        )
+        model.coal_price = pyo.Param(model.T, initialize=coal_prices)
         model.iron_ore_price = pyo.Param(model.T, initialize=values(signals.iron_ore_price_col))
         model.lime_price = pyo.Param(model.T, initialize=values(signals.lime_price_col))
         model.co2_price = pyo.Param(model.T, initialize=values(signals.co2_price_col))
@@ -724,7 +740,12 @@ class SteelPlant(BasePlant):
             dt_hours,
             commit_steps,
             minimum_commit_output_t,
+            enforce_output_total=True,
         )
+        # full_activation is a hypothetical "what if the full aFRR bid is called" check.
+        # It is never realized (only model.actual feeds the rolling state), so it must
+        # only be bound by real power/ramp physics, not forced to reproduce the same
+        # production total under a higher power draw -- see _add_physical_system.
         self._add_physical_system(
             model,
             model.full_activation,
@@ -733,6 +754,7 @@ class SteelPlant(BasePlant):
             dt_hours,
             commit_steps,
             minimum_commit_output_t,
+            enforce_output_total=False,
         )
 
         if terminal_state_required:
@@ -747,13 +769,6 @@ class SteelPlant(BasePlant):
             def actual_terminal_inventory(m: pyo.ConcreteModel, technology: str) -> pyo.Constraint:
                 target = float(self.components[technology].initial_soc)
                 return m.actual.technology_blocks[technology].soc[final_t] == target
-
-            @model.Constraint(inventory_names)
-            def full_activation_terminal_inventory(
-                m: pyo.ConcreteModel, technology: str
-            ) -> pyo.Constraint:
-                target = float(self.components[technology].initial_soc)
-                return m.full_activation.technology_blocks[technology].soc[final_t] == target
 
         @model.Constraint(model.T)
         def actual_electricity_balance(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
@@ -919,8 +934,18 @@ class SteelPlant(BasePlant):
         dt_hours: float,
         commit_steps: int | None = None,
         minimum_commit_output_t: float = 0.0,
+        enforce_output_total: bool = True,
     ) -> None:
-        """Attach one complete steel-production trajectory to ``container``."""
+        """Attach one complete steel-production trajectory to ``container``.
+
+        ``enforce_output_total`` ties ``container``'s cumulative steel output to
+        ``model.steel_demand`` and the inherited backlog. It is required for any
+        trajectory that becomes the real committed dispatch, but must be dropped for a
+        purely hypothetical "what if the full aFRR bid gets activated" trajectory: that
+        branch is never realized (only ``model.actual`` feeds the rolling state), so it
+        should only be constrained by real per-timestep power/ramp physics, not forced
+        to reproduce the same production total under a different power draw.
+        """
 
         container.technology_blocks = pyo.Block(list(self.components))
         for technology, component in self.components.items():
@@ -1003,21 +1028,23 @@ class SteelPlant(BasePlant):
         container.total_power_input = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         container.variable_cost = pyo.Var(time_steps, within=pyo.Reals)
 
-        @container.Constraint()
-        def steel_output_association_constraint(m: pyo.ConcreteModel) -> pyo.Constraint:
-            return sum(terminal.steel_output[t] for t in time_steps) == model.steel_demand
-
-        if commit_steps is not None and minimum_commit_output_t > 0:
-            committed_steps = list(time_steps)[:commit_steps]
+        if enforce_output_total:
 
             @container.Constraint()
-            def inherited_backlog_recovery_constraint(
-                m: pyo.ConcreteModel,
-            ) -> pyo.Constraint:
-                return (
-                    sum(terminal.steel_output[t] for t in committed_steps)
-                    >= minimum_commit_output_t
-                )
+            def steel_output_association_constraint(m: pyo.ConcreteModel) -> pyo.Constraint:
+                return sum(terminal.steel_output[t] for t in time_steps) == model.steel_demand
+
+            if commit_steps is not None and minimum_commit_output_t > 0:
+                committed_steps = list(time_steps)[:commit_steps]
+
+                @container.Constraint()
+                def inherited_backlog_recovery_constraint(
+                    m: pyo.ConcreteModel,
+                ) -> pyo.Constraint:
+                    return (
+                        sum(terminal.steel_output[t] for t in committed_steps)
+                        >= minimum_commit_output_t
+                    )
 
         @container.Constraint(time_steps)
         def total_power_input_constraint(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
@@ -1329,24 +1356,8 @@ class SteelPlant(BasePlant):
                 "Steel dispatch forecasts are missing column(s): " + ", ".join(sorted(missing))
             )
 
-    def _validate_electrified_steel(self) -> None:
-        if self.steel_route != "dri_eaf":
-            raise ValueError(
-                f"Electrified-steel strategy requires plant '{self.name}' route to be DRI + EAF"
-            )
-        if self.dri_plant.fuel_type != "hydrogen":
-            raise ValueError(
-                f"Electrified-steel strategy requires plant '{self.name}' DRI fuel_type "
-                "to be 'hydrogen'"
-            )
-        if "electrolyser" not in self.components:
-            raise ValueError(
-                f"Electrified-steel strategy requires plant '{self.name}' to define an "
-                "electrolyser; purchased hydrogen is not a fallback"
-            )
-
-    @staticmethod
     def _validate_afrr_signal_columns(
+        self,
         forecasts: pd.DataFrame,
         signals: SteelAFRRDownSignals,
     ) -> None:
@@ -1362,7 +1373,11 @@ class SteelPlant(BasePlant):
             signals.iron_ore_price_col,
             signals.lime_price_col,
             signals.co2_price_col,
+            signals.natural_gas_price_col,
+            signals.hydrogen_price_col,
         }
+        if self._requires_coal_price():
+            columns.add(signals.coal_price_col)
         missing = columns - set(forecasts.columns)
         if missing:
             raise ValueError(
