@@ -5,6 +5,9 @@
 from flexi_mod.strategies.cement_cost_minimization_strategy import (
     CementCostMinimizationStrategy,
 )
+from flexi_mod.strategies.electrified_steel_rule_based_strategy import (
+    ElectrifiedSteelRuleBasedStrategy,
+)
 from flexi_mod.strategies.electrified_steel_strategy import ElectrifiedSteelStrategy
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.strategies.steel_cost_minimization_strategy import (
@@ -19,6 +22,7 @@ STRATEGY_REGISTRY = {
     "hybrid_etes_gas_pay_as_cleared_capacity": HybridETESGasStrategy,
     "steel_cost_minimization": SteelCostMinimizationStrategy,
     "electrified_steel": ElectrifiedSteelStrategy,
+    "electrified_steel_rule_based": ElectrifiedSteelRuleBasedStrategy,
     "cement_cost_minimization": CementCostMinimizationStrategy,
 }
 
@@ -39,6 +43,7 @@ __all__ = [
     "CementCostMinimizationStrategy",
     "SteelCostMinimizationStrategy",
     "ElectrifiedSteelStrategy",
+    "ElectrifiedSteelRuleBasedStrategy",
     "STRATEGY_REGISTRY",
     "build_strategy",
 ]

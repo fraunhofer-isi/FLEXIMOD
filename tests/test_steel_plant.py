@@ -548,6 +548,77 @@ def test_quarter_hour_power_limits_are_converted_to_interval_energy() -> None:
     assert float(model.technology_blocks["eaf"].max_power) == pytest.approx(2.5)
 
 
+def test_electrolyser_gate_forces_zero_power_when_closed(tmp_path: Path) -> None:
+    """Regression guard for the electrolyser_allowed_col addition to _build_model.
+
+    Self-contained (does not depend on CASE_DIR) so it stays runnable even when
+    that fixture directory is unavailable.
+    """
+    config = _minimal_cost_min_config(tmp_path)
+    plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=True))
+    forecasts = _steel_forecasts().copy()
+    forecasts["__electrolyser_allowed"] = [True, False, True, False]
+    signals = SteelDispatchSignals(
+        electricity_price_col="electricity_price",
+        natural_gas_price_col="natural_gas_price",
+        hydrogen_price_col="hydrogen_price",
+        iron_ore_price_col="iron_ore_price",
+        lime_price_col="lime_price",
+        co2_price_col="co2_price",
+        steel_price_col="steel_price",
+        electrolyser_allowed_col="__electrolyser_allowed",
+    )
+
+    result = plant.solve_horizon(config, forecasts, signals)
+
+    gated_off = result.iloc[[1, 3]]
+    assert gated_off["electrolyser_electricity_consumption_MWh"].to_numpy() == pytest.approx(
+        [0.0, 0.0]
+    )
+    assert result["steel_output_t"].sum() == pytest.approx(4.0)
+
+
+def _minimal_cost_min_config(tmp_path: Path) -> CaseConfig:
+    case_dir = tmp_path / "steel_cost_min_case"
+    case_dir.mkdir(exist_ok=True)
+    (case_dir / "config.yaml").write_text(
+        """
+cases:
+  steel_cost_min_case:
+    name: steel_cost_min_case
+    country: DE
+    timestep_minutes: 15
+    simulation_start: "2025-01-01 00:00"
+    simulation_end: "2025-01-01 01:00"
+    additional_charges: false
+    strategy:
+      name: steel_cost_minimization
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 1
+        rolling_step_hours: 1
+    solver:
+      name: highs
+      fallback_solvers: []
+      tee: false
+    market_sequence:
+      - day_ahead
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        gate_close:
+          day_relation: D-1
+          time: "12:00"
+        signals:
+          price: electricity_price
+""".strip(),
+        encoding="utf-8",
+    )
+    return CaseConfig.from_case_dir(case_dir, study_case="steel_cost_min_case")
+
+
 def _steel_rows(include_optional: bool) -> pd.DataFrame:
     shared = {
         "name": "steel_1",

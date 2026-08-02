@@ -11,6 +11,7 @@ import pytest
 
 from scripts.generate_steel_cases import (
     CO2_FACTOR_COLUMNS,
+    HYBRID_ELECTROLYSER_ROUTES,
     TEMPLATE_CASE_NAME,
     TEMPLATE_YEAR,
     add_missing_material_prices,
@@ -232,21 +233,39 @@ def test_generated_plants_have_explicit_applicable_fuel_co2_factors(tmp_path: Pa
     "route",
     ["bf_bof_hydrogen_electrolyser", "dri_eaf_hydrogen_electrolyser", "dri_bof_coal_external"],
 )
-def test_write_config_enables_electrified_steel_for_every_route(
+def test_write_config_enables_fast_strategy_for_non_hybrid_routes(
     tmp_path: Path,
     route: str,
 ) -> None:
     output_path = tmp_path / "config.yaml"
-    write_config(output_path, f"fokusH2_2030_{route}", "2030", _TEMPLATE_CONFIG_TEXT)
+    write_config(output_path, f"fokusH2_2030_{route}", "2030", _TEMPLATE_CONFIG_TEXT, route=route)
 
     text = output_path.read_text(encoding="utf-8")
-    assert "name: electrified_steel" in text
+    assert "name: electrified_steel_rule_based" in text
     assert "name: steel_cost_minimization" not in text
     assert (
         "market_sequence:\n      - afrr_capacity\n      - day_ahead\n      - afrr_energy\n" in text
     )
     assert "afrr_capacity:\n        enabled: true" in text
     assert "afrr_energy:\n        enabled: true" in text
+
+
+@pytest.mark.parametrize("route", sorted(HYBRID_ELECTROLYSER_ROUTES))
+def test_write_config_keeps_exact_milp_for_hybrid_electrolyser_routes(
+    tmp_path: Path,
+    route: str,
+) -> None:
+    """These routes measured ~42% higher cost under the fast heuristic (real-data
+    validation) because the electrolyser -- the dominant, schedule-flexible load --
+    loses most of its aFRR-capacity opportunity when production timing and capacity
+    sizing are decided separately instead of jointly. They keep the exact MILP."""
+    output_path = tmp_path / "config.yaml"
+    write_config(output_path, f"fokusH2_2030_{route}", "2030", _TEMPLATE_CONFIG_TEXT, route=route)
+
+    text = output_path.read_text(encoding="utf-8")
+    assert "name: electrified_steel\n" in text
+    assert "name: electrified_steel_rule_based" not in text
+    assert "name: steel_cost_minimization" not in text
 
 
 def test_generated_plants_preserve_explicit_master_factor(tmp_path: Path) -> None:

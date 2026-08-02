@@ -178,6 +178,7 @@ class CaseConfig:
             "hybrid_etes_gas_pay_as_cleared_capacity",
             "steel_cost_minimization",
             "electrified_steel",
+            "electrified_steel_rule_based",
             "cement_cost_minimization",
         }
         strategy_name = str(self.case["strategy"].get("name", ""))
@@ -192,6 +193,7 @@ class CaseConfig:
         if strategy_name in {
             "steel_cost_minimization",
             "electrified_steel",
+            "electrified_steel_rule_based",
             "cement_cost_minimization",
         }:
             if not bool(self.case["markets"].get("day_ahead", {}).get("enabled", False)):
@@ -208,7 +210,11 @@ class CaseConfig:
                     f"{strategy_name} supports only day_ahead price-taking dispatch; "
                     "disable other markets until a market bidding strategy is configured"
                 )
-        if strategy_name in {"steel_cost_minimization", "electrified_steel"}:
+        if strategy_name in {
+            "steel_cost_minimization",
+            "electrified_steel",
+            "electrified_steel_rule_based",
+        }:
             horizon_hours = float(dispatch.get("dispatch_horizon_hours", 48))
             step_hours = float(dispatch.get("rolling_step_hours", 24))
             if horizon_hours <= 0 or step_hours <= 0:
@@ -228,9 +234,9 @@ class CaseConfig:
                         f"strategy.dispatch.{field} must align with case.timestep_minutes"
                     )
 
-        if strategy_name == "electrified_steel":
+        if strategy_name in {"electrified_steel", "electrified_steel_rule_based"}:
             if str(self.case["country"]).upper() != "DE":
-                raise ConfigError("electrified_steel currently requires country='DE'")
+                raise ConfigError(f"{strategy_name} currently requires country='DE'")
             expected_sequence = ["afrr_capacity", "day_ahead", "afrr_energy"]
             enabled_sequence = [
                 name
@@ -239,7 +245,7 @@ class CaseConfig:
             ]
             if enabled_sequence != expected_sequence:
                 raise ConfigError(
-                    "electrified_steel market_sequence must contain enabled markets in this "
+                    f"{strategy_name} market_sequence must contain enabled markets in this "
                     "order: afrr_capacity, day_ahead, afrr_energy"
                 )
             product_length = str(
@@ -248,7 +254,7 @@ class CaseConfig:
             product_hours = _duration_hours(product_length)
             if horizon_hours + 1e-9 < step_hours + product_hours:
                 raise ConfigError(
-                    "electrified_steel dispatch_horizon_hours must cover rolling_step_hours "
+                    f"{strategy_name} dispatch_horizon_hours must cover rolling_step_hours "
                     "plus one complete aFRR capacity product"
                 )
 

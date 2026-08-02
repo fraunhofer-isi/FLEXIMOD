@@ -22,9 +22,11 @@ demand, re-keyed by physical plant id onto the route's plant names.
 
 For each (scenario, year, route) the script writes a self-contained case folder
 ``data/input/<scenario>_<year>_<route>/`` with ``config.yaml`` (template with name+year
-substituted, then switched from day-ahead-only ``steel_cost_minimization`` to the
-cross-market ``electrified_steel`` strategy with aFRR capacity/energy enabled --
-see ``_apply_electrified_steel_overrides``), ``plants.csv`` (Excel rows for the
+substituted, then switched from day-ahead-only ``steel_cost_minimization`` to a
+cross-market strategy with aFRR capacity/energy enabled -- the fast
+``electrified_steel_rule_based`` for most routes, or the exact (slow)
+``electrified_steel`` MILP for HYBRID_ELECTROLYSER_ROUTES, see
+``_apply_electrified_steel_overrides``), ``plants.csv`` (Excel rows for the
 route, ``demand`` -> blanked ``steel_demand``),
 ``additional_charges.csv`` (template values, one column per plant) and ``forecasts_df.csv``
 (market columns verbatim + re-keyed demand columns), plus REUSE ``.license`` sidecars.
@@ -113,6 +115,20 @@ TECHNOLOGY_ROUTES = (
     "dri_eaf_hydrogen_electrolyser",
     "dri_eaf_hydrogen_external",
     "dri_eaf_natural_gas_external",
+)
+
+# Routes with both an on-site electrolyser and a natural-gas fallback. The fast
+# electrified_steel_rule_based strategy decides production timing before sizing aFRR
+# capacity, so it cannot replicate the exact MILP's trick of jointly re-timing
+# production to free up extra capacity headroom -- measured on real data at ~42%
+# higher cost on these routes specifically (vs 0.4-1.7% everywhere else), because the
+# electrolyser is the dominant, most schedule-flexible load. These routes keep the
+# exact (slow) electrified_steel MILP; every other route gets the fast heuristic.
+# See electrified_steel_rule_based_strategy.py's module docstring for the full story.
+HYBRID_ELECTROLYSER_ROUTES = frozenset(
+    route
+    for route in TECHNOLOGY_ROUTES
+    if "hybrid_hydrogen_natural_gas" in route and route.endswith("electrolyser")
 )
 
 
@@ -355,15 +371,20 @@ def write_forecasts(
     out.to_csv(path, index=False)
 
 
-def _apply_electrified_steel_overrides(text: str) -> str:
-    """Switch the template's day-ahead-only config to electrified_steel + aFRR capacity/energy.
+def _apply_electrified_steel_overrides(text: str, *, route: str) -> str:
+    """Switch the template's day-ahead-only config to a cross-market strategy with
+    aFRR capacity/energy enabled.
 
     Applied to every generated route: SteelPlant's aFRR-down dispatch model is generic
     over technology mix (electricity draw is priced and ramp/power-bound per component
     regardless of route), so any steel plant that consumes electricity can bid into it.
+    Which *strategy* implements that varies by route -- see HYBRID_ELECTROLYSER_ROUTES.
     """
+    strategy_name = (
+        "electrified_steel" if route in HYBRID_ELECTROLYSER_ROUTES else "electrified_steel_rule_based"
+    )
     replacements = (
-        ("      name: steel_cost_minimization\n", "      name: electrified_steel\n"),
+        ("      name: steel_cost_minimization\n", f"      name: {strategy_name}\n"),
         (
             "    market_sequence:\n      - day_ahead\n",
             "    market_sequence:\n      - afrr_capacity\n      - day_ahead\n      - afrr_energy\n",
@@ -384,9 +405,9 @@ def _apply_electrified_steel_overrides(text: str) -> str:
     return text
 
 
-def write_config(path: Path, case_name: str, year: str, template_text: str) -> None:
+def write_config(path: Path, case_name: str, year: str, template_text: str, *, route: str) -> None:
     text = template_text.replace(TEMPLATE_CASE_NAME, case_name).replace(TEMPLATE_YEAR, year)
-    text = _apply_electrified_steel_overrides(text)
+    text = _apply_electrified_steel_overrides(text, route=route)
     path.write_text(text, encoding="utf-8")
 
 
@@ -522,7 +543,7 @@ def main() -> None:
                 continue
 
             case_dir.mkdir(parents=True, exist_ok=True)
-            write_config(case_dir / "config.yaml", case_name, year, config_text)
+            write_config(case_dir / "config.yaml", case_name, year, config_text, route=route)
             write_plants_csv(
                 case_dir / "plants.csv",
                 route_rows,

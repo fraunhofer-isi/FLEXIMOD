@@ -45,6 +45,7 @@ class SteelDispatchSignals:
     co2_price_col: str
     coal_price_col: str = "coal_price"
     steel_price_col: str | None = None
+    electrolyser_allowed_col: str | None = None
 
 
 @dataclass(frozen=True)
@@ -920,6 +921,18 @@ class SteelPlant(BasePlant):
             minimum_commit_output_t=minimum_commit_output_t,
         )
 
+        if signals.electrolyser_allowed_col and "electrolyser" in self.components:
+            gate_open = {
+                t: bool(forecasts[signals.electrolyser_allowed_col].iloc[t]) for t in model.T
+            }
+            electrolyser_block = model.technology_blocks["electrolyser"]
+
+            @model.Constraint(model.T)
+            def electrolyser_gate_constraint(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
+                if gate_open[t]:
+                    return pyo.Constraint.Skip
+                return electrolyser_block.power_in[t] == 0.0
+
         model.objective = pyo.Objective(
             expr=sum(model.variable_cost[t] for t in model.T), sense=pyo.minimize
         )
@@ -1143,7 +1156,7 @@ class SteelPlant(BasePlant):
             if technology in self.components:
                 data[column] = []
         if market_model:
-            for column in _STEEL_AFRR_RESULT_COLUMNS:
+            for column in STEEL_AFRR_RESULT_COLUMNS:
                 data[column] = []
 
         for t in model.T:
@@ -1350,6 +1363,8 @@ class SteelPlant(BasePlant):
             columns.add(signals.coal_price_col)
         if signals.steel_price_col:
             columns.add(signals.steel_price_col)
+        if signals.electrolyser_allowed_col:
+            columns.add(signals.electrolyser_allowed_col)
         missing = columns - set(forecasts.columns)
         if missing:
             raise ValueError(
@@ -1418,7 +1433,7 @@ class SteelPlant(BasePlant):
         return demand.astype(float)
 
 
-_STEEL_AFRR_RESULT_COLUMNS = (
+STEEL_AFRR_RESULT_COLUMNS = (
     "DA_position_MWh",
     "IDC_buy_MWh",
     "IDC_sell_MWh",
