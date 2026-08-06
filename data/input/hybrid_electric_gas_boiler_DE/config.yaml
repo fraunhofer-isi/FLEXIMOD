@@ -6,10 +6,10 @@ cases:
   hybrid_electric_gas_boiler_DE:
     name: hybrid_electric_gas_boiler_DE
     country: DE
-    description: Direct electric boiler plus gas boiler in German DA, IDC, and aFRR energy
+    description: Direct electric boiler plus gas boiler using the ETES comparison data
     timestep_minutes: 15
     simulation_start: 2025-01-01 00:00
-    simulation_end: 2025-01-01 07:45
+    simulation_end: 2025-12-31 23:45
     timezone: Europe/Berlin
     additional_charges: true
     strategy:
@@ -17,8 +17,8 @@ cases:
       dispatch:
         dispatch_method: pyomo
         rolling_horizon_enabled: true
-        dispatch_horizon_hours: 8
-        rolling_step_hours: 4
+        dispatch_horizon_hours: 48
+        rolling_step_hours: 24
         afrr_energy_bid_margin_eur_per_mwh: 0.0
     solver:
       name: highs
