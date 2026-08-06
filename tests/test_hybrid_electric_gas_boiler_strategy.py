@@ -38,6 +38,29 @@ def test_direct_strategy_uses_full_gas_and_co2_benchmark(tmp_path: Path) -> None
     assert electricity_benchmark.to_numpy() == pytest.approx([118.75] * len(forecasts))
 
 
+def test_direct_strategy_accepts_explicit_zero_co2_price(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    plant = _direct_plant()
+    strategy = HybridElectricGasBoilerStrategy(config)
+    forecasts = _forecasts()
+    forecasts["co2_price"] = 0.0
+
+    gas_heat_benchmark = strategy.calculate_gas_based_heat_cost(plant, forecasts)
+
+    assert gas_heat_benchmark.to_numpy() == pytest.approx([100.0] * len(forecasts))
+
+
+def test_direct_strategy_rejects_blank_co2_price(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    plant = _direct_plant()
+    strategy = HybridElectricGasBoilerStrategy(config)
+    forecasts = _forecasts()
+    forecasts["co2_price"] = float("nan")
+
+    with pytest.raises(ValueError, match="blank cells are not zero"):
+        strategy.calculate_gas_based_heat_cost(plant, forecasts)
+
+
 def test_direct_strategy_runs_da_idc_and_free_afrr_energy(tmp_path: Path) -> None:
     config = _write_config(tmp_path, margin=1.0)
     plant = _direct_plant()

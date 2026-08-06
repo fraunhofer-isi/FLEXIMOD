@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import warnings
 
+import numpy as np
 import pandas as pd
 
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
@@ -375,9 +376,18 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
         if gas_efficiency <= 0.0:
             raise ValueError("Gas-boiler efficiency must be positive")
         emission_factor = self._gas_emission_factor(plant)
-        fuel_cost = forecasts[GAS_PRICE_SIGNAL].astype(float) + (
-            forecasts[CO2_PRICE_SIGNAL].astype(float) * emission_factor
+        gas_price = pd.to_numeric(forecasts[GAS_PRICE_SIGNAL], errors="coerce")
+        co2_price = pd.to_numeric(forecasts[CO2_PRICE_SIGNAL], errors="coerce")
+        self._validate_finite_price_signal(gas_price, GAS_PRICE_SIGNAL)
+        self._validate_finite_price_signal(
+            co2_price,
+            CO2_PRICE_SIGNAL,
+            zero_guidance=(
+                " If the natural-gas price already includes CO2 cost, populate "
+                "co2_price explicitly with numeric 0.0 values; blank cells are not zero."
+            ),
         )
+        fuel_cost = gas_price + co2_price * emission_factor
         benchmark = fuel_cost / gas_efficiency
         benchmark.name = "gas_based_heat_benchmark_EUR_per_MWh_th"
         return benchmark
@@ -418,6 +428,22 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
         if not math.isfinite(factor) or factor < 0.0:
             raise ValueError("gas_emissions_factor_kg_per_mwh must be finite and non-negative")
         return factor
+
+    @staticmethod
+    def _validate_finite_price_signal(
+        values: pd.Series,
+        column: str,
+        *,
+        zero_guidance: str = "",
+    ) -> None:
+        invalid = ~np.isfinite(values.to_numpy(dtype=float))
+        if invalid.any():
+            first_invalid = values.index[int(np.flatnonzero(invalid)[0])]
+            raise ValueError(
+                f"Forecast column '{column}' must contain finite numeric values in every "
+                f"timestep; found {int(invalid.sum())} invalid value(s), first at "
+                f"{first_invalid}.{zero_guidance}"
+            )
 
     def _required_fixed_series(
         self,
