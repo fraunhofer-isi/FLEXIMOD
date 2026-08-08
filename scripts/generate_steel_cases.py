@@ -412,8 +412,18 @@ def write_config(path: Path, case_name: str, year: str, template_text: str, *, r
 
 
 # --------------------------------------------------------------------------- driver
+_BASE_CASE_SUFFIX_RE = re.compile(r"_base_case_\d+$")
+
+
 def scenario_year(folder_name: str) -> tuple[str, str]:
-    scenario, _, year = folder_name.rpartition("_")
+    """Split '<scenario>_<year>[_base_case_<year>]' into (scenario, year).
+
+    ASSUME output folders carry a trailing '_base_case_<year>' suffix (the year repeated);
+    it is stripped first so 'aktuellepolitiken_2030_base_case_2030' still resolves to
+    ('aktuellepolitiken', '2030').
+    """
+    stripped = _BASE_CASE_SUFFIX_RE.sub("", folder_name)
+    scenario, _, year = stripped.rpartition("_")
     return scenario, year
 
 
@@ -474,7 +484,9 @@ def main() -> None:
         p for p in EXTERNAL_OUTPUT_DIR.iterdir() if p.is_dir() and "_" in p.name
     )
     if args.scenario:
-        scenario_folders = [p for p in scenario_folders if p.name == args.scenario]
+        scenario_folders = [
+            p for p in scenario_folders if "_".join(scenario_year(p.name)) == args.scenario
+        ]
 
     written = 0
     skipped: list[str] = []
@@ -532,7 +544,7 @@ def main() -> None:
                 skipped.append(f"{folder.name}/{route}: no demand for {missing}")
                 continue
 
-            case_name = f"{folder.name}_{route}"
+            case_name = f"{scenario}_{year}_{route}"
             case_dir = TARGET_INPUT_DIR / case_name
             print(
                 f"{'[dry-run] ' if args.dry_run else ''}{case_name}  "

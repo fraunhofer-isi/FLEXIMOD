@@ -18,10 +18,22 @@ expanded from hourly values to the same 15-minute index. When ASSUME market
 timestamps and fuel-price timestamps use different years, the fuel prices are
 aligned by calendar month/day/time:
 
-* ``hard coal`` -> ``coal_price``
-* ``natural gas`` -> ``natural_gas_price``
+* ``hard coal for industry`` -> ``coal_price``
+* ``natural gas for industry`` -> ``natural_gas_price``
+* ``solid biomass for industry`` -> ``biomass_price``
 * ``co2`` -> ``co2_price``
 * ``hydrogen`` -> ``hydrogen_price``
+
+Steel-demand columns for the 9 physical plants are also merged in, sourced from
+the scenario-family demand-series workbook in the "steel plant database" folder
+(``AktuellePolitiken_demand_series_15min.xlsx``, ``HoheNachfrage_demand_series_15min.xlsx``,
+``Niedrigenachfrage_demand_series_15min.xlsx``, or
+``FokusH2_FokusStrom_Technologiemix_load_profile_15min_timestep_demand.xlsx`` --
+one sheet per year). The scenario family and year are inferred from the input
+folder name (``<scenario>_<year>/market_meta.csv``) unless overridden via
+``--demand-scenario``/``--demand-year``. Columns are copied verbatim under their
+existing bare physical-ID headers (e.g. ``P100000120423``) so
+``generate_steel_cases.py`` picks them up unchanged.
 
 For the default ``activation_unit="MW"``, ``demand_volume`` is repeated as a
 power value in every 15-minute row. FLEXIMOD then converts it internally to MWh
@@ -33,6 +45,7 @@ per-timestep energy.
 from __future__ import annotations
 
 import argparse
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -40,8 +53,14 @@ from typing import Literal
 import pandas as pd
 
 DEFAULT_INPUT_PATH = Path(
-    r"C:\Users\khm\ownCloud\Dropbox\Ph.D\My publications\Journal paper\4\Data"
+    r"C:\Users\khm\ownCloud (2)\Dropbox\Ph.D\My publications\Journal paper\4\Data"
     r"\Assume\Output\fokusstrom_2045\market_meta.csv"
+)
+
+# Matches generate_steel_cases.py's EXTERNAL_OUTPUT_DIR -- the base folder containing one
+# '<scenario>_<year>/market_meta.csv' subfolder per ASSUME run, used by --all.
+DEFAULT_ASSUME_OUTPUT_DIR = Path(
+    r"C:\Users\khm\ownCloud (2)\Dropbox\Ph.D\My publications\Journal paper\4\Data\Assume\Output"
 )
 
 OUTPUT_COLUMNS = [
@@ -52,10 +71,33 @@ OUTPUT_COLUMNS = [
 ]
 
 FUEL_PRICE_COLUMNS = {
-    "hard coal": "coal_price",
-    "natural gas": "natural_gas_price",
+    "hard coal for industry": "coal_price",
+    "natural gas for industry": "natural_gas_price",
+    "solid biomass for industry": "biomass_price",
     "co2": "co2_price",
     "hydrogen": "hydrogen_price",
+}
+
+DEMAND_SERIES_DIR = Path(
+    r"C:\Users\khm\ownCloud (2)\Dropbox\Ph.D\My publications\Journal paper\4\Data"
+    r"\steel plant database"
+)
+DEMAND_SERIES_BY_SCENARIO = {
+    "aktuellepolitiken": DEMAND_SERIES_DIR / "AktuellePolitiken_demand_series_15min.xlsx",
+    "hohenachfrage": DEMAND_SERIES_DIR / "HoheNachfrage_demand_series_15min.xlsx",
+    "niedrigenachfrage": DEMAND_SERIES_DIR / "Niedrigenachfrage_demand_series_15min.xlsx",
+    "fokush2": (
+        DEMAND_SERIES_DIR
+        / "FokusH2_FokusStrom_Technologiemix_load_profile_15min_timestep_demand.xlsx"
+    ),
+    "fokusstrom": (
+        DEMAND_SERIES_DIR
+        / "FokusH2_FokusStrom_Technologiemix_load_profile_15min_timestep_demand.xlsx"
+    ),
+    "technologiemix": (
+        DEMAND_SERIES_DIR
+        / "FokusH2_FokusStrom_Technologiemix_load_profile_15min_timestep_demand.xlsx"
+    ),
 }
 
 
@@ -79,6 +121,10 @@ def convert_assume_market_meta_to_forecasts(
     activation_unit: Literal["MW", "MWh"] = "MW",
     fuel_prices_path: str | Path | None = None,
     include_fuel_prices: bool = True,
+    include_demand: bool = True,
+    demand_scenario: str | None = None,
+    demand_year: str | None = None,
+    demand_workbook_path: str | Path | None = None,
     allow_missing: bool = False,
 ) -> ConversionSummary:
     """Create a FLEXIMOD forecast CSV from an ASSUME ``market_meta.csv`` file."""
@@ -143,6 +189,25 @@ def convert_assume_market_meta_to_forecasts(
             )
             forecasts = forecasts.join(fuel_prices)
 
+    if include_demand:
+        year_name = demand_year
+        if year_name is None:
+            _, year_name = _infer_scenario_year(source)
+        if demand_workbook_path is not None:
+            workbook = Path(demand_workbook_path)
+        else:
+            scenario_name = demand_scenario
+            if scenario_name is None:
+                scenario_name, _ = _infer_scenario_year(source)
+            workbook = demand_series_workbook_for_scenario(scenario_name)
+        if not workbook.exists():
+            raise FileNotFoundError(f"Demand-series workbook not found: {workbook}")
+        demand = _expand_demand_series(workbook, year=year_name, output_index=index)
+        overlap = set(demand.columns) & set(forecasts.columns)
+        if overlap:
+            raise ValueError(f"Demand column(s) collide with market column(s): {sorted(overlap)}")
+        forecasts = forecasts.join(demand)
+
     if not allow_missing:
         missing = forecasts.isna().sum()
         missing = missing[missing > 0]
@@ -159,6 +224,58 @@ def convert_assume_market_meta_to_forecasts(
         output_path=destination,
         simulation=simulation,
     )
+
+
+def convert_all_scenario_years(
+    *,
+    assume_output_dir: str | Path = DEFAULT_ASSUME_OUTPUT_DIR,
+    timestep_minutes: int = 15,
+    activation_unit: Literal["MW", "MWh"] = "MW",
+    include_fuel_prices: bool = True,
+    include_demand: bool = True,
+    allow_missing: bool = False,
+) -> list[ConversionSummary]:
+    """Convert every '<scenario>_<year>/market_meta.csv' found under assume_output_dir.
+
+    Scenario, year, and (when include_demand) the demand-series workbook are inferred
+    per folder, exactly as convert_assume_market_meta_to_forecasts() does for a single
+    file -- there is no per-folder override here. A folder that is missing
+    market_meta.csv, or that fails conversion (unknown scenario family, missing demand
+    workbook, ambiguous ASSUME simulation, etc.), is skipped with a reason rather than
+    aborting the whole batch, since folders are independent.
+    """
+    base = Path(assume_output_dir)
+    if not base.exists():
+        raise SystemExit(f"ASSUME output directory not found: {base}")
+
+    summaries: list[ConversionSummary] = []
+    skipped: list[str] = []
+    for folder in sorted(p for p in base.iterdir() if p.is_dir()):
+        market_meta_path = folder / "market_meta.csv"
+        if not market_meta_path.exists():
+            skipped.append(f"{folder.name}: no market_meta.csv")
+            continue
+        try:
+            summary = convert_assume_market_meta_to_forecasts(
+                market_meta_path,
+                timestep_minutes=timestep_minutes,
+                activation_unit=activation_unit,
+                include_fuel_prices=include_fuel_prices,
+                include_demand=include_demand,
+                allow_missing=allow_missing,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            skipped.append(f"{folder.name}: {exc}")
+            continue
+        summaries.append(summary)
+        print(f"{folder.name}: wrote {summary.rows_written} rows -> {summary.output_path}")
+
+    print(f"\nConverted {len(summaries)} scenario-year folder(s).")
+    if skipped:
+        print(f"Skipped {len(skipped)}:")
+        for item in skipped:
+            print(f"  - {item}")
+    return summaries
 
 
 def _prepare_market_meta(df: pd.DataFrame, *, simulation: str | None) -> pd.DataFrame:
@@ -275,6 +392,63 @@ def _default_fuel_path(market_meta_path: Path) -> Path:
     return market_meta_path.with_name("fuel_prices_df.csv")
 
 
+def demand_series_workbook_for_scenario(scenario: str) -> Path:
+    """Return the configured demand-series workbook for a scenario family."""
+    scenario_key = scenario.strip().casefold()
+    try:
+        return DEMAND_SERIES_BY_SCENARIO[scenario_key]
+    except KeyError as exc:
+        supported = ", ".join(sorted(DEMAND_SERIES_BY_SCENARIO))
+        raise ValueError(
+            f"No demand-series workbook is configured for scenario family '{scenario}'. "
+            f"Supported families: {supported}"
+        ) from exc
+
+
+_BASE_CASE_SUFFIX_RE = re.compile(r"_base_case_\d+$")
+
+
+def _infer_scenario_year(source: Path) -> tuple[str, str]:
+    """Infer (scenario, year) from a '<scenario>_<year>[_base_case_<year>]/market_meta.csv' path.
+
+    ASSUME output folders carry a trailing '_base_case_<year>' suffix (the year repeated); it
+    is stripped before splitting so 'aktuellepolitiken_2030_base_case_2030' still resolves to
+    scenario='aktuellepolitiken', year='2030'.
+    """
+    folder_name = _BASE_CASE_SUFFIX_RE.sub("", source.parent.name)
+    scenario, separator, year = folder_name.rpartition("_")
+    if not separator or not year.isdigit():
+        raise ValueError(
+            f"Cannot infer scenario/year from folder '{source.parent.name}'; "
+            "pass --demand-scenario and --demand-year explicitly."
+        )
+    return scenario, year
+
+
+def _expand_demand_series(
+    workbook: Path,
+    *,
+    year: str,
+    output_index: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    frame = pd.read_excel(workbook, sheet_name=year, engine="openpyxl")
+    if "datetime" not in frame.columns:
+        raise ValueError(f"{workbook.name} sheet '{year}' is missing a 'datetime' column")
+    frame = frame.copy()
+    frame["datetime"] = pd.to_datetime(frame["datetime"], errors="coerce")
+    if frame["datetime"].isna().any():
+        bad = int(frame["datetime"].isna().sum())
+        raise ValueError(f"{workbook.name} sheet '{year}'.datetime has {bad} unparsable timestamp(s)")
+    frame = frame.set_index("datetime").sort_index()
+    if frame.index.duplicated().any():
+        bad = int(frame.index.duplicated().sum())
+        raise ValueError(f"{workbook.name} sheet '{year}' has {bad} duplicate datetime row(s)")
+    demand_columns = [column for column in frame.columns if column != "datetime"]
+    if not demand_columns:
+        raise ValueError(f"{workbook.name} sheet '{year}' has no plant demand columns")
+    return frame[demand_columns].reindex(output_index)
+
+
 def _expand_fuel_prices(
     fuel_prices_path: Path,
     *,
@@ -382,8 +556,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=Path,
-        default=DEFAULT_INPUT_PATH,
-        help=f"Path to ASSUME market_meta.csv. Default: {DEFAULT_INPUT_PATH}",
+        default=None,
+        help=(
+            "Path to a single ASSUME market_meta.csv. If omitted, every "
+            "'<scenario>_<year>/market_meta.csv' under --assume-output-dir is converted "
+            "instead (same as passing --all)."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -426,15 +604,83 @@ def _parse_args() -> argparse.Namespace:
         help="Do not add fuel-price columns even if fuel_prices_df.csv is present.",
     )
     parser.add_argument(
+        "--demand-scenario",
+        default=None,
+        help=(
+            "Scenario family for demand-series lookup (e.g. 'fokusH2'). Default: inferred "
+            "from the input folder name '<scenario>_<year>/market_meta.csv'."
+        ),
+    )
+    parser.add_argument(
+        "--demand-year",
+        default=None,
+        help="Demand-series sheet/year (e.g. '2030'). Default: inferred from the input folder name.",
+    )
+    parser.add_argument(
+        "--demand-workbook",
+        type=Path,
+        default=None,
+        help="Optional explicit demand-series workbook path, overriding --demand-scenario lookup.",
+    )
+    parser.add_argument(
+        "--no-demand",
+        action="store_true",
+        help="Do not add steel-demand columns.",
+    )
+    parser.add_argument(
         "--allow-missing",
         action="store_true",
         help="Write the CSV even if required output values are missing.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Convert every '<scenario>_<year>/market_meta.csv' under --assume-output-dir. "
+            "This is the default whenever --input is omitted; pass it explicitly only for "
+            "clarity in scripts. Scenario/year/demand-workbook are inferred per folder; "
+            "--output/--simulation/--fuel-prices/--demand-* are not used in this mode."
+        ),
+    )
+    parser.add_argument(
+        "--assume-output-dir",
+        type=Path,
+        default=DEFAULT_ASSUME_OUTPUT_DIR,
+        help=f"Base directory for --all. Default: {DEFAULT_ASSUME_OUTPUT_DIR}",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
+
+    run_all = args.all or args.input is None
+    if run_all:
+        per_file_only = {
+            "--output": args.output is not None,
+            "--simulation": args.simulation is not None,
+            "--fuel-prices": args.fuel_prices is not None,
+            "--demand-scenario": args.demand_scenario is not None,
+            "--demand-year": args.demand_year is not None,
+            "--demand-workbook": args.demand_workbook is not None,
+        }
+        conflicting = [flag for flag, used in per_file_only.items() if used]
+        if conflicting:
+            raise SystemExit(
+                "--all (or omitting --input) cannot be combined with "
+                + ", ".join(conflicting)
+                + " (per-folder only)."
+            )
+        convert_all_scenario_years(
+            assume_output_dir=args.assume_output_dir,
+            timestep_minutes=args.timestep_minutes,
+            activation_unit=args.activation_unit,
+            include_fuel_prices=not args.no_fuel_prices,
+            include_demand=not args.no_demand,
+            allow_missing=args.allow_missing,
+        )
+        return
+
     summary = convert_assume_market_meta_to_forecasts(
         input_path=args.input,
         output_path=args.output,
@@ -443,6 +689,10 @@ def main() -> None:
         activation_unit=args.activation_unit,
         fuel_prices_path=args.fuel_prices,
         include_fuel_prices=not args.no_fuel_prices,
+        include_demand=not args.no_demand,
+        demand_scenario=args.demand_scenario,
+        demand_year=args.demand_year,
+        demand_workbook_path=args.demand_workbook,
         allow_missing=args.allow_missing,
     )
     print(

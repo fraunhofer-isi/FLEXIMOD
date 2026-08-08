@@ -16,6 +16,7 @@ from scripts.generate_steel_cases import (
     TEMPLATE_YEAR,
     add_missing_material_prices,
     load_scenario_forecast,
+    scenario_year,
     steel_database_for_scenario,
     write_config,
     write_forecasts,
@@ -88,6 +89,22 @@ cases:
         interpretation:
           activation_unit: MW
 """
+
+
+@pytest.mark.parametrize(
+    ("folder_name", "expected_scenario", "expected_year"),
+    [
+        ("fokusH2_2030", "fokusH2", "2030"),
+        ("aktuellepolitiken_2030_base_case_2030", "aktuellepolitiken", "2030"),
+        ("fokusH2_2045_base_case_2045", "fokusH2", "2045"),
+    ],
+)
+def test_scenario_year_strips_assume_base_case_suffix(
+    folder_name: str,
+    expected_scenario: str,
+    expected_year: str,
+) -> None:
+    assert scenario_year(folder_name) == (expected_scenario, expected_year)
 
 
 @pytest.mark.parametrize(
