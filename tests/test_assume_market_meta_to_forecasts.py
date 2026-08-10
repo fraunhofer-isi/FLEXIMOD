@@ -236,6 +236,84 @@ def test_demand_series_workbook_for_scenario_unknown_family_has_no_silent_fallba
         demand_series_workbook_for_scenario("unknown")
 
 
+def test_assume_market_meta_pads_short_leap_year_horizon_by_repeating_last_day(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "market_meta.csv"
+    output_path = tmp_path / "forecasts_df.csv"
+    _market_meta_multi_day(start="2044-12-28 00:00:00", days=2).to_csv(input_path, index=False)
+
+    convert_assume_market_meta_to_forecasts(
+        input_path,
+        output_path,
+        include_demand=False,
+        pad_to_year_end=True,
+        demand_year="2044",
+    )
+
+    forecasts = pd.read_csv(output_path, parse_dates=["datetime"])
+    assert forecasts["datetime"].max() == pd.Timestamp("2044-12-30 23:45:00")
+    last_real_day = forecasts.loc[
+        forecasts["datetime"].dt.date == pd.Timestamp("2044-12-29").date(), "DE_DA_price"
+    ].tolist()
+    padded_day = forecasts.loc[
+        forecasts["datetime"].dt.date == pd.Timestamp("2044-12-30").date(), "DE_DA_price"
+    ].tolist()
+    assert padded_day == last_real_day
+
+
+def test_assume_market_meta_does_not_pad_by_default(tmp_path: Path) -> None:
+    input_path = tmp_path / "market_meta.csv"
+    output_path = tmp_path / "forecasts_df.csv"
+    _market_meta_multi_day(start="2044-12-28 00:00:00", days=2).to_csv(input_path, index=False)
+
+    convert_assume_market_meta_to_forecasts(input_path, output_path, include_demand=False)
+
+    forecasts = pd.read_csv(output_path, parse_dates=["datetime"])
+    assert forecasts["datetime"].max() == pd.Timestamp("2044-12-29 23:45:00")
+
+
+def _market_meta_multi_day(*, start: str, days: int) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    simulation = "demo"
+    start_ts = pd.Timestamp(start)
+    hours = days * 24
+    for h in range(hours):
+        hour_start = start_ts + pd.Timedelta(hours=h)
+        hour_end = hour_start + pd.Timedelta(hours=1)
+        rows.append(
+            _row(
+                market_id="EOM",
+                product_start=hour_start,
+                product_end=hour_end,
+                price=10.0 + h,
+                demand_volume=0.0,
+                simulation=simulation,
+            )
+        )
+        rows.append(
+            _row(
+                market_id="CRM_energy_neg",
+                product_start=hour_start,
+                product_end=hour_end,
+                price=1.0,
+                demand_volume=100.0,
+                simulation=simulation,
+            )
+        )
+    rows.append(
+        _row(
+            market_id="CRM_capacity_neg",
+            product_start=start_ts,
+            product_end=start_ts + pd.Timedelta(hours=hours),
+            price=5.0,
+            demand_volume=0.0,
+            simulation=simulation,
+        )
+    )
+    return pd.DataFrame(rows)
+
+
 def test_assume_market_meta_infers_scenario_and_year_through_base_case_suffix(
     tmp_path: Path,
 ) -> None:
@@ -264,7 +342,9 @@ def test_convert_all_scenario_years_processes_folders_and_skips_missing_market_m
     _market_meta().to_csv(tmp_path / "fokusH2_2030" / "market_meta.csv", index=False)
     (tmp_path / "emptyfamily_2031").mkdir()  # no market_meta.csv -> should be skipped
 
-    summaries = convert_all_scenario_years(assume_output_dir=tmp_path, include_demand=False)
+    summaries = convert_all_scenario_years(
+        assume_output_dir=tmp_path, include_demand=False, pad_to_year_end=False
+    )
 
     assert len(summaries) == 1
     forecasts = pd.read_csv(summaries[0].output_path)
@@ -286,7 +366,9 @@ def test_convert_all_scenario_years_continues_after_a_folder_fails(tmp_path: Pat
         tmp_path / "broken_2031" / "market_meta.csv", index=False
     )
 
-    summaries = convert_all_scenario_years(assume_output_dir=tmp_path, include_demand=False)
+    summaries = convert_all_scenario_years(
+        assume_output_dir=tmp_path, include_demand=False, pad_to_year_end=False
+    )
 
     assert len(summaries) == 1
     assert summaries[0].output_path == tmp_path / "fokusH2_2030" / "forecasts_df.csv"

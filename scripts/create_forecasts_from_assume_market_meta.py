@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 import pandas as pd
 
 DEFAULT_INPUT_PATH = Path(
@@ -125,6 +126,7 @@ def convert_assume_market_meta_to_forecasts(
     demand_scenario: str | None = None,
     demand_year: str | None = None,
     demand_workbook_path: str | Path | None = None,
+    pad_to_year_end: bool = False,
     allow_missing: bool = False,
 ) -> ConversionSummary:
     """Create a FLEXIMOD forecast CSV from an ASSUME ``market_meta.csv`` file."""
@@ -208,6 +210,18 @@ def convert_assume_market_meta_to_forecasts(
             raise ValueError(f"Demand column(s) collide with market column(s): {sorted(overlap)}")
         forecasts = forecasts.join(demand)
 
+    if pad_to_year_end:
+        pad_year = demand_year
+        if pad_year is None:
+            _, pad_year = _infer_scenario_year(source)
+        forecasts, days_added = _pad_to_year_end(forecasts, year=pad_year, frequency=frequency)
+        if days_added:
+            print(
+                f"Warning: {source.parent.name} horizon fell {days_added} day(s) short of "
+                f"{pad_year}-12-30 23:45; padded by repeating the last available day."
+            )
+        index = forecasts.index
+
     if not allow_missing:
         missing = forecasts.isna().sum()
         missing = missing[missing > 0]
@@ -233,6 +247,7 @@ def convert_all_scenario_years(
     activation_unit: Literal["MW", "MWh"] = "MW",
     include_fuel_prices: bool = True,
     include_demand: bool = True,
+    pad_to_year_end: bool = True,
     allow_missing: bool = False,
 ) -> list[ConversionSummary]:
     """Convert every '<scenario>_<year>/market_meta.csv' found under assume_output_dir.
@@ -242,7 +257,9 @@ def convert_all_scenario_years(
     file -- there is no per-folder override here. A folder that is missing
     market_meta.csv, or that fails conversion (unknown scenario family, missing demand
     workbook, ambiguous ASSUME simulation, etc.), is skipped with a reason rather than
-    aborting the whole batch, since folders are independent.
+    aborting the whole batch, since folders are independent. Defaults to padding short
+    horizons out to each year's Dec 30 23:45 (see _pad_to_year_end) since this is the
+    primary entry point for the leap-year-affected ASSUME runs that need it.
     """
     base = Path(assume_output_dir)
     if not base.exists():
@@ -262,6 +279,7 @@ def convert_all_scenario_years(
                 activation_unit=activation_unit,
                 include_fuel_prices=include_fuel_prices,
                 include_demand=include_demand,
+                pad_to_year_end=pad_to_year_end,
                 allow_missing=allow_missing,
             )
         except (ValueError, FileNotFoundError) as exc:
@@ -423,6 +441,42 @@ def _infer_scenario_year(source: Path) -> tuple[str, str]:
             "pass --demand-scenario and --demand-year explicitly."
         )
     return scenario, year
+
+
+def _pad_to_year_end(
+    forecasts: pd.DataFrame,
+    *,
+    year: str,
+    frequency: pd.Timedelta,
+) -> tuple[pd.DataFrame, int]:
+    """Pad a short simulation horizon to '<year>-12-30 23:45' by repeating the last day.
+
+    Some ASSUME runs produce a fixed-duration horizon that falls short of the calendar
+    window FLEXIMOD cases need -- observed for leap years, where a fixed 364-day run
+    starting Jan 1 lands on Dec 29 instead of Dec 30 (a normal year's day 364 from Jan 1
+    *is* Dec 30, so non-leap years are unaffected). This repeats the last complete day's
+    actual values forward -- not interpolated or synthetic -- one full day at a time,
+    until the target end is reached. No-op (0 days added) if already at or past target.
+    Returns (padded_frame, days_added).
+    """
+    target_end = pd.Timestamp(f"{year}-12-30 23:45:00")
+    current_end = forecasts.index.max()
+    if current_end >= target_end:
+        return forecasts, 0
+
+    steps_per_day = int(round(pd.Timedelta(days=1) / frequency))
+    missing_steps = int(round((target_end - current_end) / frequency))
+    # Repeat block is capped at whatever's actually available -- shorter than a full day
+    # only for tiny/synthetic inputs; real ASSUME horizons always exceed one day.
+    available_steps = min(steps_per_day, len(forecasts))
+    last_day_values = forecasts.iloc[-available_steps:].to_numpy()
+    reps = -(-missing_steps // available_steps)  # ceil division
+    tiled = np.tile(last_day_values, (reps, 1))[:missing_steps]
+    new_index = pd.date_range(start=current_end + frequency, periods=missing_steps, freq=frequency)
+    padding = pd.DataFrame(tiled, index=new_index, columns=forecasts.columns)
+    padded = pd.concat([forecasts, padding])
+    days_added = int(round(missing_steps / steps_per_day))
+    return padded, days_added
 
 
 def _expand_demand_series(
@@ -628,6 +682,15 @@ def _parse_args() -> argparse.Namespace:
         help="Do not add steel-demand columns.",
     )
     parser.add_argument(
+        "--no-pad-short-years",
+        action="store_true",
+        help=(
+            "Do not pad a short simulation horizon out to Dec 30 23:45 (default: pad by "
+            "repeating the last available day -- affects leap years whose ASSUME run used "
+            "a fixed non-leap-year duration)."
+        ),
+    )
+    parser.add_argument(
         "--allow-missing",
         action="store_true",
         help="Write the CSV even if required output values are missing.",
@@ -677,6 +740,7 @@ def main() -> None:
             activation_unit=args.activation_unit,
             include_fuel_prices=not args.no_fuel_prices,
             include_demand=not args.no_demand,
+            pad_to_year_end=not args.no_pad_short_years,
             allow_missing=args.allow_missing,
         )
         return
@@ -693,6 +757,7 @@ def main() -> None:
         demand_scenario=args.demand_scenario,
         demand_year=args.demand_year,
         demand_workbook_path=args.demand_workbook,
+        pad_to_year_end=not args.no_pad_short_years,
         allow_missing=args.allow_missing,
     )
     print(
