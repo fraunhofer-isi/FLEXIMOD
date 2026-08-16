@@ -14,8 +14,7 @@ import pandas as pd
 import pyomo.environ as pyo
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.markets.afrr_energy import validate_bid_rules
-from flexi_mod.plants.afrr_down import (
+from flexi_mod.markets.afrr_energy import (
     AFRR_DOWN_RESULT_COLUMNS,
     AFRRDownMarketSignals,
     AFRRWindow,
@@ -24,6 +23,7 @@ from flexi_mod.plants.afrr_down import (
     append_afrr_result_row,
     attach_capacity_opportunity_cost,
     build_afrr_down_market_model,
+    validate_bid_rules,
 )
 from flexi_mod.plants.dispatch_plant import DispatchPlant
 from flexi_mod.plants.rolling import (

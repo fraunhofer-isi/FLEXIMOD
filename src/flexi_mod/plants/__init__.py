@@ -10,7 +10,6 @@ from flexi_mod.plants.technologies import (
     TECHNOLOGY_REGISTRY,
     BasicOxygenFurnace,
     BlastFurnaceBasicOxygenFurnace,
-    CementCalciner,
     CementKiln,
     CementPreheater,
     DRIPlant,
@@ -21,6 +20,7 @@ from flexi_mod.plants.technologies import (
     GenericInventoryStorage,
     GenericStorage,
     HydrogenBufferStorage,
+    SimpleCementCalciner,
     ThermalStorage,
 )
 
@@ -30,7 +30,6 @@ __all__ = [
     "BlastFurnaceBasicOxygenFurnace",
     "DRIPlant",
     "DRIStorage",
-    "CementCalciner",
     "CementDispatchSignals",
     "CementKiln",
     "CementPlant",
@@ -42,6 +41,7 @@ __all__ = [
     "GenericStorage",
     "HydrogenBufferStorage",
     "PLANT_REGISTRY",
+    "SimpleCementCalciner",
     "SteamGenerationPlant",
     "SteelDispatchSignals",
     "SteelPlant",

@@ -982,7 +982,7 @@ class BlastFurnaceBasicOxygenFurnace:
 class CementKilnLineStage:
     """Shared physics for a fuel-switchable cement kiln-line stage.
 
-    ``CementPreheater``, ``CementCalciner``, and ``CementKiln`` share the same heat
+    ``CementPreheater``, ``SimpleCementCalciner``, and ``CementKiln`` share the same heat
     balance, fuel-exclusivity, ramping, commitment, and CO2/cost machinery - only a
     handful of details differ per stage. Those differences are exactly what each
     subclass overrides:
@@ -1395,7 +1395,7 @@ class CementPreheater(CementKilnLineStage):
 
 
 @dataclass
-class CementCalciner(CementKilnLineStage):
+class SimpleCementCalciner(CementKilnLineStage):
     """Fuel-switchable calciner with calcination process CO2."""
 
     max_heat_out_mw: float
@@ -1416,7 +1416,7 @@ class CementCalciner(CementKilnLineStage):
     initial_operational_status: int = 1
 
     @classmethod
-    def from_row(cls, row: pd.Series) -> CementCalciner:
+    def from_row(cls, row: pd.Series) -> SimpleCementCalciner:
         max_heat = _as_float(
             _first_present(row.get("max_heat_out"), row.get("max_power")),
             "max_heat_out",
@@ -1426,7 +1426,7 @@ class CementCalciner(CementKilnLineStage):
             specific_heat_demand_mwh_per_t=_as_float(
                 row.get("specific_heat_demand"), "specific_heat_demand"
             ),
-            fuel_type=_cement_fuel_type(row, "CementCalciner", default=CEMENT_ELECTRICITY),
+            fuel_type=_cement_fuel_type(row, "SimpleCementCalciner", default=CEMENT_ELECTRICITY),
             eta_electric=_as_float(row.get("eta_electric"), "eta_electric", default=0.95),
             eta_fossil=_as_float(row.get("eta_fossil"), "eta_fossil", default=0.90),
             fossil_ng_share=_as_float(row.get("fossil_ng_share"), "fossil_ng_share", default=1.0),
@@ -1711,7 +1711,7 @@ TECHNOLOGY_REGISTRY = {
     "bof": BasicOxygenFurnace,
     "bf_bof": BlastFurnaceBasicOxygenFurnace,
     "preheater": CementPreheater,
-    "calciner": CementCalciner,
+    "simple_calciner": SimpleCementCalciner,
     "kiln": CementKiln,
     "generic_storage": GenericInventoryStorage,
     "hydrogen_buffer_storage": HydrogenBufferStorage,

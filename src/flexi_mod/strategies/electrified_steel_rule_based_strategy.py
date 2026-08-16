@@ -47,13 +47,14 @@ import pandas as pd
 
 from flexi_mod.markets.afrr_capacity import AFRRCapacityMarket
 from flexi_mod.markets.afrr_energy import (
+    AFRR_DOWN_RESULT_COLUMNS,
     AFRRDownEnergyMarket,
+    capacity_block_summary,
     duration_hours,
     round_bid_down_to_increment,
     validate_bid_rules,
 )
 from flexi_mod.markets.day_ahead import DayAheadMarket
-from flexi_mod.plants.afrr_down import AFRR_DOWN_RESULT_COLUMNS, capacity_block_summary
 from flexi_mod.plants.steel_plant import SteelDispatchSignals, SteelPlant
 from flexi_mod.strategies.electrified_steel_strategy import (
     CO2_PRICE_SIGNAL,

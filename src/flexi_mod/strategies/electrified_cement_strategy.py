@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from flexi_mod.plants.afrr_down import AFRRDownMarketSignals
+from flexi_mod.markets.afrr_energy import AFRRDownMarketSignals
 from flexi_mod.plants.cement_plant import (
     CementAFRRDownCommoditySignals,
     CementAFRRDownSignals,

@@ -10,7 +10,7 @@ import pytest
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataLoader
-from flexi_mod.plants.afrr_down import AFRRDownMarketSignals
+from flexi_mod.markets.afrr_energy import AFRRDownMarketSignals
 from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.steel_plant import (
     SteelAFRRDownCommoditySignals,

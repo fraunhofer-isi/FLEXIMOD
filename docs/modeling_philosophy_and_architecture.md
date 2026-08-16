@@ -407,7 +407,7 @@ Supported technologies are:
 
 ```text
 preheater
-calciner
+simple_calciner
 kiln
 electrolyser
 hydrogen_buffer_storage
@@ -428,12 +428,12 @@ flow order, joined by `_`:
 
 | Configured stages | `cement_route` | Terminal | Raw meal feeds |
 | --- | --- | --- | --- |
-| preheater + calciner + kiln | `preheater_calciner_kiln` | kiln | calciner |
-| preheater + calciner | `preheater_calciner` | calciner | calciner |
+| preheater + calciner + kiln | `preheater_simple_calciner_kiln` | kiln | calciner |
+| preheater + calciner | `preheater_simple_calciner` | calciner | calciner |
 | preheater + kiln | `preheater_kiln` | kiln | kiln |
-| calciner + kiln | `calciner_kiln` | kiln | - |
+| calciner + kiln | `simple_calciner_kiln` | kiln | - |
 | kiln | `kiln` | kiln | - |
-| calciner | `calciner` | calciner | - |
+| calciner | `simple_calciner` | calciner | - |
 
 The terminal stage's `clinker_out` is the plant output. Preheated raw meal feeds
 the calciner where there is one, otherwise the kiln, which then performs the
@@ -495,7 +495,7 @@ the state carry-over reads.
 
 `electrified_cement` bids the day-ahead market against aFRR down, using the same
 market layer as `electrified_steel`. That layer lives in
-`src/flexi_mod/plants/afrr_down/` and is plant-agnostic: it owns bid prices,
+`src/flexi_mod/markets/afrr_energy.py` and is plant-agnostic: it owns bid prices,
 capacity products, integer bid sizing, activation and the objective, and reaches
 each plant through the `AFRRDownPlant` protocol. What a plant consumes, how it
 dispatches and what its inventories mean stay with the plant.

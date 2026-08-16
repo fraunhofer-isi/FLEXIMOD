@@ -765,7 +765,7 @@ charge with the authoritative grid-fee bill.
 ## Electrified Cement: Day-Ahead and aFRR Down
 
 `electrified_cement` applies the same German market design to a clinker line.
-The market layer is literally the same code: `src/flexi_mod/plants/afrr_down/`
+The market layer is literally the same code: `src/flexi_mod/markets/afrr_energy.py`
 owns bid prices, capacity products, integer bid sizing, activation and the
 objective, and reaches each plant family through the `AFRRDownPlant` protocol.
 Only what the plant consumes and how it dispatches differ.

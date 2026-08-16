@@ -17,7 +17,7 @@ from flexi_mod.plants.cement_plant import (
     CementStageState,
 )
 from flexi_mod.plants.factory import build_plants
-from flexi_mod.plants.technologies import CementCalciner, CementKiln, CementPreheater
+from flexi_mod.plants.technologies import CementKiln, CementPreheater, SimpleCementCalciner
 from flexi_mod.simulation.simulation_runner import SimulationRunner
 
 
@@ -38,9 +38,9 @@ def test_cement_plant_builds_preheater_calciner_kiln_route() -> None:
     plant = CementPlant.from_rows("cement_1", _cement_rows())
 
     assert isinstance(plant.components["preheater"], CementPreheater)
-    assert isinstance(plant.components["calciner"], CementCalciner)
+    assert isinstance(plant.components["simple_calciner"], SimpleCementCalciner)
     assert isinstance(plant.components["kiln"], CementKiln)
-    assert plant.cement_route == "preheater_calciner_kiln"
+    assert plant.cement_route == "preheater_simple_calciner_kiln"
 
 
 def test_shared_plant_factory_selects_cement_plant() -> None:
@@ -79,7 +79,7 @@ def test_cement_preheater_calciner_kiln_solve_and_balances(case_dir: Path) -> No
 
     assert result["clinker_output_t"].sum() == pytest.approx(4.0)
     assert result["preheater_raw_meal_output_t"].sum() == pytest.approx(6.0)
-    assert result["calciner_clinker_output_t"].sum() == pytest.approx(4.0)
+    assert result["simple_calciner_clinker_output_t"].sum() == pytest.approx(4.0)
     assert result["kiln_clinker_output_t"].sum() == pytest.approx(4.0)
     assert result["natural_gas_consumption_MWh"].sum() > 0
     assert result["coal_consumption_MWh"].sum() == pytest.approx(0.0)
@@ -197,12 +197,16 @@ def test_cement_runner_applies_german_regulatory_charges(tmp_path: Path) -> None
 @pytest.mark.parametrize(
     ("stages", "route", "terminal"),
     [
-        (["preheater", "calciner", "kiln"], "preheater_calciner_kiln", "kiln"),
-        (["preheater", "calciner"], "preheater_calciner", "calciner"),
+        (
+            ["preheater", "simple_calciner", "kiln"],
+            "preheater_simple_calciner_kiln",
+            "kiln",
+        ),
+        (["preheater", "simple_calciner"], "preheater_simple_calciner", "simple_calciner"),
         (["preheater", "kiln"], "preheater_kiln", "kiln"),
-        (["calciner", "kiln"], "calciner_kiln", "kiln"),
+        (["simple_calciner", "kiln"], "simple_calciner_kiln", "kiln"),
         (["kiln"], "kiln", "kiln"),
-        (["calciner"], "calciner", "calciner"),
+        (["simple_calciner"], "simple_calciner", "simple_calciner"),
     ],
 )
 def test_cement_routes_are_named_and_pick_their_terminal_stage(
@@ -219,7 +223,7 @@ def test_cement_routes_are_named_and_pick_their_terminal_stage(
     [
         (["preheater"], None, "at least one terminal technology"),
         (["kiln"], "thermal_storage", "requires a calciner"),
-        (["calciner", "kiln"], "hydrogen_buffer_storage", "without an electrolyser"),
+        (["simple_calciner", "kiln"], "hydrogen_buffer_storage", "without an electrolyser"),
     ],
 )
 def test_cement_route_guards_reject_unbuildable_component_sets(
@@ -263,7 +267,7 @@ def test_natural_gas_co2_factor_accepts_the_ng_co2_factor_spelling() -> None:
 
     plant = CementPlant.from_rows("cement_1", rows)
 
-    for stage in ("preheater", "calciner", "kiln"):
+    for stage in ("preheater", "simple_calciner", "kiln"):
         assert plant.components[stage].natural_gas_co2_factor_t_per_mwh == 0.25
 
 
@@ -523,7 +527,7 @@ def _cement_rows() -> pd.DataFrame:
             },
             {
                 **shared,
-                "technology": "calciner",
+                "technology": "simple_calciner",
                 "fuel_type": "fossil",
                 "fossil_ng_share": 1.0,
                 "max_heat_out": 10.0,
@@ -573,7 +577,7 @@ def _storage_rows(technology: str) -> pd.DataFrame:
 
 def _hydrogen_cement_rows(include_electrolyser: bool) -> pd.DataFrame:
     rows = _cement_rows()
-    rows.loc[rows["technology"].isin(["calciner", "kiln"]), "fuel_type"] = "hydrogen"
+    rows.loc[rows["technology"].isin(["simple_calciner", "kiln"]), "fuel_type"] = "hydrogen"
     if include_electrolyser:
         rows = pd.concat(
             [

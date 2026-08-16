@@ -13,8 +13,7 @@ import pandas as pd
 import pyomo.environ as pyo
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.markets.afrr_energy import validate_bid_rules
-from flexi_mod.plants.afrr_down import (
+from flexi_mod.markets.afrr_energy import (
     AFRR_DOWN_RESULT_COLUMNS,
     AFRRDownMarketSignals,
     AFRRWindow,
@@ -23,6 +22,7 @@ from flexi_mod.plants.afrr_down import (
     append_afrr_result_row,
     attach_capacity_opportunity_cost,
     build_afrr_down_market_model,
+    validate_bid_rules,
 )
 from flexi_mod.plants.dispatch_plant import DispatchPlant
 from flexi_mod.plants.rolling import (
@@ -40,7 +40,7 @@ from flexi_mod.plants.technologies import (
 )
 
 #: Kiln-line stages in flow order. The route name is those present, joined by ``_``.
-CEMENT_LINE_STAGES = ("preheater", "calciner", "kiln")
+CEMENT_LINE_STAGES = ("preheater", "simple_calciner", "kiln")
 
 
 @dataclass(frozen=True)
@@ -131,7 +131,7 @@ class CementPlant(DispatchPlant):
     """Cement clinker production model without grinding-mill integration.
 
     Supported technologies for this first FLEXIMOD cement version are
-    ``preheater``, ``calciner``, ``kiln``, optional ``electrolyser``, optional
+    ``preheater``, ``simple_calciner``, ``kiln``, optional ``electrolyser``, optional
     ``hydrogen_buffer_storage``, and optional ``thermal_storage``. ``cement_mill``
     is intentionally rejected until grinding is modelled.
     """
@@ -148,7 +148,7 @@ class CementPlant(DispatchPlant):
     allowed_technologies = frozenset(
         {
             "preheater",
-            "calciner",
+            "simple_calciner",
             "kiln",
             "electrolyser",
             "hydrogen_buffer_storage",
@@ -244,7 +244,7 @@ class CementPlant(DispatchPlant):
 
     def _terminal_technology_name(self) -> str:
         """The stage whose clinker output is the plant's output."""
-        return "kiln" if "kiln" in self.components else "calciner"
+        return "kiln" if "kiln" in self.components else "simple_calciner"
 
     def _raw_meal_receiving_stage(self) -> str | None:
         """The stage the preheated raw meal feeds.
@@ -254,7 +254,7 @@ class CementPlant(DispatchPlant):
         """
         if "preheater" not in self.components:
             return None
-        return "calciner" if "calciner" in self.components else "kiln"
+        return "simple_calciner" if "simple_calciner" in self.components else "kiln"
 
     def solve_horizon(
         self,
@@ -745,7 +745,7 @@ class CementPlant(DispatchPlant):
         """
         blocks = container.technology_blocks
         preheater = blocks["preheater"] if "preheater" in self.components else None
-        calciner = blocks["calciner"] if "calciner" in self.components else None
+        calciner = blocks["simple_calciner"] if "simple_calciner" in self.components else None
         kiln = blocks["kiln"] if "kiln" in self.components else None
 
         if preheater is not None and kiln is not None:
@@ -910,7 +910,7 @@ class CementPlant(DispatchPlant):
         trajectory = model.actual if market_model else model
         blocks = trajectory.technology_blocks
         preheater = blocks["preheater"] if "preheater" in self.components else None
-        calciner = blocks["calciner"] if "calciner" in self.components else None
+        calciner = blocks["simple_calciner"] if "simple_calciner" in self.components else None
         kiln = blocks["kiln"] if "kiln" in self.components else None
         terminal = blocks[self._terminal_technology_name()]
 
@@ -935,11 +935,11 @@ class CementPlant(DispatchPlant):
             "preheater_heat_output_MWh": [],
             "preheater_raw_meal_output_t": [],
             "preheater_electricity_consumption_MWh": [],
-            "calciner_heat_output_MWh": [],
-            "calciner_effective_heat_MWh": [],
-            "calciner_clinker_output_t": [],
-            "calciner_electricity_consumption_MWh": [],
-            "calciner_process_co2_emissions_t": [],
+            "simple_calciner_heat_output_MWh": [],
+            "simple_calciner_effective_heat_MWh": [],
+            "simple_calciner_clinker_output_t": [],
+            "simple_calciner_electricity_consumption_MWh": [],
+            "simple_calciner_process_co2_emissions_t": [],
             "kiln_heat_output_MWh": [],
             "kiln_clinker_output_t": [],
             "kiln_electricity_consumption_MWh": [],
@@ -971,7 +971,7 @@ class CementPlant(DispatchPlant):
             # Stage on/off states are what a rolling window carries across its boundary,
             # so they have to survive into the dispatch frame.
             "preheater_operational_status": ("preheater", "operational_status"),
-            "calciner_operational_status": ("calciner", "operational_status"),
+            "simple_calciner_operational_status": ("simple_calciner", "operational_status"),
             "kiln_operational_status": ("kiln", "operational_status"),
             "electrolyser_electricity_consumption_MWh": ("electrolyser", "power_in"),
             "electrolyser_hydrogen_output_MWh": ("electrolyser", "hydrogen_out"),
@@ -1042,15 +1042,17 @@ class CementPlant(DispatchPlant):
             data["preheater_electricity_consumption_MWh"].append(
                 block_value(preheater, "power_in", t) + block_value(preheater, "aux_power_in", t)
             )
-            data["calciner_heat_output_MWh"].append(block_value(calciner, "heat_out", t))
-            data["calciner_effective_heat_MWh"].append(
+            data["simple_calciner_heat_output_MWh"].append(block_value(calciner, "heat_out", t))
+            data["simple_calciner_effective_heat_MWh"].append(
                 block_value(calciner, "effective_heat_in", t)
             )
-            data["calciner_clinker_output_t"].append(block_value(calciner, "clinker_out", t))
-            data["calciner_electricity_consumption_MWh"].append(
+            data["simple_calciner_clinker_output_t"].append(block_value(calciner, "clinker_out", t))
+            data["simple_calciner_electricity_consumption_MWh"].append(
                 block_value(calciner, "power_in", t) + block_value(calciner, "aux_power_in", t)
             )
-            data["calciner_process_co2_emissions_t"].append(block_value(calciner, "co2_process", t))
+            data["simple_calciner_process_co2_emissions_t"].append(
+                block_value(calciner, "co2_process", t)
+            )
             data["kiln_heat_output_MWh"].append(block_value(kiln, "heat_out", t))
             data["kiln_clinker_output_t"].append(block_value(kiln, "clinker_out", t))
             data["kiln_electricity_consumption_MWh"].append(
@@ -1278,17 +1280,17 @@ def _detect_cement_route(components: dict[str, object], plant_name: str) -> str:
     """Name the clinker route, and reject component sets that cannot form one.
 
     The name is the configured kiln-line stages in flow order joined by ``_``, giving
-    ``preheater_calciner_kiln`` for a full line down to a bare ``kiln``. A preheater
+    ``preheater_simple_calciner_kiln`` for a full line down to a bare ``kiln``. A preheater
     without a calciner is a valid single-stage line in which the kiln itself performs the
     calcination reaction.
     """
 
-    if "calciner" not in components and "kiln" not in components:
+    if "simple_calciner" not in components and "kiln" not in components:
         raise ValueError(
             f"Cement plant '{plant_name}' must define at least one terminal technology: "
-            "calciner or kiln"
+            "simple_calciner or kiln"
         )
-    if "thermal_storage" in components and "calciner" not in components:
+    if "thermal_storage" in components and "simple_calciner" not in components:
         raise ValueError(
             f"Cement plant '{plant_name}' thermal_storage currently buffers the calciner and "
             "therefore requires a calciner"
