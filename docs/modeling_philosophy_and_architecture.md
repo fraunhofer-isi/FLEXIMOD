@@ -410,23 +410,34 @@ preheater
 simple_calciner
 oxyfuel_calciner
 simple_kiln
+oxyfuel_kiln
 electrolyser
 hydrogen_buffer_storage
 thermal_storage
 ```
 
-`simple_calciner` and `oxyfuel_calciner` fill the same flow-order slot in the kiln
-line - a plant configures exactly one. `OxyfuelCementCalciner` inherits
-`SimpleCementCalciner`'s complete heat, fuel-switching, clinker-output, ramping,
-commitment, CO2 and cost formulation unchanged, and adds only the oxygen its
-combustion draws: `oxygen_in = natural_gas_in * a_ng + coal_in * a_coal +
-hydrogen_in * a_h2`, each `a_f` a configured t-O2-per-MWh coefficient. Reading
-straight off the parent's own fuel Vars means oxygen demand moves with actual fuel
-switching rather than a fixed per-tonne-clinker rate. Oxygen supply itself is not
-modelled - `oxygen_in` is free for the plant to wire to external/ASU oxygen, an
-electrolyser's coproduct, or a blend of both - and its cost enters the objective as
-`oxygen_in * oxygen_price`. A purely electric calciner has no combustion to capture
-from, so `oxyfuel_calciner` rejects `fuel_type='electricity'`.
+`simple_calciner`, `leilac_calciner`, and `oxyfuel_calciner` fill the calciner
+slot; `simple_kiln` and `oxyfuel_kiln` fill the rotary-kiln slot. A plant configures
+at most one variant in each slot. The two oxyfuel variants inherit their complete
+parent-stage physics and add the same oxygen formulation:
+
+```text
+oxygen demand = gas input * a_ng + coal input * a_coal + hydrogen input * a_h2
+oxygen generated = oxygen demand - electrolyser oxygen coproduct
+oxygen-generation electricity = oxygen generated * specific electricity consumption
+```
+
+The coefficients `a_f` are in t O2/MWh fuel. Electrolyser coproduct is constrained
+to actual hydrogen-linked oxygen output; without an electrolyser it is zero. The
+remaining oxygen is generated without a separate oxygen technology, and its
+electricity enters both physical plant load and operating cost. A purely electric
+stage has no combustion to capture, so the oxyfuel variants reject
+`fuel_type='electricity'`.
+
+Each oxyfuel row therefore supplies the oxygen coefficient for every combustion
+fuel it can use and `specific_oxygen_electricity_consumption` in MWh/t O2. An
+electrolyser exposes `oxygen_byproduct_t_per_mwh_hydrogen`, defaulting to the
+stoichiometric `0.24 t O2/MWh H2`; the value can be overridden on its CSV row.
 
 Thermal storage buffers the calciner by adding discharge heat to calciner
 effective heat, and its charging electricity is part of the minimised cost.
@@ -454,6 +465,10 @@ calciner's place, e.g. `preheater_oxyfuel_calciner_simple_kiln`. Result columns 
 rolling-state carry-over stay keyed on the role (`simple_calciner_*`) regardless
 of which variant is actually configured, so reporting and dispatch logic never
 need to know which one is present.
+
+An `oxyfuel_kiln` route follows the same rule, for example
+`preheater_simple_calciner_oxyfuel_kiln`; kiln reporting remains keyed on the
+physical role through the established `kiln_*` columns.
 
 The terminal stage's `clinker_out` is the plant output. Preheated raw meal feeds
 the calciner where there is one, otherwise the kiln, which then performs the

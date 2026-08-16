@@ -14,7 +14,6 @@ from flexi_mod.plants.cement_plant import CementDispatchSignals, CementPlant
 NATURAL_GAS_PRICE_SIGNAL = "natural_gas_price"
 HYDROGEN_PRICE_SIGNAL = "hydrogen_price"
 COAL_PRICE_SIGNAL = "coal_price"
-OXYGEN_PRICE_SIGNAL = "oxygen_price"
 CO2_PRICE_SIGNAL = "co2_price"
 
 
@@ -28,7 +27,6 @@ class CementCostMinimizationStrategy:
             natural_gas_price_col=NATURAL_GAS_PRICE_SIGNAL,
             hydrogen_price_col=HYDROGEN_PRICE_SIGNAL,
             coal_price_col=COAL_PRICE_SIGNAL,
-            oxygen_price_col=OXYGEN_PRICE_SIGNAL,
             co2_price_col=CO2_PRICE_SIGNAL,
         )
 

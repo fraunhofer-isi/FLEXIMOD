@@ -21,6 +21,7 @@ from flexi_mod.plants.technologies import (
     CementPreheater,
     LEILACCementCalciner,
     OxyfuelCementCalciner,
+    OxyfuelCementKiln,
     SimpleCementCalciner,
     SimpleCementKiln,
 )
@@ -434,7 +435,6 @@ def test_rolling_carries_oxyfuel_calciner_state_across_commit_boundaries(case_di
     config = _rolling_config(CaseConfig.from_case_dir(case_dir), horizon_hours=1.0, step_hours=0.5)
     plant = CementPlant.from_rows("cement_1", _oxyfuel_cement_rows())
     forecasts = _long_cement_forecasts()
-    forecasts["oxygen_price"] = 20.0
 
     result = plant.solve_rolling(config, forecasts, _signals())
 
@@ -553,9 +553,7 @@ def test_oxyfuel_calciner_oxygen_tracks_fuel_switching(case_dir: Path) -> None:
     config = CaseConfig.from_case_dir(case_dir)
     plant = CementPlant.from_rows("cement_1", _oxyfuel_cement_rows(natural_gas_oxygen_demand=0.2))
 
-    result = plant.solve_horizon(
-        config, _cement_forecasts(include_coal=False, include_oxygen=True), _signals()
-    )
+    result = plant.solve_horizon(config, _cement_forecasts(include_coal=False), _signals())
 
     assert result["simple_calciner_heat_output_MWh"].sum() > 0.0, "fixture must burn fuel"
     assert result["simple_calciner_oxygen_consumption_t"].to_numpy() == pytest.approx(
@@ -563,24 +561,105 @@ def test_oxyfuel_calciner_oxygen_tracks_fuel_switching(case_dir: Path) -> None:
     )
 
 
-def test_oxyfuel_calciner_oxygen_cost_enters_the_objective(case_dir: Path) -> None:
-    """A nonzero oxygen price must raise cost by exactly ``oxygen_in * oxygen_price``."""
+def test_oxyfuel_calciner_oxygen_generation_electricity_enters_cost(case_dir: Path) -> None:
     config = CaseConfig.from_case_dir(case_dir)
-    plant = CementPlant.from_rows("cement_1", _oxyfuel_cement_rows())
-    free_oxygen = _cement_forecasts(include_coal=False, include_oxygen=True)
-    free_oxygen["oxygen_price"] = 0.0
-    priced_oxygen = _cement_forecasts(include_coal=False, include_oxygen=True)
-    priced_oxygen["oxygen_price"] = 20.0
+    no_oxygen_power = CementPlant.from_rows(
+        "cement_1", _oxyfuel_cement_rows(specific_oxygen_electricity_consumption=0.0)
+    )
+    with_oxygen_power = CementPlant.from_rows(
+        "cement_1", _oxyfuel_cement_rows(specific_oxygen_electricity_consumption=0.3)
+    )
+    forecasts = _cement_forecasts(include_coal=False)
 
-    free_result = plant.solve_horizon(config, free_oxygen, _signals())
-    priced_result = plant.solve_horizon(config, priced_oxygen, _signals())
+    free_result = no_oxygen_power.solve_horizon(config, forecasts, _signals())
+    powered_result = with_oxygen_power.solve_horizon(config, forecasts, _signals())
 
-    expected_extra_cost = (priced_result["simple_calciner_oxygen_consumption_t"] * 20.0).sum()
+    expected_extra_cost = (
+        powered_result["simple_calciner_oxygen_generation_electricity_MWh"]
+        * forecasts["electricity_price"]
+    ).sum()
     actual_extra_cost = (
-        priced_result["variable_cost_EUR"].sum() - free_result["variable_cost_EUR"].sum()
+        powered_result["variable_cost_EUR"].sum() - free_result["variable_cost_EUR"].sum()
     )
     assert actual_extra_cost == pytest.approx(expected_extra_cost, rel=1e-6)
     assert expected_extra_cost > 0.0
+
+
+def test_oxyfuel_kiln_is_registered_and_builds() -> None:
+    plant = CementPlant.from_rows("cement_1", _oxyfuel_kiln_rows())
+
+    assert isinstance(plant.components["oxyfuel_kiln"], OxyfuelCementKiln)
+    assert plant.cement_route == "preheater_simple_calciner_oxyfuel_kiln"
+
+
+def test_oxyfuel_kiln_rejects_electric_fuel_type() -> None:
+    rows = _oxyfuel_kiln_rows()
+    rows.loc[rows["technology"] == "oxyfuel_kiln", "fuel_type"] = "electricity"
+
+    with pytest.raises(ValueError, match="cannot use fuel_type='electricity'"):
+        CementPlant.from_rows("cement_1", rows)
+
+
+def test_oxyfuel_kiln_oxygen_and_electricity_track_actual_fuel(case_dir: Path) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    plant = CementPlant.from_rows(
+        "cement_1",
+        _oxyfuel_kiln_rows(
+            natural_gas_oxygen_demand=0.2,
+            specific_oxygen_electricity_consumption=0.25,
+        ),
+    )
+
+    result = plant.solve_horizon(config, _cement_forecasts(include_coal=False), _signals())
+
+    expected_oxygen = result["kiln_heat_output_MWh"] * 0.2
+    assert result["kiln_oxygen_consumption_t"].to_numpy() == pytest.approx(expected_oxygen)
+    assert result["kiln_oxygen_generated_t"].to_numpy() == pytest.approx(expected_oxygen)
+    assert result["kiln_oxygen_from_electrolyser_t"].sum() == pytest.approx(0.0)
+    assert result["kiln_oxygen_generation_electricity_MWh"].to_numpy() == pytest.approx(
+        expected_oxygen * 0.25
+    )
+
+
+def test_oxyfuel_kiln_oxygen_generation_electricity_enters_cost(case_dir: Path) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    forecasts = _cement_forecasts(include_coal=False)
+    no_oxygen_power = CementPlant.from_rows(
+        "cement_1", _oxyfuel_kiln_rows(specific_oxygen_electricity_consumption=0.0)
+    )
+    with_oxygen_power = CementPlant.from_rows(
+        "cement_1", _oxyfuel_kiln_rows(specific_oxygen_electricity_consumption=0.25)
+    )
+
+    free_result = no_oxygen_power.solve_horizon(config, forecasts, _signals())
+    powered_result = with_oxygen_power.solve_horizon(config, forecasts, _signals())
+
+    expected_extra_cost = (
+        powered_result["kiln_oxygen_generation_electricity_MWh"] * forecasts["electricity_price"]
+    ).sum()
+    actual_extra_cost = (
+        powered_result["variable_cost_EUR"].sum() - free_result["variable_cost_EUR"].sum()
+    )
+    assert actual_extra_cost == pytest.approx(expected_extra_cost, rel=1e-6)
+    assert expected_extra_cost > 0.0
+
+
+def test_oxyfuel_stages_cannot_use_more_than_electrolyser_coproduct(case_dir: Path) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    rows = _hydrogen_cement_rows(include_electrolyser=True)
+    is_kiln = rows["technology"] == "simple_kiln"
+    rows.loc[is_kiln, "technology"] = "oxyfuel_kiln"
+    rows.loc[is_kiln, "fuel_type"] = "fossil"
+    rows.loc[is_kiln, "fossil_ng_share"] = 1.0
+    rows.loc[is_kiln, "natural_gas_oxygen_demand"] = 0.2
+    rows.loc[is_kiln, "specific_oxygen_electricity_consumption"] = 0.25
+    plant = CementPlant.from_rows("cement_1", rows)
+
+    result = plant.solve_horizon(config, _cement_forecasts(include_coal=False), _signals())
+
+    oxygen_from_electrolyser = result["kiln_oxygen_from_electrolyser_t"]
+    assert (oxygen_from_electrolyser <= result["electrolyser_oxygen_output_t"] + 1e-9).all()
+    assert oxygen_from_electrolyser.sum() > 0.0
 
 
 def test_leilac_calciner_is_registered_and_builds() -> None:
@@ -775,7 +854,7 @@ def _hydrogen_cement_rows(include_electrolyser: bool) -> pd.DataFrame:
     return rows
 
 
-def _cement_forecasts(include_coal: bool, include_oxygen: bool = False) -> pd.DataFrame:
+def _cement_forecasts(include_coal: bool) -> pd.DataFrame:
     data = {
         "electricity_price": [30.0, 40.0, 80.0, 100.0],
         "natural_gas_price": [50.0] * 4,
@@ -785,17 +864,38 @@ def _cement_forecasts(include_coal: bool, include_oxygen: bool = False) -> pd.Da
     }
     if include_coal:
         data["coal_price"] = [15.0] * 4
-    if include_oxygen:
-        data["oxygen_price"] = [20.0] * 4
     return pd.DataFrame(data, index=pd.date_range("2025-01-01", periods=4, freq="15min"))
 
 
-def _oxyfuel_cement_rows(*, natural_gas_oxygen_demand: float = 0.2) -> pd.DataFrame:
+def _oxyfuel_cement_rows(
+    *,
+    natural_gas_oxygen_demand: float = 0.2,
+    specific_oxygen_electricity_consumption: float = 0.2,
+) -> pd.DataFrame:
     """The standard fixture with an oxyfuel calciner in place of the simple one."""
     rows = _cement_rows()
     is_calciner = rows["technology"] == "simple_calciner"
     rows.loc[is_calciner, "technology"] = "oxyfuel_calciner"
     rows.loc[is_calciner, "natural_gas_oxygen_demand"] = natural_gas_oxygen_demand
+    rows.loc[is_calciner, "specific_oxygen_electricity_consumption"] = (
+        specific_oxygen_electricity_consumption
+    )
+    return rows
+
+
+def _oxyfuel_kiln_rows(
+    *,
+    natural_gas_oxygen_demand: float = 0.2,
+    specific_oxygen_electricity_consumption: float = 0.2,
+) -> pd.DataFrame:
+    """The standard fixture with an oxyfuel kiln in place of the simple one."""
+    rows = _cement_rows()
+    is_kiln = rows["technology"] == "simple_kiln"
+    rows.loc[is_kiln, "technology"] = "oxyfuel_kiln"
+    rows.loc[is_kiln, "natural_gas_oxygen_demand"] = natural_gas_oxygen_demand
+    rows.loc[is_kiln, "specific_oxygen_electricity_consumption"] = (
+        specific_oxygen_electricity_consumption
+    )
     return rows
 
 

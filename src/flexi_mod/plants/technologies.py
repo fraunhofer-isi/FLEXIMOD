@@ -257,6 +257,11 @@ class Electrolyser:
     min_operating_steps: int = 1
     min_down_steps: int = 1
     initial_operational_status: int = 1
+    oxygen_byproduct_t_per_mwh_hydrogen: float = 0.24
+
+    def __post_init__(self) -> None:
+        if self.oxygen_byproduct_t_per_mwh_hydrogen < 0.0:
+            raise ValueError("oxygen_byproduct_t_per_mwh_hydrogen must be non-negative")
 
     @classmethod
     def from_row(cls, row: pd.Series) -> Electrolyser:
@@ -275,6 +280,11 @@ class Electrolyser:
                 _first_present(row.get("min_down_steps"), row.get("min_down_time")), default=1
             ),
             initial_operational_status=_as_int(row.get("initial_operational_status"), default=1),
+            oxygen_byproduct_t_per_mwh_hydrogen=_as_float(
+                row.get("oxygen_byproduct_t_per_mwh_hydrogen"),
+                "oxygen_byproduct_t_per_mwh_hydrogen",
+                default=0.24,
+            ),
         )
 
     def add_to_model(
@@ -301,11 +311,17 @@ class Electrolyser:
             time_steps, within=pyo.NonNegativeReals, bounds=(0.0, self.max_power_mw * dt_hours)
         )
         block.hydrogen_out = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.oxygen_byproduct = pyo.Param(initialize=self.oxygen_byproduct_t_per_mwh_hydrogen)
+        block.oxygen_out = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.operating_cost = pyo.Var(time_steps, within=pyo.Reals)
 
         @block.Constraint(time_steps)
         def hydrogen_production_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
             return b.hydrogen_out[t] == b.power_in[t] * b.efficiency
+
+        @block.Constraint(time_steps)
+        def oxygen_coproduct_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.oxygen_out[t] == b.hydrogen_out[t] * b.oxygen_byproduct
 
         @block.Constraint(time_steps)
         def operating_cost_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -1638,29 +1654,16 @@ class OxyfuelCementCalciner(SimpleCementCalciner):
     """A calciner fired with oxygen instead of air, for CO2 capture.
 
     Inherits the complete heat, fuel-switching, clinker-output, ramping, commitment,
-    CO2-emission, and cost formulation of ``SimpleCementCalciner`` unchanged, and adds
-    only the oxygen this combustion draws:
-
-    .. math::
-
-        \\text{oxygen\\_in}_t = \\text{natural\\_gas\\_in}_t \\cdot \\alpha_{ng}
-            + \\text{coal\\_in}_t \\cdot \\alpha_{coal}
-            + \\text{hydrogen\\_in}_t \\cdot \\alpha_{h_2}
-
-    with each :math:`\\alpha_f` in t O2 per MWh of that fuel. Reading straight off the
-    parent's own fuel Vars, rather than off clinker output, means oxygen demand moves
-    with actual fuel switching - electric heat draws none, exactly as burning nothing
-    should.
-
-    Oxygen supply is deliberately not modelled here: the cement plant is free to wire
-    ``oxygen_in`` to external/ASU oxygen, an electrolyser's coproduct, or a blend of
-    both. A purely electric calciner has no combustion to capture from, so
-    ``fuel_type='electricity'`` is rejected - use ``SimpleCementCalciner`` for that case.
+    CO2-emission, and cost formulation of ``SimpleCementCalciner`` unchanged. It adds
+    combustion oxygen demand, any electrolyser-coproduct contribution, and electricity
+    for generating the remaining oxygen. The cement plant constrains coproduct oxygen
+    to actual electrolyser output, so oxygen can never appear as a free source.
     """
 
     natural_gas_oxygen_demand_t_per_mwh: float = 0.0
     coal_oxygen_demand_t_per_mwh: float = 0.0
     hydrogen_oxygen_demand_t_per_mwh: float = 0.0
+    specific_oxygen_electricity_consumption_mwh_per_t: float = 0.0
 
     def __post_init__(self) -> None:
         """Require an oxygen coefficient for every combustion fuel this fuel_type uses."""
@@ -1683,6 +1686,8 @@ class OxyfuelCementCalciner(SimpleCementCalciner):
             raise ValueError(
                 "hydrogen_oxygen_demand must be positive when the oxyfuel calciner uses hydrogen."
             )
+        if self.specific_oxygen_electricity_consumption_mwh_per_t < 0.0:
+            raise ValueError("specific_oxygen_electricity_consumption must be non-negative")
 
     @classmethod
     def from_row(cls, row: pd.Series) -> OxyfuelCementCalciner:
@@ -1710,6 +1715,10 @@ class OxyfuelCementCalciner(SimpleCementCalciner):
                 "hydrogen_oxygen_demand",
                 default=None if hydrogen_required else 0.0,
             ),
+            specific_oxygen_electricity_consumption_mwh_per_t=_as_float(
+                row.get("specific_oxygen_electricity_consumption"),
+                "specific_oxygen_electricity_consumption",
+            ),
         )
 
     def _add_stage_parameters(self, block: pyo.Block) -> None:
@@ -1724,29 +1733,49 @@ class OxyfuelCementCalciner(SimpleCementCalciner):
         )
         block.coal_oxygen_demand = pyo.Param(initialize=self.coal_oxygen_demand_t_per_mwh)
         block.hydrogen_oxygen_demand = pyo.Param(initialize=self.hydrogen_oxygen_demand_t_per_mwh)
+        block.specific_oxygen_electricity_consumption = pyo.Param(
+            initialize=self.specific_oxygen_electricity_consumption_mwh_per_t
+        )
 
     def _add_stage_variables(self, block: pyo.Block, time_steps: pyo.Set) -> None:
         super()._add_stage_variables(block, time_steps)
-        block.oxygen_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.oxygen_demand = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.oxygen_from_electrolyser = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.oxygen_generated = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.electricity_consumption = pyo.Var(time_steps, within=pyo.NonNegativeReals)
 
     def _add_firing_constraints(
         self, block: pyo.Block, time_steps: pyo.Set, output: pyo.Var
     ) -> None:
-        """Adds ``oxygen_requirement_constraint`` on top of the parent's firing physics."""
+        """Add oxygen demand and generation electricity to the firing physics."""
         super()._add_firing_constraints(block, time_steps, output)
 
         @block.Constraint(time_steps)
-        def oxygen_requirement_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.oxygen_in[t] == (
+        def oxygen_demand_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.oxygen_demand[t] == (
                 b.natural_gas_in[t] * b.natural_gas_oxygen_demand
                 + b.coal_in[t] * b.coal_oxygen_demand
                 + b.hydrogen_in[t] * b.hydrogen_oxygen_demand
             )
 
+        @block.Constraint(time_steps)
+        def electrolyser_oxygen_limit(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.oxygen_from_electrolyser[t] <= b.oxygen_demand[t]
+
+        @block.Constraint(time_steps)
+        def oxygen_generation_requirement(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.oxygen_generated[t] == (b.oxygen_demand[t] - b.oxygen_from_electrolyser[t])
+
+        @block.Constraint(time_steps)
+        def oxygen_electricity_consumption(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.electricity_consumption[t] == (
+                b.oxygen_generated[t] * b.specific_oxygen_electricity_consumption
+            )
+
     def _additional_operating_cost_expr(
         self, model: pyo.ConcreteModel, block: pyo.Block, t: int
     ) -> pyo.Expression:
-        return block.oxygen_in[t] * model.oxygen_price[t]
+        return block.electricity_consumption[t] * model.electricity_price[t]
 
 
 @dataclass
@@ -1831,6 +1860,128 @@ class SimpleCementKiln(CementKilnLineStage):
         @block.Constraint(time_steps)
         def process_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
             return b.co2_process[t] == 0.0
+
+
+@dataclass
+class OxyfuelCementKiln(SimpleCementKiln):
+    """Oxyfuel rotary kiln with electricity-based oxygen generation.
+
+    The complete kiln heat, fuel-switching, auxiliary-load, ramping, commitment,
+    combustion-CO2, and cost formulation is inherited from ``SimpleCementKiln``.
+    Oxygen demand follows actual fuel use. Electrolyser coproduct can cover part of
+    that demand; the remainder is generated at the configured electricity intensity.
+    """
+
+    natural_gas_oxygen_demand_t_per_mwh: float = 0.0
+    coal_oxygen_demand_t_per_mwh: float = 0.0
+    hydrogen_oxygen_demand_t_per_mwh: float = 0.0
+    specific_oxygen_electricity_consumption_mwh_per_t: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.fuel_type == CEMENT_ELECTRICITY:
+            raise ValueError(
+                "OxyfuelCementKiln cannot use fuel_type='electricity'. "
+                "Use simple_kiln for a fully electric kiln."
+            )
+        if self.fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}:
+            if self.fossil_ng_share > 0.0 and self.natural_gas_oxygen_demand_t_per_mwh <= 0.0:
+                raise ValueError(
+                    "natural_gas_oxygen_demand must be positive when the oxyfuel kiln "
+                    "uses natural gas."
+                )
+            if self.fossil_ng_share < 1.0 and self.coal_oxygen_demand_t_per_mwh <= 0.0:
+                raise ValueError(
+                    "coal_oxygen_demand must be positive when the oxyfuel kiln uses coal."
+                )
+        if self.fuel_type == HYDROGEN and self.hydrogen_oxygen_demand_t_per_mwh <= 0.0:
+            raise ValueError(
+                "hydrogen_oxygen_demand must be positive when the oxyfuel kiln uses hydrogen."
+            )
+        if self.specific_oxygen_electricity_consumption_mwh_per_t < 0.0:
+            raise ValueError("specific_oxygen_electricity_consumption must be non-negative")
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> OxyfuelCementKiln:
+        """Parse the shared kiln fields via the parent, then oxygen parameters."""
+        base = SimpleCementKiln.from_row(row)
+        fossil_route = base.fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}
+        natural_gas_required = fossil_route and base.fossil_ng_share > 0.0
+        coal_required = fossil_route and base.fossil_ng_share < 1.0
+        hydrogen_required = base.fuel_type == HYDROGEN
+
+        return cls(
+            **vars(base),
+            natural_gas_oxygen_demand_t_per_mwh=_as_float(
+                _first_present(row.get("natural_gas_oxygen_demand"), row.get("ng_oxygen_demand")),
+                "natural_gas_oxygen_demand",
+                default=None if natural_gas_required else 0.0,
+            ),
+            coal_oxygen_demand_t_per_mwh=_as_float(
+                row.get("coal_oxygen_demand"),
+                "coal_oxygen_demand",
+                default=None if coal_required else 0.0,
+            ),
+            hydrogen_oxygen_demand_t_per_mwh=_as_float(
+                _first_present(row.get("hydrogen_oxygen_demand"), row.get("h2_oxygen_demand")),
+                "hydrogen_oxygen_demand",
+                default=None if hydrogen_required else 0.0,
+            ),
+            specific_oxygen_electricity_consumption_mwh_per_t=_as_float(
+                row.get("specific_oxygen_electricity_consumption"),
+                "specific_oxygen_electricity_consumption",
+            ),
+        )
+
+    def _add_stage_parameters(self, block: pyo.Block) -> None:
+        super()._add_stage_parameters(block)
+        block.natural_gas_oxygen_demand = pyo.Param(
+            initialize=self.natural_gas_oxygen_demand_t_per_mwh
+        )
+        block.coal_oxygen_demand = pyo.Param(initialize=self.coal_oxygen_demand_t_per_mwh)
+        block.hydrogen_oxygen_demand = pyo.Param(initialize=self.hydrogen_oxygen_demand_t_per_mwh)
+        block.specific_oxygen_electricity_consumption = pyo.Param(
+            initialize=self.specific_oxygen_electricity_consumption_mwh_per_t
+        )
+
+    def _add_stage_variables(self, block: pyo.Block, time_steps: pyo.Set) -> None:
+        super()._add_stage_variables(block, time_steps)
+        block.oxygen_demand = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.oxygen_from_electrolyser = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.oxygen_generated = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.electricity_consumption = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+
+    def _add_firing_constraints(
+        self, block: pyo.Block, time_steps: pyo.Set, output: pyo.Var
+    ) -> None:
+        """Add oxygen demand and generation electricity to the firing physics."""
+        super()._add_firing_constraints(block, time_steps, output)
+
+        @block.Constraint(time_steps)
+        def oxygen_demand_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.oxygen_demand[t] == (
+                b.natural_gas_in[t] * b.natural_gas_oxygen_demand
+                + b.coal_in[t] * b.coal_oxygen_demand
+                + b.hydrogen_in[t] * b.hydrogen_oxygen_demand
+            )
+
+        @block.Constraint(time_steps)
+        def electrolyser_oxygen_limit(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.oxygen_from_electrolyser[t] <= b.oxygen_demand[t]
+
+        @block.Constraint(time_steps)
+        def oxygen_generation_requirement(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.oxygen_generated[t] == (b.oxygen_demand[t] - b.oxygen_from_electrolyser[t])
+
+        @block.Constraint(time_steps)
+        def oxygen_electricity_consumption(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.electricity_consumption[t] == (
+                b.oxygen_generated[t] * b.specific_oxygen_electricity_consumption
+            )
+
+    def _additional_operating_cost_expr(
+        self, model: pyo.ConcreteModel, block: pyo.Block, t: int
+    ) -> pyo.Expression:
+        return block.electricity_consumption[t] * model.electricity_price[t]
 
 
 @dataclass
@@ -2012,6 +2163,7 @@ TECHNOLOGY_REGISTRY = {
     "leilac_calciner": LEILACCementCalciner,
     "oxyfuel_calciner": OxyfuelCementCalciner,
     "simple_kiln": SimpleCementKiln,
+    "oxyfuel_kiln": OxyfuelCementKiln,
     "generic_storage": GenericInventoryStorage,
     "hydrogen_buffer_storage": HydrogenBufferStorage,
     "dri_storage": DRIStorage,
