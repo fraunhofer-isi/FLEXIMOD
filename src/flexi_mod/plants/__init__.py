@@ -20,6 +20,7 @@ from flexi_mod.plants.technologies import (
     GenericInventoryStorage,
     GenericStorage,
     HydrogenBufferStorage,
+    OxyfuelCementCalciner,
     SimpleCementCalciner,
     ThermalStorage,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "GenericInventoryStorage",
     "GenericStorage",
     "HydrogenBufferStorage",
+    "OxyfuelCementCalciner",
     "PLANT_REGISTRY",
     "SimpleCementCalciner",
     "SteamGenerationPlant",

@@ -408,11 +408,25 @@ Supported technologies are:
 ```text
 preheater
 simple_calciner
+oxyfuel_calciner
 kiln
 electrolyser
 hydrogen_buffer_storage
 thermal_storage
 ```
+
+`simple_calciner` and `oxyfuel_calciner` fill the same flow-order slot in the kiln
+line - a plant configures exactly one. `OxyfuelCementCalciner` inherits
+`SimpleCementCalciner`'s complete heat, fuel-switching, clinker-output, ramping,
+commitment, CO2 and cost formulation unchanged, and adds only the oxygen its
+combustion draws: `oxygen_in = natural_gas_in * a_ng + coal_in * a_coal +
+hydrogen_in * a_h2`, each `a_f` a configured t-O2-per-MWh coefficient. Reading
+straight off the parent's own fuel Vars means oxygen demand moves with actual fuel
+switching rather than a fixed per-tonne-clinker rate. Oxygen supply itself is not
+modelled - `oxygen_in` is free for the plant to wire to external/ASU oxygen, an
+electrolyser's coproduct, or a blend of both - and its cost enters the objective as
+`oxygen_in * oxygen_price`. A purely electric calciner has no combustion to capture
+from, so `oxyfuel_calciner` rejects `fuel_type='electricity'`.
 
 Thermal storage buffers the calciner by adding discharge heat to calciner
 effective heat, and its charging electricity is part of the minimised cost.
@@ -435,11 +449,18 @@ flow order, joined by `_`:
 | kiln | `kiln` | kiln | - |
 | calciner | `simple_calciner` | calciner | - |
 
+An `oxyfuel_calciner` route reads the same way with `oxyfuel_calciner` in the
+calciner's place, e.g. `preheater_oxyfuel_calciner_kiln`. Result columns and
+rolling-state carry-over stay keyed on the role (`simple_calciner_*`) regardless
+of which variant is actually configured, so reporting and dispatch logic never
+need to know which one is present.
+
 The terminal stage's `clinker_out` is the plant output. Preheated raw meal feeds
 the calciner where there is one, otherwise the kiln, which then performs the
 calcination reaction itself - so `preheater_kiln` is a valid single-stage line
-rather than an error. A plant must define a calciner or a kiln; `thermal_storage`
-requires a calciner, and `hydrogen_buffer_storage` requires an electrolyser.
+rather than an error. A plant must define a calciner or a kiln (not both calciner
+variants at once); `thermal_storage` requires a calciner, and
+`hydrogen_buffer_storage` requires an electrolyser.
 
 Fuel types for preheater, calciner and kiln are:
 

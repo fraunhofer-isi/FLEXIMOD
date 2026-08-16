@@ -39,8 +39,37 @@ from flexi_mod.plants.technologies import (
     first_non_empty,
 )
 
-#: Kiln-line stages in flow order. The route name is those present, joined by ``_``.
-CEMENT_LINE_STAGES = ("preheater", "simple_calciner", "kiln")
+#: Kiln-line stages in flow order. The route name is those present, joined by ``_``. The
+#: two calciner variants fill the same flow-order slot - a plant may configure only one
+#: (enforced in ``_detect_cement_route``).
+CEMENT_LINE_STAGES = ("preheater", "simple_calciner", "oxyfuel_calciner", "kiln")
+
+#: Technology keys that fill the calciner's role in the kiln line.
+CALCINER_TECHNOLOGIES = ("simple_calciner", "oxyfuel_calciner")
+
+
+def _calciner_technology_name(components: dict[str, object]) -> str | None:
+    """Whichever calciner variant is configured, or ``None`` if there isn't one.
+
+    Column names and reporting stay keyed on the role ("the calciner"), not on which
+    variant fills it, so every other calciner-aware method resolves the actual key
+    through this one function rather than hard-coding either technology string.
+    """
+    for name in CALCINER_TECHNOLOGIES:
+        if name in components:
+            return name
+    return None
+
+
+def _stage_report_prefix(technology: str) -> str:
+    """The result-column prefix a kiln-line stage's own columns are written under.
+
+    Both calciner variants share the ``simple_calciner_*`` prefix (set when
+    ``_extract_results`` builds the ``data`` dict), so anything that rebuilds a column
+    name from a stored technology key - state carry-over across rolling windows, chiefly
+    - must translate through this rather than assume the key and the prefix match.
+    """
+    return "simple_calciner" if technology in CALCINER_TECHNOLOGIES else technology
 
 
 @dataclass(frozen=True)
@@ -51,6 +80,7 @@ class CementDispatchSignals:
     natural_gas_price_col: str = "natural_gas_price"
     hydrogen_price_col: str = "hydrogen_price"
     coal_price_col: str = "coal_price"
+    oxygen_price_col: str = "oxygen_price"
     co2_price_col: str = "co2_price"
 
 
@@ -58,14 +88,15 @@ class CementDispatchSignals:
 class CementAFRRDownCommoditySignals:
     """Forecast columns for what a cement plant consumes.
 
-    No iron ore or lime: cement's raw meal cost is not modelled, so this is fuels and
-    CO2 only.
+    No iron ore or lime: cement's raw meal cost is not modelled, so this is fuels, CO2,
+    and (for an oxyfuel calciner) oxygen.
     """
 
     co2_price_col: str
     natural_gas_price_col: str
     hydrogen_price_col: str
     coal_price_col: str = "coal_price"
+    oxygen_price_col: str = "oxygen_price"
 
 
 @dataclass(frozen=True)
@@ -149,6 +180,7 @@ class CementPlant(DispatchPlant):
         {
             "preheater",
             "simple_calciner",
+            "oxyfuel_calciner",
             "kiln",
             "electrolyser",
             "hydrogen_buffer_storage",
@@ -244,7 +276,11 @@ class CementPlant(DispatchPlant):
 
     def _terminal_technology_name(self) -> str:
         """The stage whose clinker output is the plant's output."""
-        return "kiln" if "kiln" in self.components else "simple_calciner"
+        if "kiln" in self.components:
+            return "kiln"
+        calciner = _calciner_technology_name(self.components)
+        assert calciner is not None, "route validation guarantees a calciner or a kiln"
+        return calciner
 
     def _raw_meal_receiving_stage(self) -> str | None:
         """The stage the preheated raw meal feeds.
@@ -254,7 +290,7 @@ class CementPlant(DispatchPlant):
         """
         if "preheater" not in self.components:
             return None
-        return "simple_calciner" if "simple_calciner" in self.components else "kiln"
+        return _calciner_technology_name(self.components) or "kiln"
 
     def solve_horizon(
         self,
@@ -482,6 +518,8 @@ class CementPlant(DispatchPlant):
             required.add(commodities.hydrogen_price_col)
         if self._requires_coal_price():
             required.add(commodities.coal_price_col)
+        if self._requires_oxygen_price():
+            required.add(commodities.oxygen_price_col)
         missing = required - set(forecasts.columns)
         if missing:
             raise ValueError(
@@ -519,6 +557,12 @@ class CementPlant(DispatchPlant):
             else {t: 0.0 for t in model.T}
         )
         model.coal_price = pyo.Param(model.T, initialize=coal_prices)
+        oxygen_prices = (
+            values(commodity_signals.oxygen_price_col)
+            if self._requires_oxygen_price()
+            else {t: 0.0 for t in model.T}
+        )
+        model.oxygen_price = pyo.Param(model.T, initialize=oxygen_prices)
         model.co2_price = pyo.Param(model.T, initialize=values(commodity_signals.co2_price_col))
 
         demand = self._validated_demand_profile(forecasts)
@@ -676,6 +720,12 @@ class CementPlant(DispatchPlant):
             else {t: 0.0 for t in model.T}
         )
         model.coal_price = pyo.Param(model.T, initialize=coal_prices)
+        oxygen_prices = (
+            values(signals.oxygen_price_col)
+            if self._requires_oxygen_price()
+            else {t: 0.0 for t in model.T}
+        )
+        model.oxygen_price = pyo.Param(model.T, initialize=oxygen_prices)
         model.co2_price = pyo.Param(model.T, initialize=values(signals.co2_price_col))
 
         demand = self._validated_demand_profile(forecasts)
@@ -745,7 +795,8 @@ class CementPlant(DispatchPlant):
         """
         blocks = container.technology_blocks
         preheater = blocks["preheater"] if "preheater" in self.components else None
-        calciner = blocks["simple_calciner"] if "simple_calciner" in self.components else None
+        calciner_technology = _calciner_technology_name(self.components)
+        calciner = blocks[calciner_technology] if calciner_technology is not None else None
         kiln = blocks["kiln"] if "kiln" in self.components else None
 
         if preheater is not None and kiln is not None:
@@ -910,7 +961,8 @@ class CementPlant(DispatchPlant):
         trajectory = model.actual if market_model else model
         blocks = trajectory.technology_blocks
         preheater = blocks["preheater"] if "preheater" in self.components else None
-        calciner = blocks["simple_calciner"] if "simple_calciner" in self.components else None
+        calciner_technology = _calciner_technology_name(self.components)
+        calciner = blocks[calciner_technology] if calciner_technology is not None else None
         kiln = blocks["kiln"] if "kiln" in self.components else None
         terminal = blocks[self._terminal_technology_name()]
 
@@ -969,9 +1021,12 @@ class CementPlant(DispatchPlant):
 
         optional_variables = {
             # Stage on/off states are what a rolling window carries across its boundary,
-            # so they have to survive into the dispatch frame.
+            # so they have to survive into the dispatch frame. Keyed on the resolved
+            # calciner technology, not a literal string, so either variant is found; a
+            # plain calciner has no oxygen_in and reports 0 for that column.
             "preheater_operational_status": ("preheater", "operational_status"),
-            "simple_calciner_operational_status": ("simple_calciner", "operational_status"),
+            "simple_calciner_operational_status": (calciner_technology, "operational_status"),
+            "simple_calciner_oxygen_consumption_t": (calciner_technology, "oxygen_in"),
             "kiln_operational_status": ("kiln", "operational_status"),
             "electrolyser_electricity_consumption_MWh": ("electrolyser", "power_in"),
             "electrolyser_hydrogen_output_MWh": ("electrolyser", "hydrogen_out"),
@@ -1160,7 +1215,8 @@ class CementPlant(DispatchPlant):
             technology: str, previous_steps: int, previous_status: int
         ) -> tuple[int, int]:
             """Final on/off state, and how many consecutive steps it has already held."""
-            statuses = committed[f"{technology}_operational_status"].round().astype(int).tolist()
+            prefix = _stage_report_prefix(technology)
+            statuses = committed[f"{prefix}_operational_status"].round().astype(int).tolist()
             steps = previous_steps
             current = previous_status
             for status in statuses:
@@ -1176,8 +1232,9 @@ class CementPlant(DispatchPlant):
             status, steps = run_length(
                 technology, old.consecutive_status_steps, old.operational_status
             )
+            prefix = _stage_report_prefix(technology)
             stages[technology] = CementStageState(
-                heat_out_mwh=float(committed[f"{technology}_heat_output_MWh"].iloc[-1]),
+                heat_out_mwh=float(committed[f"{prefix}_heat_output_MWh"].iloc[-1]),
                 operational_status=status,
                 consecutive_status_steps=steps,
             )
@@ -1187,8 +1244,9 @@ class CementPlant(DispatchPlant):
             status, steps = run_length(
                 technology, old.consecutive_status_steps, old.operational_status
             )
+            prefix = _stage_report_prefix(technology)
             components[technology] = CementComponentState(
-                power_in_mwh=float(committed[f"{technology}_electricity_consumption_MWh"].iloc[-1]),
+                power_in_mwh=float(committed[f"{prefix}_electricity_consumption_MWh"].iloc[-1]),
                 operational_status=status,
                 consecutive_status_steps=steps,
             )
@@ -1256,6 +1314,21 @@ class CementPlant(DispatchPlant):
                     return True
         return False
 
+    def _requires_oxygen_price(self) -> bool:
+        """Any component with a positive oxygen coefficient needs oxygen priced.
+
+        Duck-typed on the coefficient fields rather than the class, so any future
+        oxyfuel-capable technology is picked up without changes here.
+        """
+        for component in self.components.values():
+            if (
+                float(getattr(component, "natural_gas_oxygen_demand_t_per_mwh", 0.0)) > 0.0
+                or float(getattr(component, "coal_oxygen_demand_t_per_mwh", 0.0)) > 0.0
+                or float(getattr(component, "hydrogen_oxygen_demand_t_per_mwh", 0.0)) > 0.0
+            ):
+                return True
+        return False
+
     def _validate_signal_columns(
         self,
         forecasts: pd.DataFrame,
@@ -1269,6 +1342,8 @@ class CementPlant(DispatchPlant):
         }
         if self._requires_coal_price():
             columns.add(signals.coal_price_col)
+        if self._requires_oxygen_price():
+            columns.add(signals.oxygen_price_col)
         missing = columns - set(forecasts.columns)
         if missing:
             raise ValueError(
@@ -1285,12 +1360,19 @@ def _detect_cement_route(components: dict[str, object], plant_name: str) -> str:
     calcination reaction.
     """
 
-    if "simple_calciner" not in components and "kiln" not in components:
+    configured_calciners = [name for name in CALCINER_TECHNOLOGIES if name in components]
+    if len(configured_calciners) > 1:
+        raise ValueError(
+            f"Cement plant '{plant_name}' defines more than one calciner variant: "
+            + ", ".join(configured_calciners)
+        )
+    calciner_name = configured_calciners[0] if configured_calciners else None
+    if calciner_name is None and "kiln" not in components:
         raise ValueError(
             f"Cement plant '{plant_name}' must define at least one terminal technology: "
-            "simple_calciner or kiln"
+            "simple_calciner, oxyfuel_calciner, or kiln"
         )
-    if "thermal_storage" in components and "simple_calciner" not in components:
+    if "thermal_storage" in components and calciner_name is None:
         raise ValueError(
             f"Cement plant '{plant_name}' thermal_storage currently buffers the calciner and "
             "therefore requires a calciner"

@@ -988,13 +988,16 @@ class CementKilnLineStage:
     subclass overrides:
 
     - ``_output_var_name``: the block attribute its throughput Var is stored under.
+    - ``_add_stage_parameters``: any Params beyond the common set, e.g. the calciner's
+      calcination factor (default: none).
     - ``_add_stage_variables``: any Vars beyond the common set (default: none).
     - ``_external_heat_expr``: heat entering from outside the stage, e.g. kiln waste
       heat reaching the preheater (default: none).
-    - ``_output_heat_expr``: the heat that drives the stage's throughput - its own
-      ``heat_out``, or a storage-blended ``effective_heat_in`` (default: ``heat_out``).
-    - ``_process_co2_factor``: non-combustion CO2 per tonne of output, e.g. calcination
-      (default: none).
+    - ``_add_stage_constraints``: what this stage's output actually equals, and its own
+      process CO2 if it has any - written out directly by every subclass, even where the
+      body is nearly identical across stages, so each class shows its own physics rather
+      than delegating it to a shared, hook-parameterised constraint (default: none - a
+      stage that skips this defines no relationship between its heat and its output).
 
     ``add_to_model`` is the template method: it calls the phases below in a fixed
     order and returns the populated block.
@@ -1012,10 +1015,12 @@ class CementKilnLineStage:
     ) -> pyo.Block:
         dt_hours = float(context["dt_hours"])
         self._add_common_parameters(block, dt_hours, context)
+        self._add_stage_parameters(block)
         self._add_common_variables(block, time_steps)
         self._add_stage_variables(block, time_steps)
         output = getattr(block, self._output_var_name)
         self._add_firing_constraints(block, time_steps, output)
+        self._add_stage_constraints(block, time_steps, output)
         self._add_aux_and_operational_constraints(block, time_steps, output)
         self._add_emission_and_cost_constraints(model, block, time_steps, output)
         return block
@@ -1025,11 +1030,13 @@ class CementKilnLineStage:
     ) -> None:
         """Pyomo Components:
 
-        - **Parameters**: stage ratings, efficiencies, ramp limits, CO2 factors, and
-          the commitment state (min up/down steps, initial status) carried in from
-          the previous rolling window.
+        - **Parameters**: stage ratings (``max_heat_out``, ``min_heat_out`` - the
+          turndown floor while the stage is on, 0 by default), efficiencies, ramp
+          limits, CO2 factors, and the commitment state (min up/down steps, initial
+          status) carried in from the previous rolling window.
         """
         max_heat_mwh = self.max_heat_out_mw * dt_hours
+        min_heat_mwh = self.min_heat_out_mw * dt_hours
         max_electric_power_mw = (
             self.max_electric_power_mw
             if self.max_electric_power_mw is not None
@@ -1048,6 +1055,7 @@ class CementKilnLineStage:
             raise ValueError("fossil_ng_share must be between 0 and 1")
 
         block.max_heat_out = pyo.Param(initialize=max_heat_mwh)
+        block.min_heat_out = pyo.Param(initialize=min_heat_mwh)
         block.max_power = pyo.Param(initialize=max_power_mwh)
         block.specific_heat_demand = pyo.Param(initialize=self.specific_heat_demand_mwh_per_t)
         block.specific_electricity_aux = pyo.Param(
@@ -1060,7 +1068,6 @@ class CementKilnLineStage:
         block.ramp_down = pyo.Param(initialize=ramp_down * dt_hours)
         block.natural_gas_co2_factor = pyo.Param(initialize=self.natural_gas_co2_factor_t_per_mwh)
         block.coal_co2_factor = pyo.Param(initialize=self.coal_co2_factor_t_per_mwh)
-        block.process_co2_factor = pyo.Param(initialize=self._process_co2_factor())
         block.min_operating_steps = pyo.Param(initialize=self.min_operating_steps)
         block.min_down_steps = pyo.Param(initialize=self.min_down_steps)
         initial_status = int(
@@ -1105,19 +1112,39 @@ class CementKilnLineStage:
         block.start_up = pyo.Var(time_steps, within=pyo.Binary)
         block.shut_down = pyo.Var(time_steps, within=pyo.Binary)
 
+    def _add_stage_parameters(self, block: pyo.Block) -> None:
+        """Hook: Params beyond the common set, e.g. the calciner's own calcination
+        factor. Default: none.
+
+        Kept separate from ``_add_common_parameters`` so a stage-specific coefficient is
+        materialised as a real Pyomo Param on the block - inspectable the same way every
+        other coefficient is - rather than closed over as a plain Python attribute.
+        """
+
     def _add_stage_variables(self, block: pyo.Block, time_steps: pyo.Set) -> None:
         """Hook: Vars beyond the common set. Default: none."""
-
-    def _output_heat_expr(self, block: pyo.Block, t: int) -> pyo.Expression:
-        """Hook: the heat that drives throughput. Default: the stage's own ``heat_out``."""
-        return block.heat_out[t]
 
     def _external_heat_expr(self, block: pyo.Block, t: int) -> pyo.Expression | float:
         """Hook: heat entering from outside the stage. Default: none."""
         return 0.0
 
-    def _process_co2_factor(self) -> float:
-        """Hook: non-combustion CO2 per tonne of output. Default: none."""
+    def _add_stage_constraints(
+        self, block: pyo.Block, time_steps: pyo.Set, output: pyo.Var
+    ) -> None:
+        """Hook: what this stage's output equals, and its own process CO2, if any.
+
+        Every concrete stage overrides this, even where the body barely differs from
+        another stage's - a preheater and a kiln both drive their output straight off
+        ``heat_out``, but each writes that ``output_from_heat`` constraint out for
+        itself rather than sharing it, so a reader never has to leave the class to see
+        what it does. Default: none.
+        """
+
+    def _additional_operating_cost_expr(
+        self, model: pyo.ConcreteModel, block: pyo.Block, t: int
+    ) -> pyo.Expression | float:
+        """Hook: cost beyond fuel, electricity and CO2, e.g. an oxyfuel stage's oxygen
+        supply. Default: none."""
         return 0.0
 
     def _add_firing_constraints(
@@ -1126,9 +1153,10 @@ class CementKilnLineStage:
         """Pyomo Components:
 
         - **Constraints**: ``heat_balance`` (fuel-switchable heat generation, plus any
-          external heat), fuel-exclusivity for the stage's ``fuel_type``, the fossil
-          natural-gas/coal split where fossil fuel is available, and
-          ``output_from_heat`` linking heat to throughput.
+          external heat), fuel-exclusivity for the stage's ``fuel_type``, and the
+          fossil natural-gas/coal split where fossil fuel is available. Linking that
+          heat to the stage's own throughput is each stage's own concern - see
+          ``_add_stage_constraints``.
         """
         fuel_type = self.fuel_type
 
@@ -1185,17 +1213,15 @@ class CementKilnLineStage:
             def fossil_split_coal(b: pyo.Block, t: int) -> pyo.Constraint:
                 return b.coal_in[t] == (1.0 - b.fossil_ng_share) * b.fossil_in[t]
 
-        @block.Constraint(time_steps)
-        def output_from_heat(b: pyo.Block, t: int) -> pyo.Constraint:
-            return output[t] == self._output_heat_expr(b, t) / b.specific_heat_demand
-
     def _add_aux_and_operational_constraints(
         self, block: pyo.Block, time_steps: pyo.Set, output: pyo.Var
     ) -> None:
         """Pyomo Components:
 
         - **Constraints**: auxiliary power drawn from throughput, the heat/commitment
-          coupling, heat ramp limits, and the full unit-commitment sub-model (state
+          coupling (``max_heat_if_on``/``min_heat_if_on`` - the stage may run anywhere
+          between its turndown floor and its rating while on, and must be at 0 while
+          off), heat ramp limits, and the full unit-commitment sub-model (state
           transition, minimum up/down time, and any residual time inherited from the
           previous rolling window).
         """
@@ -1208,6 +1234,10 @@ class CementKilnLineStage:
         @block.Constraint(time_steps)
         def max_heat_if_on(b: pyo.Block, t: int) -> pyo.Constraint:
             return b.heat_out[t] <= b.max_heat_out * b.operational_status[t]
+
+        @block.Constraint(time_steps)
+        def min_heat_if_on(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.heat_out[t] >= b.min_heat_out * b.operational_status[t]
 
         @block.Constraint(time_steps)
         def heat_ramp_up(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -1288,15 +1318,13 @@ class CementKilnLineStage:
     ) -> None:
         """Pyomo Components:
 
-        - **Constraints**: process and energy CO2, their sum, and operating cost
-          (aux power always billed; primary fuel billed for whichever commodity the
-          stage's ``fuel_type`` draws on).
+        - **Constraints**: energy CO2, its sum with the stage's own process CO2 (set in
+          ``_add_stage_constraints``), and operating cost (aux power always billed;
+          primary fuel billed for whichever commodity the stage's ``fuel_type`` draws
+          on; plus any stage-specific extra cost, e.g. an oxyfuel stage's oxygen
+          supply).
         """
         fuel_type = self.fuel_type
-
-        @block.Constraint(time_steps)
-        def process_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_process[t] == output[t] * b.process_co2_factor
 
         @block.Constraint(time_steps)
         def energy_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -1321,6 +1349,7 @@ class CementKilnLineStage:
             if fuel_type == HYDROGEN:
                 cost += b.hydrogen_in[t] * model.hydrogen_price[t]
             cost += b.co2_emission[t] * model.co2_price[t]
+            cost += self._additional_operating_cost_expr(model, b, t)
             return b.operating_cost[t] == cost
 
 
@@ -1332,6 +1361,7 @@ class CementPreheater(CementKilnLineStage):
 
     max_heat_out_mw: float
     specific_heat_demand_mwh_per_t: float
+    min_heat_out_mw: float = 0.0
     fuel_type: str = CEMENT_ELECTRICITY
     eta_electric: float = 0.98
     eta_fossil: float = 0.90
@@ -1357,6 +1387,7 @@ class CementPreheater(CementKilnLineStage):
             specific_heat_demand_mwh_per_t=_as_float(
                 row.get("specific_heat_demand"), "specific_heat_demand"
             ),
+            min_heat_out_mw=_as_float(row.get("min_heat_out"), "min_heat_out", default=0.0),
             fuel_type=_cement_fuel_type(row, "CementPreheater", default=CEMENT_ELECTRICITY),
             eta_electric=_as_float(row.get("eta_electric"), "eta_electric", default=0.98),
             eta_fossil=_as_float(row.get("eta_fossil"), "eta_fossil", default=0.90),
@@ -1393,6 +1424,23 @@ class CementPreheater(CementKilnLineStage):
     def _external_heat_expr(self, block: pyo.Block, t: int) -> pyo.Expression:
         return block.external_heat_in[t]
 
+    def _add_stage_constraints(
+        self, block: pyo.Block, time_steps: pyo.Set, output: pyo.Var
+    ) -> None:
+        """Pyomo Components:
+
+        - **Constraints**: ``output_from_heat``, raw meal produced from the preheater's
+          own ``heat_out``. No process CO2 - preheating is not a chemical reaction.
+        """
+
+        @block.Constraint(time_steps)
+        def output_from_heat(b: pyo.Block, t: int) -> pyo.Constraint:
+            return output[t] == b.heat_out[t] / b.specific_heat_demand
+
+        @block.Constraint(time_steps)
+        def process_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_process[t] == 0.0
+
 
 @dataclass
 class SimpleCementCalciner(CementKilnLineStage):
@@ -1400,6 +1448,7 @@ class SimpleCementCalciner(CementKilnLineStage):
 
     max_heat_out_mw: float
     specific_heat_demand_mwh_per_t: float
+    min_heat_out_mw: float = 0.0
     fuel_type: str = CEMENT_ELECTRICITY
     eta_electric: float = 0.95
     eta_fossil: float = 0.90
@@ -1426,6 +1475,7 @@ class SimpleCementCalciner(CementKilnLineStage):
             specific_heat_demand_mwh_per_t=_as_float(
                 row.get("specific_heat_demand"), "specific_heat_demand"
             ),
+            min_heat_out_mw=_as_float(row.get("min_heat_out"), "min_heat_out", default=0.0),
             fuel_type=_cement_fuel_type(row, "SimpleCementCalciner", default=CEMENT_ELECTRICITY),
             eta_electric=_as_float(row.get("eta_electric"), "eta_electric", default=0.95),
             eta_fossil=_as_float(row.get("eta_fossil"), "eta_fossil", default=0.90),
@@ -1461,14 +1511,153 @@ class SimpleCementCalciner(CementKilnLineStage):
             initial_operational_status=_as_int(row.get("initial_operational_status"), default=1),
         )
 
+    def _add_stage_parameters(self, block: pyo.Block) -> None:
+        """Pyomo Components:
+
+        - **Parameters**: ``calcination_emission_factor``, t process CO2 per t clinker.
+        """
+        block.calcination_emission_factor = pyo.Param(
+            initialize=self.calcination_emission_factor_t_per_t
+        )
+
     def _add_stage_variables(self, block: pyo.Block, time_steps: pyo.Set) -> None:
         block.effective_heat_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
 
-    def _output_heat_expr(self, block: pyo.Block, t: int) -> pyo.Expression:
-        return block.effective_heat_in[t]
+    def _add_stage_constraints(
+        self, block: pyo.Block, time_steps: pyo.Set, output: pyo.Var
+    ) -> None:
+        """Pyomo Components:
 
-    def _process_co2_factor(self) -> float:
-        return self.calcination_emission_factor_t_per_t
+        - **Constraints**: ``output_from_heat``, clinker calcined from
+          ``effective_heat_in`` (the calciner's own heat plus any thermal-storage
+          discharge - see ``CementPlant.initialize_process_sequence``), and
+          ``process_co2_constraint``, the calcination reaction's CO2, proportional to
+          clinker output regardless of what fired the heat.
+        """
+
+        @block.Constraint(time_steps)
+        def output_from_heat(b: pyo.Block, t: int) -> pyo.Constraint:
+            return output[t] == b.effective_heat_in[t] / b.specific_heat_demand
+
+        @block.Constraint(time_steps)
+        def process_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_process[t] == output[t] * b.calcination_emission_factor
+
+
+@dataclass
+class OxyfuelCementCalciner(SimpleCementCalciner):
+    """A calciner fired with oxygen instead of air, for CO2 capture.
+
+    Inherits the complete heat, fuel-switching, clinker-output, ramping, commitment,
+    CO2-emission, and cost formulation of ``SimpleCementCalciner`` unchanged, and adds
+    only the oxygen this combustion draws:
+
+    .. math::
+
+        \\text{oxygen\\_in}_t = \\text{natural\\_gas\\_in}_t \\cdot \\alpha_{ng}
+            + \\text{coal\\_in}_t \\cdot \\alpha_{coal}
+            + \\text{hydrogen\\_in}_t \\cdot \\alpha_{h_2}
+
+    with each :math:`\\alpha_f` in t O2 per MWh of that fuel. Reading straight off the
+    parent's own fuel Vars, rather than off clinker output, means oxygen demand moves
+    with actual fuel switching - electric heat draws none, exactly as burning nothing
+    should.
+
+    Oxygen supply is deliberately not modelled here: the cement plant is free to wire
+    ``oxygen_in`` to external/ASU oxygen, an electrolyser's coproduct, or a blend of
+    both. A purely electric calciner has no combustion to capture from, so
+    ``fuel_type='electricity'`` is rejected - use ``SimpleCementCalciner`` for that case.
+    """
+
+    natural_gas_oxygen_demand_t_per_mwh: float = 0.0
+    coal_oxygen_demand_t_per_mwh: float = 0.0
+    hydrogen_oxygen_demand_t_per_mwh: float = 0.0
+
+    def __post_init__(self) -> None:
+        """Require an oxygen coefficient for every combustion fuel this fuel_type uses."""
+        if self.fuel_type == CEMENT_ELECTRICITY:
+            raise ValueError(
+                "OxyfuelCementCalciner cannot use fuel_type='electricity'. "
+                "Use simple_calciner for a fully electric calciner."
+            )
+        if self.fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}:
+            if self.fossil_ng_share > 0.0 and self.natural_gas_oxygen_demand_t_per_mwh <= 0.0:
+                raise ValueError(
+                    "natural_gas_oxygen_demand must be positive when the oxyfuel calciner "
+                    "uses natural gas."
+                )
+            if self.fossil_ng_share < 1.0 and self.coal_oxygen_demand_t_per_mwh <= 0.0:
+                raise ValueError(
+                    "coal_oxygen_demand must be positive when the oxyfuel calciner uses coal."
+                )
+        if self.fuel_type == HYDROGEN and self.hydrogen_oxygen_demand_t_per_mwh <= 0.0:
+            raise ValueError(
+                "hydrogen_oxygen_demand must be positive when the oxyfuel calciner uses hydrogen."
+            )
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> OxyfuelCementCalciner:
+        """Parse the shared calciner fields via the parent, then this stage's own."""
+        base = SimpleCementCalciner.from_row(row)
+        fossil_route = base.fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}
+        natural_gas_required = fossil_route and base.fossil_ng_share > 0.0
+        coal_required = fossil_route and base.fossil_ng_share < 1.0
+        hydrogen_required = base.fuel_type == HYDROGEN
+
+        return cls(
+            **vars(base),
+            natural_gas_oxygen_demand_t_per_mwh=_as_float(
+                _first_present(row.get("natural_gas_oxygen_demand"), row.get("ng_oxygen_demand")),
+                "natural_gas_oxygen_demand",
+                default=None if natural_gas_required else 0.0,
+            ),
+            coal_oxygen_demand_t_per_mwh=_as_float(
+                row.get("coal_oxygen_demand"),
+                "coal_oxygen_demand",
+                default=None if coal_required else 0.0,
+            ),
+            hydrogen_oxygen_demand_t_per_mwh=_as_float(
+                _first_present(row.get("hydrogen_oxygen_demand"), row.get("h2_oxygen_demand")),
+                "hydrogen_oxygen_demand",
+                default=None if hydrogen_required else 0.0,
+            ),
+        )
+
+    def _add_stage_parameters(self, block: pyo.Block) -> None:
+        """Pyomo Components:
+
+        - **Parameters**: the parent's ``calcination_emission_factor``, plus this
+          stage's own oxygen-demand coefficients, one per combustion fuel.
+        """
+        super()._add_stage_parameters(block)
+        block.natural_gas_oxygen_demand = pyo.Param(
+            initialize=self.natural_gas_oxygen_demand_t_per_mwh
+        )
+        block.coal_oxygen_demand = pyo.Param(initialize=self.coal_oxygen_demand_t_per_mwh)
+        block.hydrogen_oxygen_demand = pyo.Param(initialize=self.hydrogen_oxygen_demand_t_per_mwh)
+
+    def _add_stage_variables(self, block: pyo.Block, time_steps: pyo.Set) -> None:
+        super()._add_stage_variables(block, time_steps)
+        block.oxygen_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+
+    def _add_firing_constraints(
+        self, block: pyo.Block, time_steps: pyo.Set, output: pyo.Var
+    ) -> None:
+        """Adds ``oxygen_requirement_constraint`` on top of the parent's firing physics."""
+        super()._add_firing_constraints(block, time_steps, output)
+
+        @block.Constraint(time_steps)
+        def oxygen_requirement_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.oxygen_in[t] == (
+                b.natural_gas_in[t] * b.natural_gas_oxygen_demand
+                + b.coal_in[t] * b.coal_oxygen_demand
+                + b.hydrogen_in[t] * b.hydrogen_oxygen_demand
+            )
+
+    def _additional_operating_cost_expr(
+        self, model: pyo.ConcreteModel, block: pyo.Block, t: int
+    ) -> pyo.Expression:
+        return block.oxygen_in[t] * model.oxygen_price[t]
 
 
 @dataclass
@@ -1477,6 +1666,7 @@ class CementKiln(CementKilnLineStage):
 
     max_heat_out_mw: float
     specific_heat_demand_mwh_per_t: float
+    min_heat_out_mw: float = 0.0
     fuel_type: str = CEMENT_FOSSIL
     eta_electric: float = 0.95
     eta_fossil: float = 0.90
@@ -1502,6 +1692,7 @@ class CementKiln(CementKilnLineStage):
             specific_heat_demand_mwh_per_t=_as_float(
                 row.get("specific_heat_demand"), "specific_heat_demand"
             ),
+            min_heat_out_mw=_as_float(row.get("min_heat_out"), "min_heat_out", default=0.0),
             fuel_type=_cement_fuel_type(row, "CementKiln", default=CEMENT_FOSSIL),
             eta_electric=_as_float(row.get("eta_electric"), "eta_electric", default=0.95),
             eta_fossil=_as_float(row.get("eta_fossil"), "eta_fossil", default=0.90),
@@ -1532,8 +1723,25 @@ class CementKiln(CementKilnLineStage):
             initial_operational_status=_as_int(row.get("initial_operational_status"), default=1),
         )
 
-    # No overrides: a kiln uses the base class's defaults for every hook - its own
-    # ``heat_out``, no external heat, and no process CO2.
+    # No external heat: the base class's default (none) is correct as-is.
+
+    def _add_stage_constraints(
+        self, block: pyo.Block, time_steps: pyo.Set, output: pyo.Var
+    ) -> None:
+        """Pyomo Components:
+
+        - **Constraints**: ``output_from_heat``, clinker calcined from the kiln's own
+          ``heat_out`` directly - a bare kiln performs the calcination reaction itself,
+          with no separate calciner upstream. No process CO2 modelled here.
+        """
+
+        @block.Constraint(time_steps)
+        def output_from_heat(b: pyo.Block, t: int) -> pyo.Constraint:
+            return output[t] == b.heat_out[t] / b.specific_heat_demand
+
+        @block.Constraint(time_steps)
+        def process_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_process[t] == 0.0
 
 
 @dataclass
@@ -1712,6 +1920,7 @@ TECHNOLOGY_REGISTRY = {
     "bf_bof": BlastFurnaceBasicOxygenFurnace,
     "preheater": CementPreheater,
     "simple_calciner": SimpleCementCalciner,
+    "oxyfuel_calciner": OxyfuelCementCalciner,
     "kiln": CementKiln,
     "generic_storage": GenericInventoryStorage,
     "hydrogen_buffer_storage": HydrogenBufferStorage,

@@ -17,7 +17,12 @@ from flexi_mod.plants.cement_plant import (
     CementStageState,
 )
 from flexi_mod.plants.factory import build_plants
-from flexi_mod.plants.technologies import CementKiln, CementPreheater, SimpleCementCalciner
+from flexi_mod.plants.technologies import (
+    CementKiln,
+    CementPreheater,
+    OxyfuelCementCalciner,
+    SimpleCementCalciner,
+)
 from flexi_mod.simulation.simulation_runner import SimulationRunner
 
 
@@ -410,6 +415,27 @@ def test_rolling_carries_hydrogen_storage_fill_across_commit_boundaries(case_dir
     )
 
 
+def test_rolling_carries_oxyfuel_calciner_state_across_commit_boundaries(case_dir: Path) -> None:
+    """Regression guard: state carry-over must resolve the calciner's actual key.
+
+    ``_state_after_commit`` rebuilds each stage's result-column name from the technology
+    key it stored the stage under. For an oxyfuel calciner that key is
+    ``oxyfuel_calciner``, but its columns are still reported as ``simple_calciner_*`` -
+    reading the wrong column name raised a ``KeyError`` on the second rolling window,
+    since the first window never exercises carry-over at all.
+    """
+    config = _rolling_config(CaseConfig.from_case_dir(case_dir), horizon_hours=1.0, step_hours=0.5)
+    plant = CementPlant.from_rows("cement_1", _oxyfuel_cement_rows())
+    forecasts = _long_cement_forecasts()
+    forecasts["oxygen_price"] = 20.0
+
+    result = plant.solve_rolling(config, forecasts, _signals())
+
+    assert result["rolling_window"].nunique() > 1
+    assert result["clinker_output_t"].sum() > 0.0
+    assert (result["simple_calciner_oxygen_consumption_t"] >= 0.0).all()
+
+
 def test_rolling_serves_out_minimum_downtime_inherited_from_the_previous_window(
     case_dir: Path,
 ) -> None:
@@ -462,6 +488,92 @@ def test_thermal_storage_charging_is_priced_into_the_objective(case_dir: Path) -
     result = plant.solve_horizon(config, forecasts, _signals())
 
     assert result["thermal_storage_charge_MWh"].sum() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_oxyfuel_calciner_is_registered_and_builds() -> None:
+    plant = CementPlant.from_rows("cement_1", _oxyfuel_cement_rows())
+
+    assert isinstance(plant.components["oxyfuel_calciner"], OxyfuelCementCalciner)
+    assert plant.cement_route == "preheater_oxyfuel_calciner_kiln"
+
+
+def test_oxyfuel_calciner_rejects_electric_fuel_type() -> None:
+    rows = _oxyfuel_cement_rows()
+    rows.loc[rows["technology"] == "oxyfuel_calciner", "fuel_type"] = "electricity"
+
+    with pytest.raises(ValueError, match="cannot use fuel_type='electricity'"):
+        CementPlant.from_rows("cement_1", rows)
+
+
+def test_oxyfuel_calciner_csv_row_requires_an_oxygen_coefficient_for_its_fuel() -> None:
+    """A fossil calciner row with no natural-gas oxygen coefficient is a config error.
+
+    Silently defaulting it to zero would let the LP burn gas and capture no oxygen for
+    it, which is physically wrong rather than merely imprecise.
+    """
+    rows = _cement_rows()
+    is_calciner = rows["technology"] == "simple_calciner"
+    rows.loc[is_calciner, "technology"] = "oxyfuel_calciner"
+
+    with pytest.raises(ValueError, match="Missing required numeric plant parameter"):
+        CementPlant.from_rows("cement_1", rows)
+
+
+def test_oxyfuel_calciner_rejects_an_explicit_zero_oxygen_coefficient() -> None:
+    """Direct construction (bypassing ``from_row``) must also be validated.
+
+    A field explicitly set to zero is not "missing", so only ``__post_init__`` - not
+    ``from_row``'s CSV-completeness check - can catch this one.
+    """
+    with pytest.raises(ValueError, match="natural_gas_oxygen_demand must be positive"):
+        OxyfuelCementCalciner(
+            max_heat_out_mw=20.0,
+            specific_heat_demand_mwh_per_t=0.7,
+            fuel_type="fossil",
+            fossil_ng_share=1.0,
+            natural_gas_oxygen_demand_t_per_mwh=0.0,
+        )
+
+
+def test_oxyfuel_calciner_oxygen_tracks_fuel_switching(case_dir: Path) -> None:
+    """Oxygen demand reads off actual fuel burned, not off clinker output.
+
+    The fixture calciner is 100% fossil with ``eta_fossil=1.0`` and no coal
+    (``fossil_ng_share=1.0``), so ``heat_out == natural_gas_in`` exactly; oxygen
+    consumption must then equal ``heat_out`` times the coefficient - proving the
+    constraint is wired to actual fuel input, not to a fixed per-tonne clinker rate.
+    """
+    config = CaseConfig.from_case_dir(case_dir)
+    plant = CementPlant.from_rows("cement_1", _oxyfuel_cement_rows(natural_gas_oxygen_demand=0.2))
+
+    result = plant.solve_horizon(
+        config, _cement_forecasts(include_coal=False, include_oxygen=True), _signals()
+    )
+
+    assert result["simple_calciner_heat_output_MWh"].sum() > 0.0, "fixture must burn fuel"
+    assert result["simple_calciner_oxygen_consumption_t"].to_numpy() == pytest.approx(
+        result["simple_calciner_heat_output_MWh"].to_numpy() * 0.2
+    )
+
+
+def test_oxyfuel_calciner_oxygen_cost_enters_the_objective(case_dir: Path) -> None:
+    """A nonzero oxygen price must raise cost by exactly ``oxygen_in * oxygen_price``."""
+    config = CaseConfig.from_case_dir(case_dir)
+    plant = CementPlant.from_rows("cement_1", _oxyfuel_cement_rows())
+    free_oxygen = _cement_forecasts(include_coal=False, include_oxygen=True)
+    free_oxygen["oxygen_price"] = 0.0
+    priced_oxygen = _cement_forecasts(include_coal=False, include_oxygen=True)
+    priced_oxygen["oxygen_price"] = 20.0
+
+    free_result = plant.solve_horizon(config, free_oxygen, _signals())
+    priced_result = plant.solve_horizon(config, priced_oxygen, _signals())
+
+    expected_extra_cost = (priced_result["simple_calciner_oxygen_consumption_t"] * 20.0).sum()
+    actual_extra_cost = (
+        priced_result["variable_cost_EUR"].sum() - free_result["variable_cost_EUR"].sum()
+    )
+    assert actual_extra_cost == pytest.approx(expected_extra_cost, rel=1e-6)
+    assert expected_extra_cost > 0.0
 
 
 def _assert_storage_balance(
@@ -602,7 +714,7 @@ def _hydrogen_cement_rows(include_electrolyser: bool) -> pd.DataFrame:
     return rows
 
 
-def _cement_forecasts(include_coal: bool) -> pd.DataFrame:
+def _cement_forecasts(include_coal: bool, include_oxygen: bool = False) -> pd.DataFrame:
     data = {
         "electricity_price": [30.0, 40.0, 80.0, 100.0],
         "natural_gas_price": [50.0] * 4,
@@ -612,7 +724,18 @@ def _cement_forecasts(include_coal: bool) -> pd.DataFrame:
     }
     if include_coal:
         data["coal_price"] = [15.0] * 4
+    if include_oxygen:
+        data["oxygen_price"] = [20.0] * 4
     return pd.DataFrame(data, index=pd.date_range("2025-01-01", periods=4, freq="15min"))
+
+
+def _oxyfuel_cement_rows(*, natural_gas_oxygen_demand: float = 0.2) -> pd.DataFrame:
+    """The standard fixture with an oxyfuel calciner in place of the simple one."""
+    rows = _cement_rows()
+    is_calciner = rows["technology"] == "simple_calciner"
+    rows.loc[is_calciner, "technology"] = "oxyfuel_calciner"
+    rows.loc[is_calciner, "natural_gas_oxygen_demand"] = natural_gas_oxygen_demand
+    return rows
 
 
 def _signals() -> CementDispatchSignals:
