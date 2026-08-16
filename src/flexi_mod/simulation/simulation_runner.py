@@ -27,6 +27,7 @@ from flexi_mod.strategies import build_strategy
 from flexi_mod.strategies.cement_cost_minimization_strategy import (
     CementCostMinimizationStrategy,
 )
+from flexi_mod.strategies.electrified_cement_strategy import ElectrifiedCementStrategy
 from flexi_mod.strategies.electrified_steel_strategy import ElectrifiedSteelStrategy
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.strategies.steel_cost_minimization_strategy import (
@@ -374,8 +375,13 @@ class SimulationRunner:
         plants: list[CementPlant],
     ) -> dict[str, Path | list[Path]]:
         strategy = build_strategy(self.config.strategy_name, self.config)
-        if not isinstance(strategy, CementCostMinimizationStrategy):
-            raise ValueError("Cement plants require strategy.name='cement_cost_minimization'")
+        if not isinstance(
+            strategy, (CementCostMinimizationStrategy, ElectrifiedCementStrategy)
+        ):
+            raise ValueError(
+                "Cement plants require strategy.name='cement_cost_minimization' or "
+                "'electrified_cement'"
+            )
         additional_charges = self.loader.load_additional_charges(plants_df)
         for plant in plants:
             regulation = build_grid_fee_regulation(
@@ -400,9 +406,32 @@ class SimulationRunner:
         self._progress("Cement input data loaded")
 
         dispatch_parts: list[pd.DataFrame] = []
+        windows_per_plant = len(_decision_windows(self.config, forecasts))
+        total_windows = len(plants) * windows_per_plant
+        progress_counter = 0
         for plant in plants:
             self._progress(f"Cement dispatch started for {plant.name}")
-            dispatch_parts.append(strategy.dispatch(plant, forecasts))
+
+            def report_window(
+                window_start: pd.Timestamp,
+                window_end: pd.Timestamp,
+                plant_name: str = plant.name,
+            ) -> None:
+                nonlocal progress_counter
+                progress_counter += 1
+                self._progress(
+                    _window_progress_message(
+                        current=progress_counter,
+                        total=total_windows,
+                        plant_name=plant_name,
+                        window_start=window_start,
+                        window_end=window_end,
+                    )
+                )
+
+            dispatch_parts.append(
+                strategy.dispatch(plant, forecasts, progress_callback=report_window)
+            )
             self._progress(f"Cement dispatch completed for {plant.name}")
         dispatch_results = pd.concat(dispatch_parts).sort_index()
         grid_fee_results = self._settle_grid_fees(plants, dispatch_results)
@@ -424,7 +453,25 @@ class SimulationRunner:
             path = output_dir / "summary_indicators.csv"
             summary.to_csv(path, index=False)
             output_paths["summary_indicators"] = path
-        if (
+        if isinstance(strategy, ElectrifiedCementStrategy):
+            market_ledger = MarketLedger()
+            market_ledger.update_from_dispatch_results(dispatch_results)
+            if self.output_options.save_market_ledger:
+                output_paths["market_ledger"] = market_ledger.save(output_dir / "market_ledger.csv")
+            if not strategy.afrr_capacity_block_summary.empty:
+                path = output_dir / "afrr_capacity_block_summary.csv"
+                strategy.afrr_capacity_block_summary.to_csv(path, index=False)
+                output_paths["afrr_capacity_block_summary"] = path
+            if not strategy.afrr_energy_data_quality_summary.empty:
+                path = output_dir / "afrr_energy_data_quality_summary.csv"
+                strategy.afrr_energy_data_quality_summary.to_csv(path, index=False)
+                output_paths["afrr_energy_data_quality_summary"] = path
+            if self.output_options.save_storage_cost_ledger or self.output_options.create_plots:
+                self._progress(
+                    "Electrified-cement mode writes the common market ledger and aFRR "
+                    "summaries; storage-cost ledger and market plots remain unavailable."
+                )
+        elif (
             self.output_options.save_market_ledger
             or self.output_options.save_storage_cost_ledger
             or self.output_options.create_plots
@@ -753,6 +800,7 @@ def _cement_summary_frame(dispatch_results: pd.DataFrame) -> pd.DataFrame:
             {
                 "plant_name": plant_name,
                 "plant_type": str(group["plant_type"].iloc[-1]),
+                "cement_route": str(group["cement_route"].iloc[-1]),
                 "clinker_demand_total_t": target,
                 "total_clinker_production_t": produced,
                 "total_electricity_consumption_MWh": total("total_electricity_consumption_MWh"),
@@ -778,6 +826,17 @@ def _cement_summary_frame(dispatch_results: pd.DataFrame) -> pd.DataFrame:
                     if "thermal_storage_soc_MWh" in group
                     else float("nan")
                 ),
+                "total_afrr_energy_bid_MWh": total("afrr_energy_bid_MWh"),
+                "total_afrr_energy_activated_MWh": total("afrr_energy_activated_MWh"),
+                "total_afrr_energy_capacity_backed_bid_MWh": total(
+                    "afrr_energy_capacity_backed_bid_MWh"
+                ),
+                "total_afrr_energy_free_bid_MWh": total("afrr_energy_free_bid_MWh"),
+                "total_afrr_capacity_revenue_EUR": total("afrr_capacity_revenue_EUR"),
+                "total_afrr_capacity_opportunity_cost_EUR": total(
+                    "afrr_capacity_opportunity_cost_EUR"
+                ),
+                "total_afrr_capacity_net_value_EUR": total("afrr_capacity_net_value_EUR"),
                 "final_clinker_demand_balance_t": target - produced,
             }
         )

@@ -414,13 +414,32 @@ hydrogen_buffer_storage
 thermal_storage
 ```
 
-The terminal clinker output is `kiln.clinker_out` when a kiln is configured,
-otherwise `calciner.clinker_out`. A preheater currently requires a downstream
-calciner. Thermal storage buffers the calciner by adding discharge heat to
-calciner effective heat. Hydrogen follows the same rule used by steel: with an
-electrolyser, hydrogen consumption is constrained by electrolyser output and
-optional hydrogen storage; without an electrolyser, hydrogen is purchased
-externally at `hydrogen_price`.
+Thermal storage buffers the calciner by adding discharge heat to calciner
+effective heat, and its charging electricity is part of the minimised cost.
+Hydrogen follows the same rule used by steel: with an electrolyser, hydrogen
+consumption is constrained by electrolyser output and optional hydrogen storage;
+without an electrolyser, hydrogen is purchased externally at `hydrogen_price`.
+
+#### Cement physical routes
+
+Like `steel_plant`, a cement plant resolves a named route once at build time and
+reports it as `cement_route`. The route is the configured kiln-line stages in
+flow order, joined by `_`:
+
+| Configured stages | `cement_route` | Terminal | Raw meal feeds |
+| --- | --- | --- | --- |
+| preheater + calciner + kiln | `preheater_calciner_kiln` | kiln | calciner |
+| preheater + calciner | `preheater_calciner` | calciner | calciner |
+| preheater + kiln | `preheater_kiln` | kiln | kiln |
+| calciner + kiln | `calciner_kiln` | kiln | - |
+| kiln | `kiln` | kiln | - |
+| calciner | `calciner` | calciner | - |
+
+The terminal stage's `clinker_out` is the plant output. Preheated raw meal feeds
+the calciner where there is one, otherwise the kiln, which then performs the
+calcination reaction itself - so `preheater_kiln` is a valid single-stage line
+rather than an error. A plant must define a calciner or a kiln; `thermal_storage`
+requires a calciner, and `hydrogen_buffer_storage` requires an electrolyser.
 
 Fuel types for preheater, calciner and kiln are:
 
@@ -435,27 +454,131 @@ The old `both` label is rejected because it is ambiguous. Fossil operation uses
 `fossil_ng_share` to split natural gas and coal. `coal_price` is required only
 when the configured fossil split uses coal.
 
-Demand is `clinker_demand` in `plants.csv`, interpreted as total tonnes over the
-loaded simulation period. If it is blank, `demand` points to a clinker-demand
-forecast column; if `demand` is blank too, the default is
-`<plant_name>_clinker_demand`. Forecast values are tonnes per timestep and are
-summed into a flexible cumulative clinker target.
+#### Cement demand
 
-The temporary strategy is:
+Cement has a single demand mode: a per-timestep clinker demand read from a
+forecast column, enforced as a minimum in every timestep
+(`clinker_out[t] >= clinker_demand_per_timestep[t]`). The `demand` column in
+`plants.csv` names the forecast column; when it is blank the default is
+`<plant_name>_clinker_demand`. Values are tonnes per timestep, and the column is
+always required.
+
+A scalar `clinker_demand` in `plants.csv` is **rejected**. Unlike steel there is
+no cumulative-target mode, so an hourly profile is never flattened into an annual
+total.
+
+Because cost minimisation never produces above the minimum, the production
+schedule is effectively pinned by the demand profile. Flexibility comes from the
+thermal storage shifting *when electricity is bought* and from fuel switching -
+not from moving production between hours.
+
+#### Cement rolling horizon
+
+Cement dispatch runs on the same rolling horizon as steel, controlled by
+`rolling_horizon_enabled` (default true), `dispatch_horizon_hours` and
+`rolling_step_hours`. Each window optimises the look-ahead horizon, commits only
+its leading `rolling_step_hours`, and hands the committed end state to the next
+window: stage on/off states with their consecutive-step counts, and storage fill
+levels.
+
+The loop is simpler than steel's. A per-timestep minimum means the plant can
+never fall behind, so there is no demand backlog to carry, no backlog-recovery
+constraint, and no final-window reconciliation. The run ends by checking that
+total production covers total demand.
+
+Committed rows carry `rolling_window`, `clinker_committed_output_t`,
+`cumulative_clinker_output_t`, `remaining_clinker_demand_t` and
+`clinker_demand_total_t`, alongside the per-stage `*_operational_status` columns
+the state carry-over reads.
+
+#### Cement market bidding
+
+`electrified_cement` bids the day-ahead market against aFRR down, using the same
+market layer as `electrified_steel`. That layer lives in
+`src/flexi_mod/plants/afrr_down/` and is plant-agnostic: it owns bid prices,
+capacity products, integer bid sizing, activation and the objective, and reaches
+each plant through the `AFRRDownPlant` protocol. What a plant consumes, how it
+dispatches and what its inventories mean stay with the plant.
+
+Each window is built twice, as two Pyomo blocks over one shared day-ahead
+schedule:
+
+- `model.actual` — the plan the plant commits to, and the only one reported or
+  carried into the next window.
+- `model.full_activation` — a hypothetical "what if the TSO calls the whole bid".
+  It is never realised; it exists to prove the bid is physically deliverable.
+
+Cement applies **identical** constraints to both, unlike steel. Steel must drop
+its cumulative-output equality on the hypothetical branch because a different
+power draw fights it. Cement's demand is a per-timestep band that a higher draw
+cannot violate, and dropping it would be wrong twice over: on a route with
+storage the twin would absorb the whole bid while making no clinker, making the
+feasibility test vacuous; on a route with no storage or electrolyser the only
+electric load is auxiliary power, which is proportional to output, so zero output
+would make the electricity balance unsatisfiable and silently force every bid to
+zero.
+
+**Where cement's flexibility comes from.** The kiln line is pinned to the hourly
+clinker demand, and the clinker band forbids making surplus clinker to absorb
+energy — there is no silo, so it would simply vanish. The offerable capacity is
+therefore the room left in the thermal store's charging power, plus stage
+auxiliaries. `afrr_aggregate_max_power_mw` sums four terms accordingly:
+
+```
+electric heating of any stage on an electricity or hybrid fuel type
++ auxiliary power of every stage (throughput x specific_electricity_aux)
++ electrolyser rated power
++ thermal storage charging power
+```
+
+The auxiliary term is easy to overlook and is the *only* electric load on a plain
+fossil route with no storage or electrolyser; omitting it collapses every bid to
+zero with no error.
+
+Each window is solved twice — once with capacity bidding disabled — so the cost
+difference prices what committing capacity actually costs. That appears as
+`afrr_capacity_opportunity_cost_EUR`.
+
+Cement market runs additionally write `market_ledger.csv`,
+`afrr_capacity_block_summary.csv` and `afrr_energy_data_quality_summary.csv`.
+
+Two cement strategies exist. The price taker:
 
 ```yaml
 strategy:
   name: cement_cost_minimization
   dispatch:
     dispatch_method: pyomo
+    rolling_horizon_enabled: true
+    dispatch_horizon_hours: 48
+    rolling_step_hours: 24
 ```
 
 It uses the connected day-ahead market price for electricity and standard
 forecast columns `natural_gas_price`, `hydrogen_price`, `coal_price` when needed,
 and `co2_price`. It writes physical `dispatch_results.csv` and
-`summary_indicators.csv`. With `additional_charges: true`, cement also writes
-the common `grid_fee_summary.csv` and merges the German regulatory true-up into
-the summary. Market ledgers and cement market bidding are later work.
+`summary_indicators.csv`.
+
+And two market bidders, `electrified_cement` and
+`electrified_cement_rule_based`. Both need all three markets enabled in the
+sequence `afrr_capacity, day_ahead, afrr_energy`, the German gate calendar, and a
+`dispatch_horizon_hours` covering `rolling_step_hours` plus one whole aFRR
+capacity product. See *Cement market bidding* above.
+
+`electrified_cement` co-optimises the day-ahead position against both aFRR
+products in one MILP. `electrified_cement_rule_based` decides production timing
+first and sizes capacity from whatever that fixed schedule leaves spare, which is
+several times faster but understates the opportunity — measured at roughly 4%
+higher net cost on a four-day A360 slice.
+
+**Do not compare `afrr_capacity_net_value_EUR` across the two.** The rule-based
+variant never solves a capacity-disabled baseline, so it cannot price what
+committing capacity costs: its opportunity cost is always zero and its "net
+value" is therefore just revenue. It can read as the better strategy while the
+plant is measurably worse off. Only `net_operating_cost_EUR` is comparable.
+
+With `additional_charges: true`, both write the common `grid_fee_summary.csv` and
+merge the German regulatory true-up into the summary.
 
 If the selected `cases.<case_name>` entry sets `additional_charges: true`,
 `additional_charges.csv` is interpreted by the network-tariff regulation selected

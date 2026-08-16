@@ -319,8 +319,14 @@ def _record_from_dispatch_row(timestamp: pd.Timestamp, row: pd.Series) -> dict[s
         "afrr_capacity_market_surplus_EUR": _value(row, "afrr_capacity_market_surplus_EUR", 0.0),
         "afrr_capacity_net_value_EUR": _value(row, "afrr_capacity_net_value_EUR", 0.0),
         "reserved_capacity_headroom_MWh": _value(row, "reserved_capacity_headroom_MWh", 0.0),
+        # Steam plants report the headroom of their charging path; industrial plants
+        # (steel, cement) report the headroom of their whole electric load under the
+        # name ``available_load_...``. Reading only the steam name left this column at
+        # zero for every steel and cement run.
         "available_charge_headroom_after_schedule_MWh": _value(
-            row, "available_charge_headroom_after_schedule_MWh", 0.0
+            row,
+            "available_charge_headroom_after_schedule_MWh",
+            _value(row, "available_load_headroom_after_schedule_MWh", 0.0),
         ),
         "available_storage_headroom_after_schedule_MWh": _value(
             row, "available_storage_headroom_after_schedule_MWh", 0.0

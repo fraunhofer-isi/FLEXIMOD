@@ -12,14 +12,28 @@ from typing import Any
 
 import pandas as pd
 import pyomo.environ as pyo
-from pyomo.common.errors import ApplicationError
-from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
-from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.plants.base_plant import BasePlant
+from flexi_mod.markets.afrr_energy import validate_bid_rules
+from flexi_mod.plants.afrr_down import (
+    AFRR_DOWN_RESULT_COLUMNS,
+    AFRRDownMarketSignals,
+    AFRRWindow,
+    FuelSubstitution,
+    TrajectoryRole,
+    append_afrr_result_row,
+    attach_capacity_opportunity_cost,
+    build_afrr_down_market_model,
+)
+from flexi_mod.plants.dispatch_plant import DispatchPlant
+from flexi_mod.plants.rolling import (
+    ROLLING_DEMAND_TOLERANCE_T,
+    solve_dispatch_model,
+    validate_rolling_window,
+)
 from flexi_mod.plants.technologies import (
     COAL,
+    HYBRID_HYDROGEN_NATURAL_GAS,
     TECHNOLOGY_REGISTRY,
     BasicOxygenFurnace,
     BlastFurnaceBasicOxygenFurnace,
@@ -29,7 +43,6 @@ from flexi_mod.plants.technologies import (
     first_non_empty,
 )
 
-ROLLING_DEMAND_TOLERANCE_T = 1e-6
 FINAL_WINDOW_RECONCILIATION_T = 1e-7
 
 
@@ -49,8 +62,41 @@ class SteelDispatchSignals:
 
 
 @dataclass(frozen=True)
+class SteelWindowPlan:
+    """What one rolling window owes, carried opaquely through the shared market layer."""
+
+    initial_state: SteelRollingState
+    steel_demand_override_t: float
+    minimum_commit_output_t: float
+    demand_mode: str
+
+
+@dataclass(frozen=True)
+class SteelAFRRDownCommoditySignals:
+    """Forecast columns for what a steel plant consumes, as opposed to what it buys power on.
+
+    Iron ore and lime are steel's alone; the fuels and CO2 happen to be shared with other
+    families but are still the plant's business, because only the plant knows which of
+    them it actually prices (hydrogen is free when made on site, coal only matters on a
+    coal route).
+    """
+
+    iron_ore_price_col: str
+    lime_price_col: str
+    co2_price_col: str
+    natural_gas_price_col: str
+    hydrogen_price_col: str
+    coal_price_col: str = "coal_price"
+
+
+@dataclass(frozen=True)
 class SteelAFRRDownSignals:
-    """Ontology-aligned market and commodity inputs for electrified steel."""
+    """Ontology-aligned market and commodity inputs for electrified steel.
+
+    Kept flat for construction, but exposes the two halves separately: the market layer
+    is shared across plant families and must never see ``iron_ore_price_col``, while the
+    commodity half is handed straight back to the plant that owns it.
+    """
 
     da_price_col: str
     afrr_energy_price_col: str
@@ -72,6 +118,40 @@ class SteelAFRRDownSignals:
     afrr_capacity_bid_increment_mw: float = 1.0
     afrr_capacity_product_duration_h: float = 4.0
     coal_price_col: str = "coal_price"
+
+    @property
+    def market(self) -> AFRRDownMarketSignals:
+        """The half the shared market layer consumes."""
+        return AFRRDownMarketSignals(
+            da_price_col=self.da_price_col,
+            afrr_energy_price_col=self.afrr_energy_price_col,
+            afrr_system_activation_col=self.afrr_system_activation_col,
+            afrr_price_available_col=self.afrr_price_available_col,
+            afrr_capacity_block_id_col=self.afrr_capacity_block_id_col,
+            afrr_capacity_block_duration_col=self.afrr_capacity_block_duration_col,
+            afrr_capacity_price_col=self.afrr_capacity_price_col,
+            afrr_capacity_missing_price_col=self.afrr_capacity_missing_price_col,
+            additional_electricity_charge_eur_per_mwh=(
+                self.additional_electricity_charge_eur_per_mwh
+            ),
+            afrr_energy_min_bid_mw=self.afrr_energy_min_bid_mw,
+            afrr_energy_bid_increment_mw=self.afrr_energy_bid_increment_mw,
+            afrr_capacity_min_bid_mw=self.afrr_capacity_min_bid_mw,
+            afrr_capacity_bid_increment_mw=self.afrr_capacity_bid_increment_mw,
+            afrr_capacity_product_duration_h=self.afrr_capacity_product_duration_h,
+        )
+
+    @property
+    def commodities(self) -> SteelAFRRDownCommoditySignals:
+        """The half only the steel plant consumes."""
+        return SteelAFRRDownCommoditySignals(
+            iron_ore_price_col=self.iron_ore_price_col,
+            lime_price_col=self.lime_price_col,
+            co2_price_col=self.co2_price_col,
+            natural_gas_price_col=self.natural_gas_price_col,
+            hydrogen_price_col=self.hydrogen_price_col,
+            coal_price_col=self.coal_price_col,
+        )
 
 
 @dataclass(frozen=True)
@@ -97,7 +177,7 @@ class SteelRollingState:
 
 
 @dataclass
-class SteelPlant(BasePlant):
+class SteelPlant(DispatchPlant):
     """Route-aware steel-production model.
 
     Supported terminal routes are DRI -> EAF, DRI -> BOF, and standalone BF-BOF.
@@ -220,7 +300,7 @@ class SteelPlant(BasePlant):
         dt_hours = config.timestep_minutes / 60.0
         horizon_hours = float(config.dispatch_setting("dispatch_horizon_hours", 48))
         step_hours = float(config.dispatch_setting("rolling_step_hours", 24))
-        _validate_rolling_window(dt_hours, horizon_hours, step_hours)
+        validate_rolling_window(dt_hours, horizon_hours, step_hours, plant_label="Steel plant")
         horizon_steps = int(round(horizon_hours / dt_hours))
         step_steps = int(round(step_hours / dt_hours))
 
@@ -352,12 +432,12 @@ class SteelPlant(BasePlant):
         if forecasts.empty:
             raise ValueError("Electrified-steel rolling dispatch requires at least one timestep")
         self._validate_afrr_signal_columns(forecasts, signals)
-        _validate_bid_rules(
+        validate_bid_rules(
             "afrr_energy",
             signals.afrr_energy_min_bid_mw,
             signals.afrr_energy_bid_increment_mw,
         )
-        _validate_bid_rules(
+        validate_bid_rules(
             "afrr_capacity",
             signals.afrr_capacity_min_bid_mw,
             signals.afrr_capacity_bid_increment_mw,
@@ -366,7 +446,7 @@ class SteelPlant(BasePlant):
         dt_hours = config.timestep_minutes / 60.0
         horizon_hours = float(config.dispatch_setting("dispatch_horizon_hours", 48))
         step_hours = float(config.dispatch_setting("rolling_step_hours", 24))
-        _validate_rolling_window(dt_hours, horizon_hours, step_hours)
+        validate_rolling_window(dt_hours, horizon_hours, step_hours, plant_label="Steel plant")
         if horizon_hours + 1e-9 < step_hours + signals.afrr_capacity_product_duration_h:
             raise ValueError(
                 "Electrified-steel dispatch_horizon_hours must cover rolling_step_hours plus "
@@ -435,7 +515,7 @@ class SteelPlant(BasePlant):
                     f"inherited backlog={max(0.0, state.demand_balance_t):g} t"
                 ) from exc
 
-            horizon_result = _attach_capacity_opportunity_cost(
+            horizon_result = attach_capacity_opportunity_cost(
                 horizon_result,
                 baseline_result,
                 commit_steps=commit_count,
@@ -491,341 +571,141 @@ class SteelPlant(BasePlant):
         capacity_enabled: bool,
         terminal_state_required: bool,
     ) -> pyo.ConcreteModel:
-        dt_hours = config.timestep_minutes / 60.0
-        model = pyo.ConcreteModel()
-        model.T = pyo.Set(initialize=range(len(forecasts)), ordered=True)
+        """Hand the shared market layer everything it needs to wrap this plant."""
+        window = AFRRWindow(
+            horizon=forecasts,
+            commit_steps=commit_steps,
+            is_final_window=terminal_state_required,
+            payload=SteelWindowPlan(
+                initial_state=initial_state,
+                steel_demand_override_t=steel_demand_override_t,
+                minimum_commit_output_t=minimum_commit_output_t,
+                demand_mode=demand_mode,
+            ),
+        )
+        return build_afrr_down_market_model(
+            self,
+            forecasts,
+            signals.market,
+            signals.commodities,
+            window,
+            dt_hours=config.timestep_minutes / 60.0,
+            capacity_enabled=capacity_enabled,
+        )
+
+    # -- AFRRDownPlant protocol ---------------------------------------------------------
+
+    def afrr_attach_commodity_params(
+        self,
+        model: pyo.ConcreteModel,
+        forecasts: pd.DataFrame,
+        commodity_signals: SteelAFRRDownCommoditySignals,
+        window: AFRRWindow,
+    ) -> None:
+        plan: SteelWindowPlan = window.payload
 
         def values(column: str) -> dict[int, float]:
             return {t: float(forecasts[column].iloc[t]) for t in model.T}
 
-        # Electricity is settled once at plant level below. The component electricity
-        # price is therefore zero to avoid double counting in technology operating costs.
-        # Other fuels (coal, natural gas, purchased hydrogen) are priced like the
-        # cost-minimization model: real market price unless produced on-site.
+        # Electricity is settled once at plant level by the market layer. The component
+        # electricity price is therefore zero to avoid double counting in technology
+        # operating costs. Other fuels (coal, natural gas, purchased hydrogen) are priced
+        # like the cost-minimization model: real market price unless produced on-site.
         model.electricity_price = pyo.Param(model.T, initialize={t: 0.0 for t in model.T})
         model.natural_gas_price = pyo.Param(
-            model.T, initialize=values(signals.natural_gas_price_col)
+            model.T, initialize=values(commodity_signals.natural_gas_price_col)
         )
         hydrogen_prices = (
             {t: 0.0 for t in model.T}
             if "electrolyser" in self.components
-            else values(signals.hydrogen_price_col)
+            else values(commodity_signals.hydrogen_price_col)
         )
         model.hydrogen_price = pyo.Param(model.T, initialize=hydrogen_prices)
         coal_prices = (
-            values(signals.coal_price_col)
+            values(commodity_signals.coal_price_col)
             if self._requires_coal_price()
             else {t: 0.0 for t in model.T}
         )
         model.coal_price = pyo.Param(model.T, initialize=coal_prices)
-        model.iron_ore_price = pyo.Param(model.T, initialize=values(signals.iron_ore_price_col))
-        model.lime_price = pyo.Param(model.T, initialize=values(signals.lime_price_col))
-        model.co2_price = pyo.Param(model.T, initialize=values(signals.co2_price_col))
-        model.steel_demand = pyo.Param(initialize=float(steel_demand_override_t))
+        model.iron_ore_price = pyo.Param(
+            model.T, initialize=values(commodity_signals.iron_ore_price_col)
+        )
+        model.lime_price = pyo.Param(model.T, initialize=values(commodity_signals.lime_price_col))
+        model.co2_price = pyo.Param(model.T, initialize=values(commodity_signals.co2_price_col))
+        model.steel_demand = pyo.Param(initialize=float(plan.steel_demand_override_t))
         model.steel_demand_from_forecast = pyo.Param(
-            initialize=int(demand_mode == "forecast_profile"), within=pyo.Binary
+            initialize=int(plan.demand_mode == "forecast_profile"), within=pyo.Binary
         )
-        model.day_ahead_price = pyo.Param(model.T, initialize=values(signals.da_price_col))
-        model.afrr_energy_price = pyo.Param(
-            model.T, initialize=values(signals.afrr_energy_price_col)
-        )
-        model.afrr_system_activation_mwh = pyo.Param(
-            model.T, initialize=values(signals.afrr_system_activation_col)
-        )
-        additional_charge = float(signals.additional_electricity_charge_eur_per_mwh)
-        model.additional_electricity_charge = pyo.Param(initialize=additional_charge)
 
-        delivered_da = forecasts[signals.da_price_col].astype(float) + additional_charge
-        bid_price = delivered_da.iloc[::-1].cummax().iloc[::-1]
-        delivered_afrr = forecasts[signals.afrr_energy_price_col].astype(float) + additional_charge
-        price_available = forecasts[signals.afrr_price_available_col].astype(bool)
-        free_bid_allowed = price_available & (delivered_afrr <= bid_price + 1e-9)
-        model.afrr_energy_bid_price = pyo.Param(
-            model.T, initialize={t: float(bid_price.iloc[t]) for t in model.T}
-        )
-        model.free_bid_allowed = pyo.Param(
+    def afrr_attach_trajectory(
+        self,
+        model: pyo.ConcreteModel,
+        container: pyo.Block,
+        role: TrajectoryRole,
+        window: AFRRWindow,
+        dt_hours: float,
+    ) -> None:
+        plan: SteelWindowPlan = window.payload
+        # Steel's output constraint is an equality on the window total, which a different
+        # power draw would fight, so the hypothetical branch must be freed from it.
+        self._add_physical_system(
+            model,
+            container,
             model.T,
-            initialize={t: int(bool(free_bid_allowed.iloc[t])) for t in model.T},
-            within=pyo.Binary,
+            plan.initial_state,
+            dt_hours,
+            window.commit_steps,
+            plan.minimum_commit_output_t,
+            enforce_output_total=(role == "actual"),
         )
 
-        block_ids = list(dict.fromkeys(forecasts[signals.afrr_capacity_block_id_col].astype(str)))
-        model.B = pyo.Set(initialize=block_ids, ordered=True)
-        block_by_t = {
-            t: str(forecasts[signals.afrr_capacity_block_id_col].iloc[t]) for t in model.T
-        }
-        block_prices = {
-            block_id: float(
-                forecasts.loc[
-                    forecasts[signals.afrr_capacity_block_id_col].astype(str) == block_id,
-                    signals.afrr_capacity_price_col,
-                ].iloc[0]
-            )
-            for block_id in block_ids
-        }
-        block_durations = {
-            block_id: float(
-                forecasts.loc[
-                    forecasts[signals.afrr_capacity_block_id_col].astype(str) == block_id,
-                    signals.afrr_capacity_block_duration_col,
-                ].iloc[0]
-            )
-            for block_id in block_ids
-        }
-        block_available = {}
-        for block_id in block_ids:
-            mask = forecasts[signals.afrr_capacity_block_id_col].astype(str) == block_id
-            missing = bool(forecasts.loc[mask, signals.afrr_capacity_missing_price_col].iloc[0])
-            complete = (
-                abs(float(mask.sum()) * dt_hours - signals.afrr_capacity_product_duration_h) < 1e-8
-            )
-            block_available[block_id] = int(
-                capacity_enabled and not missing and complete and block_prices[block_id] > 0.0
-            )
+    def afrr_attach_terminal_state(self, model: pyo.ConcreteModel, final_t: int) -> None:
+        inventory_names = [
+            name
+            for name, component in self.components.items()
+            if isinstance(component, GenericInventoryStorage)
+        ]
 
-        model.afrr_capacity_price = pyo.Param(model.B, initialize=block_prices)
-        model.afrr_capacity_block_duration = pyo.Param(model.B, initialize=block_durations)
-        model.capacity_available = pyo.Param(model.B, initialize=block_available, within=pyo.Binary)
+        @model.Constraint(inventory_names)
+        def actual_terminal_inventory(m: pyo.ConcreteModel, technology: str) -> pyo.Constraint:
+            target = float(self.components[technology].initial_soc)
+            return m.actual.technology_blocks[technology].soc[final_t] == target
 
-        aggregate_max_power_mw = sum(
+    def afrr_fuel_substitution(self, forecasts: pd.DataFrame) -> FuelSubstitution | None:
+        """Electricity price at which hydrogen via the electrolyser matches gas per tonne.
+
+        Requires both an on-site electrolyser and a hybrid-fuel block that can genuinely
+        swap hydrogen for gas; without both there is no choice to price. CO2 is included
+        on the gas side because the exact MILP prices it there too. Iron ore and the
+        block's own baseline electricity are route-independent and correctly excluded.
+        """
+        if "electrolyser" not in self.components:
+            return None
+        hybrid = self.components.get("dri_plant") or self.components.get("bf_bof")
+        if hybrid is None or getattr(hybrid, "fuel_type", None) != HYBRID_HYDROGEN_NATURAL_GAS:
+            return None
+
+        natural_gas_price = forecasts["natural_gas_price"].astype(float)
+        co2_price = forecasts["co2_price"].astype(float)
+        gas_route_cost_per_t = float(hybrid.specific_natural_gas_consumption_mwh_per_t) * (
+            natural_gas_price
+            + float(hybrid.natural_gas_co2_factor_t_per_mwh) * co2_price
+        )
+        hydrogen_mwh_el_per_t = float(hybrid.specific_hydrogen_consumption_mwh_per_t) / float(
+            self.components["electrolyser"].efficiency
+        )
+        benchmark = gas_route_cost_per_t / hydrogen_mwh_el_per_t
+        benchmark.name = "gas_based_electricity_benchmark_EUR_per_MWh_el"
+        return FuelSubstitution(
+            benchmark_eur_per_mwh_el=benchmark,
+            gate_column="__electrolyser_allowed",
+            gated_load_column="electrolyser_electricity_consumption_MWh",
+        )
+
+    def afrr_aggregate_max_power_mw(self) -> float:
+        return sum(
             float(getattr(component, "max_power_mw", 0.0)) for component in self.components.values()
         )
-        capacity_max_steps = int(
-            math.floor(aggregate_max_power_mw / signals.afrr_capacity_bid_increment_mw + 1e-9)
-        )
-        energy_max_steps = int(
-            math.floor(aggregate_max_power_mw / signals.afrr_energy_bid_increment_mw + 1e-9)
-        )
-        capacity_min_steps = int(
-            math.ceil(signals.afrr_capacity_min_bid_mw / signals.afrr_capacity_bid_increment_mw)
-        )
-        energy_min_steps = int(
-            math.ceil(signals.afrr_energy_min_bid_mw / signals.afrr_energy_bid_increment_mw)
-        )
-
-        model.capacity_selected = pyo.Var(model.B, within=pyo.Binary)
-        model.capacity_bid_steps = pyo.Var(
-            model.B, within=pyo.NonNegativeIntegers, bounds=(0, capacity_max_steps)
-        )
-        model.afrr_capacity_reserved_mw = pyo.Expression(
-            model.B,
-            rule=lambda m, b: signals.afrr_capacity_bid_increment_mw * m.capacity_bid_steps[b],
-        )
-
-        @model.Constraint(model.B)
-        def capacity_minimum_bid(m: pyo.ConcreteModel, b: str) -> pyo.Constraint:
-            return m.capacity_bid_steps[b] >= capacity_min_steps * m.capacity_selected[b]
-
-        @model.Constraint(model.B)
-        def capacity_selection_limit(m: pyo.ConcreteModel, b: str) -> pyo.Constraint:
-            return m.capacity_bid_steps[b] <= capacity_max_steps * m.capacity_selected[b]
-
-        @model.Constraint(model.B)
-        def capacity_availability(m: pyo.ConcreteModel, b: str) -> pyo.Constraint:
-            return m.capacity_selected[b] <= m.capacity_available[b]
-
-        model.free_bid_selected = pyo.Var(model.T, within=pyo.Binary)
-        model.free_bid_steps = pyo.Var(
-            model.T, within=pyo.NonNegativeIntegers, bounds=(0, energy_max_steps)
-        )
-        model.afrr_energy_free_bid_mw = pyo.Expression(
-            model.T,
-            rule=lambda m, t: signals.afrr_energy_bid_increment_mw * m.free_bid_steps[t],
-        )
-        model.afrr_energy_capacity_backed_bid_mwh = pyo.Expression(
-            model.T,
-            rule=lambda m, t: m.afrr_capacity_reserved_mw[block_by_t[t]] * dt_hours,
-        )
-        model.afrr_energy_free_bid_mwh = pyo.Expression(
-            model.T, rule=lambda m, t: m.afrr_energy_free_bid_mw[t] * dt_hours
-        )
-        model.afrr_energy_bid_mwh = pyo.Expression(
-            model.T,
-            rule=lambda m, t: (
-                m.afrr_energy_capacity_backed_bid_mwh[t] + m.afrr_energy_free_bid_mwh[t]
-            ),
-        )
-
-        @model.Constraint(model.T)
-        def free_energy_minimum_bid(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.free_bid_steps[t] >= energy_min_steps * m.free_bid_selected[t]
-
-        @model.Constraint(model.T)
-        def free_energy_selection_limit(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.free_bid_steps[t] <= energy_max_steps * m.free_bid_selected[t]
-
-        @model.Constraint(model.T)
-        def free_energy_price_gate(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.free_bid_selected[t] <= m.free_bid_allowed[t]
-
-        max_activation_mwh = max(
-            aggregate_max_power_mw * dt_hours,
-            float(forecasts[signals.afrr_system_activation_col].max()),
-            1.0,
-        )
-        model.afrr_energy_activated_mwh = pyo.Var(
-            model.T, within=pyo.NonNegativeReals, bounds=(0.0, max_activation_mwh)
-        )
-        model.activation_bid_is_minimum = pyo.Var(model.T, within=pyo.Binary)
-
-        @model.Constraint(model.T)
-        def activation_not_above_bid(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.afrr_energy_activated_mwh[t] <= m.afrr_energy_bid_mwh[t]
-
-        @model.Constraint(model.T)
-        def activation_not_above_request(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.afrr_energy_activated_mwh[t] <= m.afrr_system_activation_mwh[t]
-
-        @model.Constraint(model.T)
-        def activation_equals_bid_when_smaller(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.afrr_energy_activated_mwh[t] >= (
-                m.afrr_energy_bid_mwh[t] - max_activation_mwh * m.activation_bid_is_minimum[t]
-            )
-
-        @model.Constraint(model.T)
-        def activation_equals_request_when_smaller(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.afrr_energy_activated_mwh[t] >= (
-                m.afrr_system_activation_mwh[t]
-                - max_activation_mwh * (1 - m.activation_bid_is_minimum[t])
-            )
-
-        model.afrr_energy_capacity_backed_activated_mwh = pyo.Var(
-            model.T, within=pyo.NonNegativeReals, bounds=(0.0, max_activation_mwh)
-        )
-        model.capacity_activation_is_minimum = pyo.Var(model.T, within=pyo.Binary)
-
-        @model.Constraint(model.T)
-        def capacity_activation_not_above_bid(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return (
-                m.afrr_energy_capacity_backed_activated_mwh[t]
-                <= m.afrr_energy_capacity_backed_bid_mwh[t]
-            )
-
-        @model.Constraint(model.T)
-        def capacity_activation_not_above_total(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.afrr_energy_capacity_backed_activated_mwh[t] <= m.afrr_energy_activated_mwh[t]
-
-        @model.Constraint(model.T)
-        def capacity_activation_equals_bid_when_smaller(
-            m: pyo.ConcreteModel, t: int
-        ) -> pyo.Constraint:
-            return m.afrr_energy_capacity_backed_activated_mwh[t] >= (
-                m.afrr_energy_capacity_backed_bid_mwh[t]
-                - max_activation_mwh * m.capacity_activation_is_minimum[t]
-            )
-
-        @model.Constraint(model.T)
-        def capacity_activation_equals_total_when_smaller(
-            m: pyo.ConcreteModel, t: int
-        ) -> pyo.Constraint:
-            return m.afrr_energy_capacity_backed_activated_mwh[t] >= (
-                m.afrr_energy_activated_mwh[t]
-                - max_activation_mwh * (1 - m.capacity_activation_is_minimum[t])
-            )
-
-        model.afrr_energy_free_activated_mwh = pyo.Expression(
-            model.T,
-            rule=lambda m, t: (
-                m.afrr_energy_activated_mwh[t] - m.afrr_energy_capacity_backed_activated_mwh[t]
-            ),
-        )
-        model.da_position_mwh = pyo.Var(model.T, within=pyo.NonNegativeReals)
-
-        model.actual = pyo.Block()
-        model.full_activation = pyo.Block()
-        self._add_physical_system(
-            model,
-            model.actual,
-            model.T,
-            initial_state,
-            dt_hours,
-            commit_steps,
-            minimum_commit_output_t,
-            enforce_output_total=True,
-        )
-        # full_activation is a hypothetical "what if the full aFRR bid is called" check.
-        # It is never realized (only model.actual feeds the rolling state), so it must
-        # only be bound by real power/ramp physics, not forced to reproduce the same
-        # production total under a higher power draw -- see _add_physical_system.
-        self._add_physical_system(
-            model,
-            model.full_activation,
-            model.T,
-            initial_state,
-            dt_hours,
-            commit_steps,
-            minimum_commit_output_t,
-            enforce_output_total=False,
-        )
-
-        if terminal_state_required:
-            final_t = list(model.T)[-1]
-            inventory_names = [
-                name
-                for name, component in self.components.items()
-                if isinstance(component, GenericInventoryStorage)
-            ]
-
-            @model.Constraint(inventory_names)
-            def actual_terminal_inventory(m: pyo.ConcreteModel, technology: str) -> pyo.Constraint:
-                target = float(self.components[technology].initial_soc)
-                return m.actual.technology_blocks[technology].soc[final_t] == target
-
-        @model.Constraint(model.T)
-        def actual_electricity_balance(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.actual.total_power_input[t] == (
-                m.da_position_mwh[t] + m.afrr_energy_activated_mwh[t]
-            )
-
-        @model.Constraint(model.T)
-        def full_activation_electricity_balance(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.full_activation.total_power_input[t] == (
-                m.da_position_mwh[t] + m.afrr_energy_bid_mwh[t]
-            )
-
-        model.electricity_market_cost = pyo.Expression(
-            model.T,
-            rule=lambda m, t: (
-                m.da_position_mwh[t] * m.day_ahead_price[t]
-                + m.afrr_energy_activated_mwh[t] * m.afrr_energy_price[t]
-            ),
-        )
-        model.additional_electricity_charges_cost = pyo.Expression(
-            model.T,
-            rule=lambda m, t: (m.actual.total_power_input[t] * m.additional_electricity_charge),
-        )
-        model.gross_operating_cost = pyo.Expression(
-            model.T,
-            rule=lambda m, t: (
-                m.actual.variable_cost[t]
-                + m.electricity_market_cost[t]
-                + m.additional_electricity_charges_cost[t]
-            ),
-        )
-        model.afrr_capacity_revenue = pyo.Expression(
-            model.T,
-            rule=lambda m, t: (
-                m.afrr_capacity_reserved_mw[block_by_t[t]]
-                * m.afrr_capacity_price[block_by_t[t]]
-                * dt_hours
-            ),
-        )
-        model.net_operating_cost = pyo.Expression(
-            model.T,
-            rule=lambda m, t: m.gross_operating_cost[t] - m.afrr_capacity_revenue[t],
-        )
-        bid_tiebreaker = 1e-6 * (
-            sum(model.capacity_bid_steps[b] for b in model.B)
-            + sum(model.free_bid_steps[t] for t in model.T)
-        )
-        model.objective = pyo.Objective(
-            expr=sum(model.net_operating_cost[t] for t in model.T) + bid_tiebreaker,
-            sense=pyo.minimize,
-        )
-        model._afrr_block_by_t = block_by_t
-        model._afrr_timestep_hours = dt_hours
-        model._afrr_aggregate_max_power_mw = aggregate_max_power_mw
-        return model
 
     def _solve_model(
         self,
@@ -833,33 +713,13 @@ class SteelPlant(BasePlant):
         forecasts: pd.DataFrame,
         model: pyo.ConcreteModel,
     ) -> pd.DataFrame:
-        errors: list[str] = []
-        for solver_name in dict.fromkeys([config.solver_name, *config.solver_fallbacks]):
-            try:
-                solver = pyo.SolverFactory(solver_name)
-                if solver is None or not solver.available(exception_flag=False):
-                    errors.append(f"{solver_name}: unavailable")
-                    continue
-                if solver_name.lower() in {"highs", "appsi_highs"}:
-                    # Thousands of rolling solves feed committed output into the
-                    # next demand balance. Tighten HiGHS' primal tolerance so those
-                    # per-window residuals remain below the model's 1e-6 t annual
-                    # demand-reconciliation tolerance.
-                    solver.options["primal_feasibility_tolerance"] = 1e-9
-                result = solver.solve(model, tee=config.solver_tee)
-            except (ApplicationError, NoFeasibleSolutionError, RuntimeError) as exc:
-                errors.append(f"{solver_name}: {exc}")
-                continue
-            status = result.solver.status
-            termination = result.solver.termination_condition
-            if status == SolverStatus.ok and termination in {
-                TerminationCondition.optimal,
-                TerminationCondition.locallyOptimal,
-                TerminationCondition.globallyOptimal,
-            }:
-                return self._extract_results(model, forecasts, solver_name)
-            errors.append(f"{solver_name}: status={status}, termination={termination}")
-        raise RuntimeError("Steel plant dispatch could not be solved; " + "; ".join(errors))
+        return solve_dispatch_model(
+            config,
+            forecasts,
+            model,
+            self._extract_results,
+            plant_label="Steel plant",
+        )
 
     def _build_model(
         self,
@@ -879,8 +739,17 @@ class SteelPlant(BasePlant):
         def values(column: str) -> dict[int, float]:
             return {t: float(forecasts[column].iloc[t]) for t in model.T}
 
+        # What matters to the operator is the delivered cost of a MWh: the market price
+        # plus the per-MWh grid charge. Optimising against the bare market price makes
+        # electricity look cheaper than it is and over-consumes. Matches the cement
+        # plant's convention; the charge is zero unless a grid-fee regulation is attached.
+        electricity_market_prices = values(signals.electricity_price_col)
+        additional_charge = float(self.additional_electricity_charge_eur_per_mwh)
+        model.electricity_market_price = pyo.Param(model.T, initialize=electricity_market_prices)
+        model.additional_electricity_charge = pyo.Param(initialize=additional_charge)
         model.electricity_price = pyo.Param(
-            model.T, initialize=values(signals.electricity_price_col)
+            model.T,
+            initialize={t: electricity_market_prices[t] + additional_charge for t in model.T},
         )
         model.natural_gas_price = pyo.Param(
             model.T, initialize=values(signals.natural_gas_price_col)
@@ -959,37 +828,60 @@ class SteelPlant(BasePlant):
         should only be constrained by real per-timestep power/ramp physics, not forced
         to reproduce the same production total under a different power draw.
         """
+        self._attach_technology_blocks(model, container, time_steps, dt_hours, initial_state)
+        self.initialize_process_sequence(model, container, time_steps)
+        self._declare_plant_totals(container, time_steps)
+        self.define_constraints(
+            model,
+            container,
+            time_steps,
+            commit_steps=commit_steps,
+            minimum_commit_output_t=minimum_commit_output_t,
+            enforce_output_total=enforce_output_total,
+        )
+        self._attach_total_power_input_constraint(container, time_steps)
+        self._attach_variable_cost_constraint(container, time_steps)
 
-        container.technology_blocks = pyo.Block(list(self.components))
-        for technology, component in self.components.items():
-            context: dict[str, Any] = {"dt_hours": dt_hours}
-            component_state = initial_state.components.get(technology)
-            if component_state is not None:
-                context.update(
-                    {
-                        "initial_power_in": component_state.power_in_mwh,
-                        "initial_operational_status": component_state.operational_status,
-                        "initial_consecutive_status_steps": (
-                            component_state.consecutive_status_steps
-                        ),
-                    }
-                )
-            inventory_state = initial_state.inventories.get(technology)
-            if inventory_state is not None:
-                context.update(
-                    {
-                        "initial_soc": inventory_state.soc,
-                        "initial_charge": inventory_state.charge,
-                        "initial_discharge": inventory_state.discharge,
-                    }
-                )
-            component.add_to_model(
-                model,
-                container.technology_blocks[technology],
-                time_steps,
-                context,
+    def _component_context(
+        self,
+        technology: str,
+        dt_hours: float,
+        initial_state: SteelRollingState,
+    ) -> dict[str, Any]:
+        """Build the ``add_to_model`` context that seeds a window from the last commit."""
+        context: dict[str, Any] = {"dt_hours": dt_hours}
+        component_state = initial_state.components.get(technology)
+        if component_state is not None:
+            context.update(
+                {
+                    "initial_power_in": component_state.power_in_mwh,
+                    "initial_operational_status": component_state.operational_status,
+                    "initial_consecutive_status_steps": (component_state.consecutive_status_steps),
+                }
             )
+        inventory_state = initial_state.inventories.get(technology)
+        if inventory_state is not None:
+            context.update(
+                {
+                    "initial_soc": inventory_state.soc,
+                    "initial_charge": inventory_state.charge,
+                    "initial_discharge": inventory_state.discharge,
+                }
+            )
+        return context
 
+    def initialize_process_sequence(
+        self,
+        model: pyo.ConcreteModel,
+        container: pyo.Block | pyo.ConcreteModel,
+        time_steps: pyo.Set,
+    ) -> None:
+        """Pyomo Components:
+
+        - **Constraints**: the DRI plant's hydrogen and DRI flow linking to the
+          electrolyser and terminal furnace, each present only for the components this
+          plant actually has configured.
+        """
         terminal_name = self._terminal_technology_name()
         terminal = container.technology_blocks[terminal_name]
         dri = container.technology_blocks["dri_plant"] if "dri_plant" in self.components else None
@@ -1038,8 +930,25 @@ class SteelPlant(BasePlant):
             def dri_flow_balance(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
                 return dri.dri_output[t] == terminal.dri_input[t]
 
-        container.total_power_input = pyo.Var(time_steps, within=pyo.NonNegativeReals)
-        container.variable_cost = pyo.Var(time_steps, within=pyo.Reals)
+    def define_constraints(
+        self,
+        model: pyo.ConcreteModel,
+        container: pyo.Block | pyo.ConcreteModel,
+        time_steps: pyo.Set,
+        *,
+        enforce_output_total: bool = True,
+        commit_steps: int | None = None,
+        minimum_commit_output_t: float = 0.0,
+        **kwargs: Any,
+    ) -> None:
+        """Pyomo Components:
+
+        - **Constraints**: ``steel_output_association_constraint`` and
+          ``inherited_backlog_recovery_constraint``, both gated by
+          ``enforce_output_total`` (dropped for the hypothetical full-activation
+          trajectory - see ``_add_physical_system``).
+        """
+        terminal = container.technology_blocks[self._terminal_technology_name()]
 
         if enforce_output_total:
 
@@ -1058,22 +967,6 @@ class SteelPlant(BasePlant):
                         sum(terminal.steel_output[t] for t in committed_steps)
                         >= minimum_commit_output_t
                     )
-
-        @container.Constraint(time_steps)
-        def total_power_input_constraint(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.total_power_input[t] == sum(
-                block.power_in[t]
-                for block in container.technology_blocks.values()
-                if hasattr(block, "power_in")
-            )
-
-        @container.Constraint(time_steps)
-        def variable_cost_constraint(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.variable_cost[t] == sum(
-                block.operating_cost[t]
-                for block in container.technology_blocks.values()
-                if hasattr(block, "operating_cost")
-            )
 
     def _extract_results(
         self,
@@ -1156,7 +1049,7 @@ class SteelPlant(BasePlant):
             if technology in self.components:
                 data[column] = []
         if market_model:
-            for column in STEEL_AFRR_RESULT_COLUMNS:
+            for column in AFRR_DOWN_RESULT_COLUMNS:
                 data[column] = []
 
         for t in model.T:
@@ -1229,7 +1122,7 @@ class SteelPlant(BasePlant):
                     else:
                         data[column].append(_value(getattr(block, variable)[t]))
             if market_model:
-                _append_steel_afrr_result_row(data, model, t, total_electricity)
+                append_afrr_result_row(data, model, t, total_electricity)
         return pd.DataFrame(data, index=forecasts.index)
 
     def _initial_rolling_state(self) -> SteelRollingState:
@@ -1433,151 +1326,6 @@ class SteelPlant(BasePlant):
         return demand.astype(float)
 
 
-STEEL_AFRR_RESULT_COLUMNS = (
-    "DA_position_MWh",
-    "IDC_buy_MWh",
-    "IDC_sell_MWh",
-    "final_planned_electricity_MWh",
-    "actual_electricity_consumption_MWh",
-    "day_ahead_price_EUR_per_MWh",
-    "day_ahead_delivered_price_EUR_per_MWh",
-    "additional_electricity_charge_EUR_per_MWh_el",
-    "afrr_energy_bid_MW",
-    "afrr_energy_bid_MWh",
-    "afrr_energy_activated_MWh",
-    "afrr_energy_price_EUR_per_MWh",
-    "afrr_energy_delivered_price_EUR_per_MWh",
-    "afrr_energy_bid_price_EUR_per_MWh",
-    "afrr_energy_market_spread_EUR_per_MWh",
-    "afrr_energy_net_spread_EUR_per_MWh",
-    "afrr_energy_cost_EUR",
-    "afrr_energy_savings_vs_benchmark_EUR",
-    "afrr_energy_pay_as_cleared_reward_EUR",
-    "afrr_energy_net_value_after_charges_EUR",
-    "afrr_energy_capacity_backed_bid_MWh",
-    "afrr_energy_free_bid_MWh",
-    "afrr_energy_capacity_backed_activated_MWh",
-    "afrr_energy_free_activated_MWh",
-    "afrr_system_activation_MWh",
-    "afrr_headroom_binding",
-    "afrr_curtailment_MWh",
-    "afrr_capacity_block_id",
-    "afrr_capacity_block_duration_h",
-    "afrr_capacity_pricing_rule",
-    "afrr_capacity_bid_price_EUR_per_MW_h",
-    "afrr_capacity_clearing_price_EUR_per_MW_h",
-    "afrr_capacity_settlement_price_EUR_per_MW_h",
-    "afrr_capacity_down_price_EUR_per_MW_h",
-    "afrr_capacity_reserved_MW",
-    "afrr_capacity_reserved_MWh",
-    "afrr_capacity_revenue_EUR",
-    "afrr_capacity_opportunity_cost_EUR",
-    "afrr_capacity_market_surplus_EUR",
-    "afrr_capacity_net_value_EUR",
-    "reserved_capacity_headroom_MWh",
-    "available_load_headroom_after_schedule_MWh",
-    "DA_electricity_cost_EUR",
-    "electricity_market_cost_EUR",
-    "additional_electricity_charges_cost_EUR",
-    "gross_operating_cost_EUR",
-    "net_operating_cost_EUR",
-    "operating_cost_EUR",
-    "non_electric_variable_cost_EUR",
-)
-
-
-def _append_steel_afrr_result_row(
-    data: dict[str, list[float] | list[str]],
-    model: pyo.ConcreteModel,
-    t: int,
-    total_electricity_mwh: float,
-) -> None:
-    block_id = model._afrr_block_by_t[t]
-    timestep_hours = float(model._afrr_timestep_hours)
-    da_position = _value(model.da_position_mwh[t])
-    afrr_bid = _value(model.afrr_energy_bid_mwh[t])
-    afrr_activation = _value(model.afrr_energy_activated_mwh[t])
-    capacity_bid = _value(model.afrr_energy_capacity_backed_bid_mwh[t])
-    free_bid = _value(model.afrr_energy_free_bid_mwh[t])
-    capacity_activated = _value(model.afrr_energy_capacity_backed_activated_mwh[t])
-    free_activated = _value(model.afrr_energy_free_activated_mwh[t])
-    day_ahead_price = _value(model.day_ahead_price[t])
-    afrr_price = _value(model.afrr_energy_price[t])
-    additional_charge = _value(model.additional_electricity_charge)
-    afrr_bid_price = _value(model.afrr_energy_bid_price[t])
-    delivered_afrr_price = afrr_price + additional_charge
-    market_spread = afrr_bid_price - afrr_price
-    net_spread = afrr_bid_price - delivered_afrr_price
-    capacity_price = _value(model.afrr_capacity_price[block_id])
-    reserved_mw = _value(model.afrr_capacity_reserved_mw[block_id])
-    reserved_mwh = reserved_mw * timestep_hours
-    capacity_revenue = _value(model.afrr_capacity_revenue[t])
-    gross_cost = _value(model.gross_operating_cost[t])
-    non_electric_cost = _value(model.actual.variable_cost[t])
-    available_load_headroom = max(
-        0.0,
-        float(model._afrr_aggregate_max_power_mw) * timestep_hours - da_position,
-    )
-
-    values: dict[str, float | str | bool] = {
-        "DA_position_MWh": da_position,
-        "IDC_buy_MWh": 0.0,
-        "IDC_sell_MWh": 0.0,
-        "final_planned_electricity_MWh": da_position,
-        "actual_electricity_consumption_MWh": total_electricity_mwh,
-        "day_ahead_price_EUR_per_MWh": day_ahead_price,
-        "day_ahead_delivered_price_EUR_per_MWh": day_ahead_price + additional_charge,
-        "additional_electricity_charge_EUR_per_MWh_el": additional_charge,
-        "afrr_energy_bid_MW": afrr_bid / timestep_hours,
-        "afrr_energy_bid_MWh": afrr_bid,
-        "afrr_energy_activated_MWh": afrr_activation,
-        "afrr_energy_price_EUR_per_MWh": afrr_price,
-        "afrr_energy_delivered_price_EUR_per_MWh": delivered_afrr_price,
-        "afrr_energy_bid_price_EUR_per_MWh": afrr_bid_price,
-        "afrr_energy_market_spread_EUR_per_MWh": market_spread,
-        "afrr_energy_net_spread_EUR_per_MWh": net_spread,
-        "afrr_energy_cost_EUR": afrr_activation * afrr_price,
-        "afrr_energy_savings_vs_benchmark_EUR": afrr_activation * market_spread,
-        "afrr_energy_pay_as_cleared_reward_EUR": afrr_activation * market_spread,
-        "afrr_energy_net_value_after_charges_EUR": afrr_activation * net_spread,
-        "afrr_energy_capacity_backed_bid_MWh": capacity_bid,
-        "afrr_energy_free_bid_MWh": free_bid,
-        "afrr_energy_capacity_backed_activated_MWh": capacity_activated,
-        "afrr_energy_free_activated_MWh": free_activated,
-        "afrr_system_activation_MWh": _value(model.afrr_system_activation_mwh[t]),
-        "afrr_headroom_binding": bool(
-            afrr_bid > 1e-9 and abs(afrr_bid - available_load_headroom) <= 1e-7
-        ),
-        "afrr_curtailment_MWh": 0.0,
-        "afrr_capacity_block_id": block_id,
-        "afrr_capacity_block_duration_h": _value(model.afrr_capacity_block_duration[block_id]),
-        "afrr_capacity_pricing_rule": "pay_as_bid",
-        "afrr_capacity_bid_price_EUR_per_MW_h": capacity_price,
-        "afrr_capacity_clearing_price_EUR_per_MW_h": capacity_price,
-        "afrr_capacity_settlement_price_EUR_per_MW_h": capacity_price,
-        "afrr_capacity_down_price_EUR_per_MW_h": capacity_price,
-        "afrr_capacity_reserved_MW": reserved_mw,
-        "afrr_capacity_reserved_MWh": reserved_mwh,
-        "afrr_capacity_revenue_EUR": capacity_revenue,
-        "afrr_capacity_opportunity_cost_EUR": 0.0,
-        "afrr_capacity_market_surplus_EUR": 0.0,
-        "afrr_capacity_net_value_EUR": capacity_revenue,
-        "reserved_capacity_headroom_MWh": reserved_mwh,
-        "available_load_headroom_after_schedule_MWh": available_load_headroom,
-        "DA_electricity_cost_EUR": da_position * day_ahead_price,
-        "electricity_market_cost_EUR": _value(model.electricity_market_cost[t]),
-        "additional_electricity_charges_cost_EUR": _value(
-            model.additional_electricity_charges_cost[t]
-        ),
-        "gross_operating_cost_EUR": gross_cost,
-        "net_operating_cost_EUR": _value(model.net_operating_cost[t]),
-        "operating_cost_EUR": gross_cost,
-        "non_electric_variable_cost_EUR": non_electric_cost,
-    }
-    for column, value in values.items():
-        data[column].append(value)
-
-
 def _value(expression: Any) -> float:
     return float(pyo.value(expression))
 
@@ -1586,59 +1334,6 @@ def _operational_status(block: pyo.Block, t: int) -> int:
     if hasattr(block, "operational_status"):
         return int(round(_value(block.operational_status[t])))
     return int(_value(block.power_in[t]) > 1e-9)
-
-
-def _validate_bid_rules(market_name: str, min_bid_mw: float, bid_increment_mw: float) -> None:
-    if min_bid_mw < 0:
-        raise ValueError(f"{market_name}.product_rules.min_bid_mw must be non-negative")
-    if bid_increment_mw <= 0:
-        raise ValueError(f"{market_name}.product_rules.bid_increment_mw must be positive")
-
-
-def _attach_capacity_opportunity_cost(
-    market_result: pd.DataFrame,
-    no_capacity_result: pd.DataFrame,
-    commit_steps: int,
-) -> pd.DataFrame:
-    """Allocate cross-market capacity opportunity cost over reserved MW-hours."""
-
-    result = market_result.copy()
-    committed_result = result.iloc[:commit_steps]
-    committed_baseline = no_capacity_result.iloc[:commit_steps]
-    incremental_gross_cost = max(
-        0.0,
-        float(committed_result["gross_operating_cost_EUR"].sum())
-        - float(committed_baseline["gross_operating_cost_EUR"].sum()),
-    )
-    weights = committed_result["afrr_capacity_reserved_MWh"].clip(lower=0.0)
-    total_weight = float(weights.sum())
-    result["afrr_capacity_opportunity_cost_EUR"] = 0.0
-    if total_weight > 1e-12:
-        result.loc[weights.index, "afrr_capacity_opportunity_cost_EUR"] = (
-            incremental_gross_cost * weights / total_weight
-        )
-    result["afrr_capacity_net_value_EUR"] = (
-        result["afrr_capacity_revenue_EUR"] - result["afrr_capacity_opportunity_cost_EUR"]
-    )
-    return result
-
-
-def _validate_rolling_window(
-    timestep_hours: float,
-    horizon_hours: float,
-    step_hours: float,
-) -> None:
-    if horizon_hours <= 0 or step_hours <= 0:
-        raise ValueError("Steel rolling horizon and step hours must be positive")
-    if step_hours > horizon_hours:
-        raise ValueError("rolling_step_hours must not exceed dispatch_horizon_hours")
-    for label, hours in {
-        "dispatch_horizon_hours": horizon_hours,
-        "rolling_step_hours": step_hours,
-    }.items():
-        steps = hours / timestep_hours
-        if abs(steps - round(steps)) > 1e-9:
-            raise ValueError(f"{label} must align with case.timestep_minutes")
 
 
 def _consistent_optional_total(rows: pd.DataFrame, column: str, plant_name: str) -> float | None:

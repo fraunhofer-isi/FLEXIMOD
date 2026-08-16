@@ -12,6 +12,7 @@ placeholder for later industrial cases where upward balancing energy is relevant
 
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import dataclass
 
@@ -177,3 +178,41 @@ def prepare_afrr_down_energy_data(
         ]
     )
     return AFRRDownEnergyData(frame=clean, quality_summary=summary)
+
+
+# --------------------------------------------------------------------------------------
+# Bid-rule arithmetic: pure functions of bid sizes and product durations, shared by every
+# strategy that bids into aFRR (energy or capacity) - no Pyomo, no plant coupling.
+# --------------------------------------------------------------------------------------
+
+
+def validate_bid_rules(market_name: str, min_bid_mw: float, bid_increment_mw: float) -> None:
+    """The arithmetic of bid sizes, identical whatever is behind the meter."""
+    if min_bid_mw < 0:
+        raise ValueError(f"{market_name}.product_rules.min_bid_mw must be non-negative")
+    if bid_increment_mw <= 0:
+        raise ValueError(f"{market_name}.product_rules.bid_increment_mw must be positive")
+
+
+def round_bid_down_to_increment(
+    feasible_bid_mw: float,
+    min_bid_mw: float,
+    bid_increment_mw: float,
+) -> float:
+    """Return the largest market-compliant bid not exceeding physical capability."""
+
+    if feasible_bid_mw < min_bid_mw:
+        return 0.0
+    rounded = math.floor((feasible_bid_mw + 1e-12) / bid_increment_mw) * bid_increment_mw
+    if rounded < min_bid_mw:
+        return 0.0
+    return float(rounded)
+
+
+def duration_hours(value: str) -> float:
+    text = str(value).strip().lower()
+    if text.endswith("min"):
+        return float(text.removesuffix("min")) / 60.0
+    if text.endswith("h"):
+        return float(text.removesuffix("h"))
+    raise ValueError(f"Unsupported aFRR capacity product_length '{value}'")

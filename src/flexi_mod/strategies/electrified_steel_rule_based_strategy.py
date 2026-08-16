@@ -40,16 +40,21 @@ hybrid-electrolyser routes need to be accurate, not just directionally right.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
 
 from flexi_mod.markets.afrr_capacity import AFRRCapacityMarket
-from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
+from flexi_mod.markets.afrr_energy import (
+    AFRRDownEnergyMarket,
+    duration_hours,
+    round_bid_down_to_increment,
+    validate_bid_rules,
+)
 from flexi_mod.markets.day_ahead import DayAheadMarket
-from flexi_mod.plants.steel_plant import STEEL_AFRR_RESULT_COLUMNS, SteelDispatchSignals, SteelPlant
+from flexi_mod.plants.afrr_down import AFRR_DOWN_RESULT_COLUMNS, capacity_block_summary
+from flexi_mod.plants.steel_plant import SteelDispatchSignals, SteelPlant
 from flexi_mod.strategies.electrified_steel_strategy import (
     CO2_PRICE_SIGNAL,
     HYDROGEN_PRICE_SIGNAL,
@@ -57,8 +62,6 @@ from flexi_mod.strategies.electrified_steel_strategy import (
     LIME_PRICE_SIGNAL,
     NATURAL_GAS_PRICE_SIGNAL,
     ElectrifiedSteelStrategy,
-    _capacity_block_summary,
-    _duration_hours,
 )
 
 _ELECTROLYSER_ALLOWED = "__electrolyser_allowed"
@@ -73,6 +76,24 @@ class ElectrifiedSteelRuleBasedStrategy(ElectrifiedSteelStrategy):
     ``_validate_configuration`` (market_sequence, German gate calendars), and
     ``required_forecast_columns`` unchanged -- only :meth:`dispatch` differs.
     """
+
+    def _build_dispatch_signals(
+        self,
+        plant: SteelPlant,
+        *,
+        electricity_price_col: str,
+        gate_column: str | None,
+    ) -> SteelDispatchSignals:
+        """The price-taker signals the physical solve runs on."""
+        return SteelDispatchSignals(
+            electricity_price_col=electricity_price_col,
+            natural_gas_price_col=NATURAL_GAS_PRICE_SIGNAL,
+            hydrogen_price_col=HYDROGEN_PRICE_SIGNAL,
+            iron_ore_price_col=IRON_ORE_PRICE_SIGNAL,
+            lime_price_col=LIME_PRICE_SIGNAL,
+            co2_price_col=CO2_PRICE_SIGNAL,
+            electrolyser_allowed_col=gate_column,
+        )
 
     def dispatch(
         self,
@@ -96,9 +117,9 @@ class ElectrifiedSteelRuleBasedStrategy(ElectrifiedSteelStrategy):
         energy_bid_increment_mw = float(energy_rules.get("bid_increment_mw", 1.0))
         capacity_min_bid_mw = float(capacity_rules.get("min_bid_mw", 0.0))
         capacity_bid_increment_mw = float(capacity_rules.get("bid_increment_mw", 1.0))
-        _validate_bid_rules("afrr_energy", energy_min_bid_mw, energy_bid_increment_mw)
-        _validate_bid_rules("afrr_capacity", capacity_min_bid_mw, capacity_bid_increment_mw)
-        capacity_product_duration_h = _duration_hours(capacity.product_length)
+        validate_bid_rules("afrr_energy", energy_min_bid_mw, energy_bid_increment_mw)
+        validate_bid_rules("afrr_capacity", capacity_min_bid_mw, capacity_bid_increment_mw)
+        capacity_product_duration_h = duration_hours(capacity.product_length)
 
         da_price_col = day_ahead.signal_column("price")
         da_price = forecasts[da_price_col].astype(float)
@@ -114,36 +135,30 @@ class ElectrifiedSteelRuleBasedStrategy(ElectrifiedSteelStrategy):
         delivered_da_price = da_price + additional_charge
         delivered_afrr_price = afrr_price + additional_charge
 
-        case_a, hybrid_component = _classify_case_a(plant)
+        substitution = plant.afrr_fuel_substitution(forecasts)
+        case_a = substitution is not None
 
         prepared = forecasts.copy()
         effective_price = da_price.copy()
-        electrolyser_da_favored = pd.Series(False, index=forecasts.index)
-        electrolyser_afrr_rescued = pd.Series(False, index=forecasts.index)
         benchmark = pd.Series(np.nan, index=forecasts.index)
-        if case_a:
-            benchmark = _gas_based_electricity_benchmark(
-                plant, hybrid_component, forecasts
-            )
-            electrolyser_da_favored = delivered_da_price <= benchmark
-            electrolyser_afrr_rescued = (
-                ~electrolyser_da_favored & afrr_available & (delivered_afrr_price <= benchmark)
-            )
-            gate_open = electrolyser_da_favored | electrolyser_afrr_rescued
-            prepared[_ELECTROLYSER_ALLOWED] = gate_open
-            effective_price = effective_price.where(
-                ~electrolyser_afrr_rescued, np.minimum(da_price, afrr_price)
-            )
+        gate_column = None
+        if substitution is not None:
+            benchmark = substitution.benchmark_eur_per_mwh_el
+            da_favored = delivered_da_price <= benchmark
+            afrr_rescued = ~da_favored & afrr_available & (delivered_afrr_price <= benchmark)
+            if substitution.gate_column is not None:
+                # A discrete on/off load: tell the LP when it may run at all.
+                gate_column = substitution.gate_column
+                prepared[gate_column] = da_favored | afrr_rescued
+            # A continuously blending plant needs no gate - showing it the effective
+            # price is enough for the LP to pick the split itself.
+            effective_price = effective_price.where(~afrr_rescued, np.minimum(da_price, afrr_price))
         prepared[_EFFECTIVE_ELECTRICITY_PRICE] = effective_price
 
-        signals = SteelDispatchSignals(
+        signals = self._build_dispatch_signals(
+            plant,
             electricity_price_col=_EFFECTIVE_ELECTRICITY_PRICE,
-            natural_gas_price_col=NATURAL_GAS_PRICE_SIGNAL,
-            hydrogen_price_col=HYDROGEN_PRICE_SIGNAL,
-            iron_ore_price_col=IRON_ORE_PRICE_SIGNAL,
-            lime_price_col=LIME_PRICE_SIGNAL,
-            co2_price_col=CO2_PRICE_SIGNAL,
-            electrolyser_allowed_col=_ELECTROLYSER_ALLOWED if case_a else None,
+            gate_column=gate_column,
         )
         physical = plant.solve_rolling(
             self.config,
@@ -173,63 +188,12 @@ class ElectrifiedSteelRuleBasedStrategy(ElectrifiedSteelStrategy):
             capacity_bid_increment_mw=capacity_bid_increment_mw,
             case_a=case_a,
             benchmark=benchmark.reindex(physical.index),
+            gated_load_column=(
+                substitution.gated_load_column if substitution is not None else None
+            ),
         )
-        self.afrr_capacity_block_summary = _capacity_block_summary(dispatch)
+        self.afrr_capacity_block_summary = capacity_block_summary(dispatch)
         return dispatch
-
-
-def _classify_case_a(plant: SteelPlant) -> tuple[bool, object | None]:
-    """Return (is_case_a, hybrid_fuel_component) for the plant's technology mix.
-
-    Case A requires an on-site electrolyser AND a hybrid-fuel terminal/DRI block
-    that can genuinely substitute hydrogen for gas. Checks whichever of
-    ``dri_plant``/``bf_bof`` is present -- both share the same ``fuel_type`` /
-    ``specific_hydrogen_consumption_mwh_per_t`` / ``specific_natural_gas_consumption_mwh_per_t``
-    attributes, and both support the hybrid fuel split in their own Pyomo balance.
-    """
-
-    if "electrolyser" not in plant.components:
-        return False, None
-    hybrid_component = plant.components.get("dri_plant") or plant.components.get("bf_bof")
-    if hybrid_component is None:
-        return False, None
-    if getattr(hybrid_component, "fuel_type", None) != HYBRID_FUEL_TYPE:
-        return False, None
-    return True, hybrid_component
-
-
-def _gas_based_electricity_benchmark(
-    plant: SteelPlant,
-    hybrid_component: object,
-    forecasts: pd.DataFrame,
-) -> pd.Series:
-    """Electricity price at which hydrogen (via electrolyser) matches gas cost per t.
-
-    ``gas_route_cost_per_t = natural_gas_price * specific_natural_gas_consumption + CO2``
-    ``hydrogen_mwh_el_per_t = specific_hydrogen_consumption / electrolyser.efficiency``
-    ``benchmark = gas_route_cost_per_t / hydrogen_mwh_el_per_t``
-
-    CO2 is included (the exact MILP prices it on the gas path too), unlike the
-    ETES benchmark's TODO-flagged omission -- a deliberate fidelity choice, not
-    an oversight. Iron-ore and the block's own baseline electricity consumption
-    are fuel-route-independent and correctly excluded.
-    """
-
-    natural_gas_price = forecasts[NATURAL_GAS_PRICE_SIGNAL].astype(float)
-    co2_price = forecasts[CO2_PRICE_SIGNAL].astype(float)
-    specific_natural_gas = float(hybrid_component.specific_natural_gas_consumption_mwh_per_t)
-    natural_gas_co2_factor = float(hybrid_component.natural_gas_co2_factor_t_per_mwh)
-    specific_hydrogen = float(hybrid_component.specific_hydrogen_consumption_mwh_per_t)
-    electrolyser = plant.components["electrolyser"]
-    efficiency = float(electrolyser.efficiency)
-
-    gas_route_cost_per_t = specific_natural_gas * (
-        natural_gas_price + natural_gas_co2_factor * co2_price
-    )
-    hydrogen_mwh_el_per_t = specific_hydrogen / efficiency
-    benchmark = gas_route_cost_per_t / hydrogen_mwh_el_per_t
-    benchmark.name = "gas_based_electricity_benchmark_EUR_per_MWh_el"
-    return benchmark
 
 
 def _capacity_reserved_mw_by_block(
@@ -303,7 +267,7 @@ def _capacity_reserved_mw_by_block(
         bid_eligible = activation_expected and activation_profitable and price_ok
         if bid_eligible:
             technical_mw = float(block["total"].min()) / timestep_hours
-            reserved_mw_by_block[block_id] = _round_bid_down_to_increment(
+            reserved_mw_by_block[block_id] = round_bid_down_to_increment(
                 technical_mw, capacity_min_bid_mw, capacity_bid_increment_mw
             )
         else:
@@ -333,18 +297,20 @@ def _apply_market_timing_rules(
     capacity_bid_increment_mw: float,
     case_a: bool,
     benchmark: pd.Series,
+    gated_load_column: str | None = None,
 ) -> pd.DataFrame:
     """Post-solve, pure-pandas market-sourcing split -- no Pyomo involved."""
 
     index = physical.index
     total = physical["total_electricity_consumption_MWh"].astype(float)
-    if case_a and "electrolyser_electricity_consumption_MWh" in physical.columns:
-        electrolyser_mwh = physical["electrolyser_electricity_consumption_MWh"].astype(float)
+    if gated_load_column is not None and gated_load_column in physical.columns:
+        electrolyser_mwh = physical[gated_load_column].astype(float)
     else:
         electrolyser_mwh = pd.Series(0.0, index=index)
-    aggregate_max_power_mw = sum(
-        float(getattr(component, "max_power_mw", 0.0)) for component in plant.components.values()
-    )
+    # The plant's own aggregate: cement's stages expose no max_power_mw at all, so
+    # summing that attribute here would count only an electrolyser and silently cap
+    # every bid at zero.
+    aggregate_max_power_mw = plant.afrr_aggregate_max_power_mw()
 
     # Energy favorability is decided first (independent of capacity): source via aFRR
     # energy wherever it beats day-ahead, regardless of what produced the load.
@@ -373,7 +339,7 @@ def _apply_market_timing_rules(
 
     bid_mw_raw = q_afrr_desired / timestep_hours
     bid_mw = bid_mw_raw.map(
-        lambda mw: _round_bid_down_to_increment(mw, energy_min_bid_mw, energy_bid_increment_mw)
+        lambda mw: round_bid_down_to_increment(mw, energy_min_bid_mw, energy_bid_increment_mw)
     )
     # Increment rounding must never undercut the mandatory capacity commitment.
     bid_mwh = np.maximum(bid_mw * timestep_hours, reserved_mwh)
@@ -385,7 +351,12 @@ def _apply_market_timing_rules(
     capacity_backed_activated_mwh = np.minimum(capacity_backed_bid_mwh, activated)
     free_activated_mwh = activated - capacity_backed_activated_mwh
 
-    non_electric_cost = physical["variable_cost_EUR"].astype(float) - total * effective_price
+    # The physical solve now prices electricity at the *delivered* price, so the same
+    # delivered price must come back out - subtracting only the market price would
+    # leave the grid charge inside non_electric_cost, and it is added again below.
+    non_electric_cost = physical["variable_cost_EUR"].astype(float) - total * (
+        effective_price + additional_charge
+    )
     electricity_market_cost = da_position * da_price + activated * afrr_price
     additional_electricity_charges_cost = total * additional_charge
     gross_operating_cost = (
@@ -398,7 +369,9 @@ def _apply_market_timing_rules(
     afrr_bid_price = benchmark.where(electrolyser_mwh > 0.0, da_price) if case_a else da_price
     market_spread = afrr_bid_price - afrr_price
     net_spread = afrr_bid_price - delivered_afrr_price
-    available_load_headroom = (aggregate_max_power_mw * timestep_hours - da_position).clip(lower=0.0)
+    available_load_headroom = (aggregate_max_power_mw * timestep_hours - da_position).clip(
+        lower=0.0
+    )
 
     result = physical.copy()
     result["DA_position_MWh"] = da_position
@@ -454,28 +427,6 @@ def _apply_market_timing_rules(
     result["non_electric_variable_cost_EUR"] = non_electric_cost
     result["variable_cost_EUR"] = gross_operating_cost
 
-    missing = set(STEEL_AFRR_RESULT_COLUMNS) - set(result.columns)
+    missing = set(AFRR_DOWN_RESULT_COLUMNS) - set(result.columns)
     assert not missing, f"rule-based steel dispatch is missing column(s): {sorted(missing)}"
     return result
-
-
-def _validate_bid_rules(market_name: str, min_bid_mw: float, bid_increment_mw: float) -> None:
-    if min_bid_mw < 0:
-        raise ValueError(f"{market_name}.product_rules.min_bid_mw must be non-negative")
-    if bid_increment_mw <= 0:
-        raise ValueError(f"{market_name}.product_rules.bid_increment_mw must be positive")
-
-
-def _round_bid_down_to_increment(
-    feasible_bid_mw: float,
-    min_bid_mw: float,
-    bid_increment_mw: float,
-) -> float:
-    """Return the largest market-compliant bid not exceeding physical capability."""
-
-    if feasible_bid_mw < min_bid_mw:
-        return 0.0
-    rounded = math.floor((feasible_bid_mw + 1e-12) / bid_increment_mw) * bid_increment_mw
-    if rounded < min_bid_mw:
-        return 0.0
-    return float(rounded)

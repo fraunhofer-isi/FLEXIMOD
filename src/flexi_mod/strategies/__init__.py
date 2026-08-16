@@ -5,6 +5,13 @@
 from flexi_mod.strategies.cement_cost_minimization_strategy import (
     CementCostMinimizationStrategy,
 )
+from flexi_mod.strategies.electrified_afrr_down_strategy import (
+    ElectrifiedAFRRDownStrategy,
+)
+from flexi_mod.strategies.electrified_cement_rule_based_strategy import (
+    ElectrifiedCementRuleBasedStrategy,
+)
+from flexi_mod.strategies.electrified_cement_strategy import ElectrifiedCementStrategy
 from flexi_mod.strategies.electrified_steel_rule_based_strategy import (
     ElectrifiedSteelRuleBasedStrategy,
 )
@@ -24,6 +31,8 @@ STRATEGY_REGISTRY = {
     "electrified_steel": ElectrifiedSteelStrategy,
     "electrified_steel_rule_based": ElectrifiedSteelRuleBasedStrategy,
     "cement_cost_minimization": CementCostMinimizationStrategy,
+    "electrified_cement": ElectrifiedCementStrategy,
+    "electrified_cement_rule_based": ElectrifiedCementRuleBasedStrategy,
 }
 
 
@@ -39,6 +48,9 @@ def build_strategy(name: str, config):
 
 
 __all__ = [
+    "ElectrifiedAFRRDownStrategy",
+    "ElectrifiedCementRuleBasedStrategy",
+    "ElectrifiedCementStrategy",
     "HybridETESGasStrategy",
     "CementCostMinimizationStrategy",
     "SteelCostMinimizationStrategy",

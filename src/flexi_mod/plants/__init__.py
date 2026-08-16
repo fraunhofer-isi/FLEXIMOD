@@ -7,6 +7,9 @@ from flexi_mod.plants.factory import PLANT_REGISTRY, build_plants
 from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 from flexi_mod.plants.steel_plant import SteelDispatchSignals, SteelPlant, SteelRollingState
 from flexi_mod.plants.technologies import (
+    TECHNOLOGY_REGISTRY,
+    BasicOxygenFurnace,
+    BlastFurnaceBasicOxygenFurnace,
     CementCalciner,
     CementKiln,
     CementPreheater,
@@ -15,12 +18,16 @@ from flexi_mod.plants.technologies import (
     ElectricArcFurnace,
     Electrolyser,
     GasBoiler,
+    GenericInventoryStorage,
     GenericStorage,
     HydrogenBufferStorage,
     ThermalStorage,
 )
 
 __all__ = [
+    "TECHNOLOGY_REGISTRY",
+    "BasicOxygenFurnace",
+    "BlastFurnaceBasicOxygenFurnace",
     "DRIPlant",
     "DRIStorage",
     "CementCalciner",
@@ -31,6 +38,7 @@ __all__ = [
     "ElectricArcFurnace",
     "Electrolyser",
     "GasBoiler",
+    "GenericInventoryStorage",
     "GenericStorage",
     "HydrogenBufferStorage",
     "PLANT_REGISTRY",

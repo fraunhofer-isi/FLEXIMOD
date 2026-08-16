@@ -454,14 +454,8 @@ def _demand_column_for_plant(plant_name: str, plant_rows: pd.DataFrame) -> str |
         return f"{plant_name}_steel_demand"
 
     if unit_types == {"cement_plant"}:
-        if "clinker_demand" in plant_rows.columns:
-            total_values = [
-                value
-                for value in plant_rows["clinker_demand"].tolist()
-                if not pd.isna(value) and str(value).strip()
-            ]
-            if total_values:
-                return None
+        # Cement demand is always a per-timestep forecast column, so unlike steel there is
+        # no scalar total that would make the column optional.
         if "demand" in plant_rows.columns:
             demand_columns = [
                 str(value).strip()

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
@@ -36,5 +38,17 @@ class CementCostMinimizationStrategy:
             self.signals.co2_price_col,
         }
 
-    def dispatch(self, plant: CementPlant, forecasts: pd.DataFrame) -> pd.DataFrame:
+    def dispatch(
+        self,
+        plant: CementPlant,
+        forecasts: pd.DataFrame,
+        progress_callback: Callable[[pd.Timestamp, pd.Timestamp], None] | None = None,
+    ) -> pd.DataFrame:
+        if self.config.dispatch_setting("rolling_horizon_enabled", True):
+            return plant.solve_rolling(
+                self.config,
+                forecasts,
+                self.signals,
+                progress_callback=progress_callback,
+            )
         return plant.solve_horizon(self.config, forecasts, self.signals)

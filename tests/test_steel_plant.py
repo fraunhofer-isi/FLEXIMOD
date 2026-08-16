@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import dataclasses
 from pathlib import Path
 
 import pandas as pd
@@ -9,8 +10,14 @@ import pytest
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataLoader
+from flexi_mod.plants.afrr_down import AFRRDownMarketSignals
 from flexi_mod.plants.factory import build_plants
-from flexi_mod.plants.steel_plant import SteelDispatchSignals, SteelPlant
+from flexi_mod.plants.steel_plant import (
+    SteelAFRRDownCommoditySignals,
+    SteelAFRRDownSignals,
+    SteelDispatchSignals,
+    SteelPlant,
+)
 from flexi_mod.plants.technologies import (
     BasicOxygenFurnace,
     BlastFurnaceBasicOxygenFurnace,
@@ -23,7 +30,56 @@ from flexi_mod.plants.technologies import (
     ThermalStorage,
 )
 
-CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_DA"
+CASE_CONFIG_YAML = """
+cases:
+  steel_cost_min_case:
+    name: steel_cost_min_case
+    country: DE
+    timestep_minutes: 15
+    simulation_start: "2025-01-01 00:00"
+    simulation_end: "2025-01-01 01:00"
+    additional_charges: false
+    strategy:
+      name: steel_cost_minimization
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 1
+        rolling_step_hours: 1
+    solver:
+      name: highs
+      fallback_solvers: []
+      tee: false
+    market_sequence:
+      - day_ahead
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        gate_close:
+          day_relation: D-1
+          time: "12:00"
+        signals:
+          price: electricity_price
+""".strip()
+
+
+@pytest.fixture
+def case_dir(tmp_path: Path) -> Path:
+    """A minimal steel case folder holding just ``config.yaml``.
+
+    Built here rather than pointed at ``data/input/``, which is gitignored and holds no
+    such case, so these tests do not depend on local-only scenario folders.
+    """
+    case_dir = tmp_path / "steel_cost_min_case"
+    case_dir.mkdir()
+    (case_dir / "config.yaml").write_text(CASE_CONFIG_YAML, encoding="utf-8")
+    return case_dir
+
+
+@pytest.fixture
+def config(case_dir: Path) -> CaseConfig:
+    return CaseConfig.from_case_dir(case_dir, study_case="steel_cost_min_case")
 
 
 def test_steel_plant_builds_required_and_optional_technologies() -> None:
@@ -39,6 +95,24 @@ def test_steel_plant_builds_required_and_optional_technologies() -> None:
     assert issubclass(ThermalStorage, GenericStorage)
     assert issubclass(HydrogenBufferStorage, GenericStorage)
     assert issubclass(DRIStorage, GenericStorage)
+
+
+def test_afrr_signals_split_into_market_and_commodity_halves_loses_nothing() -> None:
+    """The two views must together account for every field, exactly once.
+
+    The market layer is shared across plant families and receives only the market half,
+    so a field added to the signals but forgotten in a view would silently vanish from
+    the model rather than raise.
+    """
+    whole = {f.name for f in dataclasses.fields(SteelAFRRDownSignals)}
+    market = {f.name for f in dataclasses.fields(AFRRDownMarketSignals)}
+    commodity = {f.name for f in dataclasses.fields(SteelAFRRDownCommoditySignals)}
+
+    assert market | commodity == whole
+    assert not (market & commodity), "a field cannot belong to both halves"
+    assert "iron_ore_price_col" not in market, (
+        "steel commodities must not leak into the market half"
+    )
 
 
 def test_steel_plant_builds_dri_bof_route() -> None:
@@ -71,8 +145,7 @@ def test_steel_plant_rejects_missing_required_technology() -> None:
         SteelPlant.from_rows("steel_1", rows)
 
 
-def test_steel_plant_hydrogen_route_and_material_balances_solve() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_steel_plant_hydrogen_route_and_material_balances_solve(config: CaseConfig) -> None:
     plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=True))
     forecasts = _steel_forecasts()
 
@@ -101,8 +174,7 @@ def test_steel_plant_hydrogen_route_and_material_balances_solve() -> None:
     )
 
 
-def test_dri_bof_route_solves_and_satisfies_material_balance() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_dri_bof_route_solves_and_satisfies_material_balance(config: CaseConfig) -> None:
     plant = SteelPlant.from_rows("steel_1", _dri_bof_rows())
 
     result = plant.solve_horizon(config, _steel_forecasts(), _signals())
@@ -115,8 +187,7 @@ def test_dri_bof_route_solves_and_satisfies_material_balance() -> None:
     assert result["lime_consumption_t"].sum() == pytest.approx(0.2)
 
 
-def test_bf_bof_coal_route_solves_and_requires_coal_price() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_bf_bof_coal_route_solves_and_requires_coal_price(config: CaseConfig) -> None:
     plant = SteelPlant.from_rows("steel_1", _bf_bof_rows("coal"))
     forecasts = _steel_forecasts()
 
@@ -135,8 +206,9 @@ def test_bf_bof_coal_route_solves_and_requires_coal_price() -> None:
 
 
 @pytest.mark.parametrize("fuel_type", ["natural_gas", "hydrogen"])
-def test_bf_bof_single_fuel_routes_leave_unused_fuels_zero(fuel_type: str) -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_bf_bof_single_fuel_routes_leave_unused_fuels_zero(
+    fuel_type: str, config: CaseConfig
+) -> None:
     plant = SteelPlant.from_rows("steel_1", _bf_bof_rows(fuel_type))
 
     result = plant.solve_horizon(config, _steel_forecasts(), _signals())
@@ -204,8 +276,7 @@ def test_hydrogen_dri_does_not_require_fossil_fuel_co2_factors() -> None:
     assert plant.dri_plant.natural_gas_co2_factor_t_per_mwh == pytest.approx(0.0)
 
 
-def test_bf_bof_hybrid_fuel_selects_cheaper_feasible_mix() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_bf_bof_hybrid_fuel_selects_cheaper_feasible_mix(config: CaseConfig) -> None:
     plant = SteelPlant.from_rows("steel_1", _bf_bof_rows("hybrid_hydrogen_natural_gas"))
     forecasts = _steel_forecasts()
     forecasts["natural_gas_price"] = 10.0
@@ -224,8 +295,9 @@ def test_bf_bof_hybrid_fuel_selects_cheaper_feasible_mix() -> None:
     assert hydrogen_result["natural_gas_consumption_MWh"].sum() == pytest.approx(0.0)
 
 
-def test_bf_bof_hydrogen_is_external_without_electrolyser_and_constrained_with_one() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_bf_bof_hydrogen_is_external_without_electrolyser_and_constrained_with_one(
+    config: CaseConfig,
+) -> None:
     external_plant = SteelPlant.from_rows("steel_1", _bf_bof_rows("hydrogen"))
     external_result = external_plant.solve_horizon(config, _steel_forecasts(), _signals())
 
@@ -262,8 +334,7 @@ def test_ambiguous_both_fuel_type_is_rejected() -> None:
         SteelPlant.from_rows("steel_1", rows)
 
 
-def test_steel_plant_without_electrolyser_buys_hydrogen() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_steel_plant_without_electrolyser_buys_hydrogen(config: CaseConfig) -> None:
     plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=False))
 
     result = plant.solve_horizon(config, _steel_forecasts(), _signals())
@@ -273,8 +344,7 @@ def test_steel_plant_without_electrolyser_buys_hydrogen() -> None:
     assert "electrolyser_hydrogen_output_MWh" not in result
 
 
-def test_forecast_profile_is_summed_as_a_flexible_cumulative_target() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_forecast_profile_is_summed_as_a_flexible_cumulative_target(config: CaseConfig) -> None:
     rows = _steel_rows(include_optional=True)
     rows["steel_demand"] = pd.NA
     rows["demand"] = "steel_production_target"
@@ -291,8 +361,7 @@ def test_forecast_profile_is_summed_as_a_flexible_cumulative_target() -> None:
     assert set(result["steel_demand_total_t"]) == {4.0}
 
 
-def test_forecast_profile_uses_default_plant_specific_column() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_forecast_profile_uses_default_plant_specific_column(config: CaseConfig) -> None:
     rows = _steel_rows(include_optional=False)
     rows["steel_demand"] = pd.NA
     plant = SteelPlant.from_rows("steel_1", rows)
@@ -306,8 +375,7 @@ def test_forecast_profile_uses_default_plant_specific_column() -> None:
     assert result["steel_output_t"].sum() == pytest.approx(4.0)
 
 
-def test_total_target_takes_precedence_over_forecast_profile() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_total_target_takes_precedence_over_forecast_profile(config: CaseConfig) -> None:
     rows = _steel_rows(include_optional=False)
     rows["demand"] = "unused_steel_profile"
     plant = SteelPlant.from_rows("steel_1", rows)
@@ -319,8 +387,7 @@ def test_total_target_takes_precedence_over_forecast_profile() -> None:
     assert set(result["steel_demand_total_t"]) == {4.0}
 
 
-def test_missing_total_and_forecast_profile_fails_clearly() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_missing_total_and_forecast_profile_fails_clearly(config: CaseConfig) -> None:
     rows = _steel_rows(include_optional=False)
     rows["steel_demand"] = pd.NA
     plant = SteelPlant.from_rows("steel_1", rows)
@@ -338,8 +405,9 @@ def test_missing_total_and_forecast_profile_fails_clearly() -> None:
         (float("inf"), "non-finite"),
     ],
 )
-def test_invalid_forecast_profile_values_fail(invalid_value: object, message: str) -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_invalid_forecast_profile_values_fail(
+    invalid_value: object, message: str, config: CaseConfig
+) -> None:
     rows = _steel_rows(include_optional=False)
     rows["steel_demand"] = pd.NA
     rows["demand"] = "steel_profile"
@@ -377,9 +445,10 @@ def test_invalid_total_target_fails(invalid_total: object) -> None:
         SteelPlant.from_rows("steel_1", rows)
 
 
-def test_forecast_discovery_requires_profile_only_without_total_target() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
-    loader = DataLoader(config, input_dir=CASE_DIR)
+def test_forecast_discovery_requires_profile_only_without_total_target(
+    case_dir: Path, config: CaseConfig
+) -> None:
+    loader = DataLoader(config, input_dir=case_dir)
     total_rows = _steel_rows(include_optional=False)
 
     total_required = loader.required_forecast_columns(total_rows)
@@ -403,8 +472,8 @@ def test_forecast_discovery_requires_profile_only_without_total_target() -> None
     assert "coal_price" not in gas_required
 
 
-def test_rolling_scalar_target_is_committed_once_and_completed_exactly() -> None:
-    config = _rolling_config(horizon_hours=1.0, step_hours=0.5)
+def test_rolling_scalar_target_is_committed_once_and_completed_exactly(config: CaseConfig) -> None:
+    config = _rolling_config(config, horizon_hours=1.0, step_hours=0.5)
     plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=True))
     forecasts = _extended_steel_forecasts()
 
@@ -422,8 +491,9 @@ def test_rolling_scalar_target_is_committed_once_and_completed_exactly() -> None
 
 def test_final_rolling_window_reconciles_only_numerical_infeasibility(
     monkeypatch: pytest.MonkeyPatch,
+    config: CaseConfig,
 ) -> None:
-    config = _rolling_config(horizon_hours=2.0, step_hours=2.0)
+    config = _rolling_config(config, horizon_hours=2.0, step_hours=2.0)
     plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=False))
     forecasts = _extended_steel_forecasts()
     solve_model = plant._solve_model
@@ -444,8 +514,8 @@ def test_final_rolling_window_reconciles_only_numerical_infeasibility(
     assert result["steel_demand_balance_t"].iloc[-1] == pytest.approx(0.0, abs=1e-6)
 
 
-def test_rolling_profile_carries_backlog_and_credit_between_windows() -> None:
-    config = _rolling_config(horizon_hours=1.0, step_hours=0.5)
+def test_rolling_profile_carries_backlog_and_credit_between_windows(config: CaseConfig) -> None:
+    config = _rolling_config(config, horizon_hours=1.0, step_hours=0.5)
     rows = _steel_rows(include_optional=False)
     rows["steel_demand"] = pd.NA
     rows["demand"] = "steel_profile"
@@ -463,8 +533,8 @@ def test_rolling_profile_carries_backlog_and_credit_between_windows() -> None:
     )
 
 
-def test_rolling_bf_bof_preserves_route_state_and_final_demand() -> None:
-    config = _rolling_config(horizon_hours=1.0, step_hours=0.5)
+def test_rolling_bf_bof_preserves_route_state_and_final_demand(config: CaseConfig) -> None:
+    config = _rolling_config(config, horizon_hours=1.0, step_hours=0.5)
     plant = SteelPlant.from_rows("steel_1", _bf_bof_rows("natural_gas"))
 
     result = plant.solve_rolling(config, _extended_steel_forecasts(), _signals())
@@ -475,8 +545,8 @@ def test_rolling_bf_bof_preserves_route_state_and_final_demand() -> None:
     assert result["bf_bof_operational_status"].isin([0, 1]).all()
 
 
-def test_rolling_inventory_state_is_continuous_across_commit_boundary() -> None:
-    config = _rolling_config(horizon_hours=1.0, step_hours=0.5)
+def test_rolling_inventory_state_is_continuous_across_commit_boundary(config: CaseConfig) -> None:
+    config = _rolling_config(config, horizon_hours=1.0, step_hours=0.5)
     plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=True))
     result = plant.solve_rolling(config, _extended_steel_forecasts(), _signals())
     boundary = result.index[result["rolling_window"].diff().fillna(0).ne(0)][0]
@@ -497,8 +567,8 @@ def test_rolling_inventory_state_is_continuous_across_commit_boundary() -> None:
     assert current["hydrogen_storage_soc"] == pytest.approx(expected_soc)
 
 
-def test_rolling_minimum_uptime_is_carried_across_commit_boundary() -> None:
-    config = _rolling_config(horizon_hours=1.0, step_hours=0.5)
+def test_rolling_minimum_uptime_is_carried_across_commit_boundary(config: CaseConfig) -> None:
+    config = _rolling_config(config, horizon_hours=1.0, step_hours=0.5)
     rows = _steel_rows(include_optional=False)
     rows["min_power"] = 0.1
     rows["min_operating_steps"] = 4
@@ -512,16 +582,15 @@ def test_rolling_minimum_uptime_is_carried_across_commit_boundary() -> None:
     assert result["dri_operational_status"].iloc[:4].tolist() == [1, 1, 1, 1]
 
 
-def test_rolling_window_configuration_is_validated() -> None:
+def test_rolling_window_configuration_is_validated(config: CaseConfig) -> None:
     plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=False))
-    config = _rolling_config(horizon_hours=0.5, step_hours=1.0)
+    config = _rolling_config(config, horizon_hours=0.5, step_hours=1.0)
 
     with pytest.raises(ValueError, match="must not exceed"):
         plant.solve_rolling(config, _extended_steel_forecasts(), _signals())
 
 
-def test_dri_storage_can_shift_dri_production_to_later_eaf_operation() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_dri_storage_can_shift_dri_production_to_later_eaf_operation(config: CaseConfig) -> None:
     rows = _steel_rows(include_optional=True)
     rows = rows.loc[rows["technology"].isin({"dri_plant", "eaf", "dri_storage"})].copy()
     rows.loc[rows["technology"] == "dri_plant", "fuel_type"] = "natural_gas"
@@ -538,8 +607,7 @@ def test_dri_storage_can_shift_dri_production_to_later_eaf_operation() -> None:
     assert result["dri_input_t"].iloc[2:].sum() > result["dri_output_t"].iloc[2:].sum()
 
 
-def test_quarter_hour_power_limits_are_converted_to_interval_energy() -> None:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def test_quarter_hour_power_limits_are_converted_to_interval_energy(config: CaseConfig) -> None:
     plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=True))
     model = plant._build_model(config, _steel_forecasts(), _signals())
 
@@ -548,13 +616,8 @@ def test_quarter_hour_power_limits_are_converted_to_interval_energy() -> None:
     assert float(model.technology_blocks["eaf"].max_power) == pytest.approx(2.5)
 
 
-def test_electrolyser_gate_forces_zero_power_when_closed(tmp_path: Path) -> None:
-    """Regression guard for the electrolyser_allowed_col addition to _build_model.
-
-    Self-contained (does not depend on CASE_DIR) so it stays runnable even when
-    that fixture directory is unavailable.
-    """
-    config = _minimal_cost_min_config(tmp_path)
+def test_electrolyser_gate_forces_zero_power_when_closed(config: CaseConfig) -> None:
+    """Regression guard for the electrolyser_allowed_col addition to _build_model."""
     plant = SteelPlant.from_rows("steel_1", _steel_rows(include_optional=True))
     forecasts = _steel_forecasts().copy()
     forecasts["__electrolyser_allowed"] = [True, False, True, False]
@@ -576,47 +639,6 @@ def test_electrolyser_gate_forces_zero_power_when_closed(tmp_path: Path) -> None
         [0.0, 0.0]
     )
     assert result["steel_output_t"].sum() == pytest.approx(4.0)
-
-
-def _minimal_cost_min_config(tmp_path: Path) -> CaseConfig:
-    case_dir = tmp_path / "steel_cost_min_case"
-    case_dir.mkdir(exist_ok=True)
-    (case_dir / "config.yaml").write_text(
-        """
-cases:
-  steel_cost_min_case:
-    name: steel_cost_min_case
-    country: DE
-    timestep_minutes: 15
-    simulation_start: "2025-01-01 00:00"
-    simulation_end: "2025-01-01 01:00"
-    additional_charges: false
-    strategy:
-      name: steel_cost_minimization
-      dispatch:
-        dispatch_method: pyomo
-        rolling_horizon_enabled: true
-        dispatch_horizon_hours: 1
-        rolling_step_hours: 1
-    solver:
-      name: highs
-      fallback_solvers: []
-      tee: false
-    market_sequence:
-      - day_ahead
-    markets:
-      day_ahead:
-        enabled: true
-        product_resolution: 15min
-        gate_close:
-          day_relation: D-1
-          time: "12:00"
-        signals:
-          price: electricity_price
-""".strip(),
-        encoding="utf-8",
-    )
-    return CaseConfig.from_case_dir(case_dir, study_case="steel_cost_min_case")
 
 
 def _steel_rows(include_optional: bool) -> pd.DataFrame:
@@ -771,8 +793,7 @@ def _extended_steel_forecasts() -> pd.DataFrame:
     )
 
 
-def _rolling_config(horizon_hours: float, step_hours: float) -> CaseConfig:
-    config = CaseConfig.from_case_dir(CASE_DIR)
+def _rolling_config(config: CaseConfig, horizon_hours: float, step_hours: float) -> CaseConfig:
     dispatch = config.case["strategy"]["dispatch"]
     dispatch["rolling_horizon_enabled"] = True
     dispatch["dispatch_horizon_hours"] = horizon_hours

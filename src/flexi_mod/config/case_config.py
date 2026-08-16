@@ -180,6 +180,8 @@ class CaseConfig:
             "electrified_steel",
             "electrified_steel_rule_based",
             "cement_cost_minimization",
+            "electrified_cement",
+            "electrified_cement_rule_based",
         }
         strategy_name = str(self.case["strategy"].get("name", ""))
         if strategy_name not in supported_strategies:
@@ -195,6 +197,8 @@ class CaseConfig:
             "electrified_steel",
             "electrified_steel_rule_based",
             "cement_cost_minimization",
+            "electrified_cement",
+            "electrified_cement_rule_based",
         }:
             if not bool(self.case["markets"].get("day_ahead", {}).get("enabled", False)):
                 raise ConfigError(f"{strategy_name} requires an enabled day_ahead market")

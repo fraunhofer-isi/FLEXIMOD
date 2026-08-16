@@ -762,6 +762,77 @@ and the realized `actual_electricity_consumption_MWh` is settled ex-post into
 `net_operating_cost_incl_grid_fees_EUR`, replacing the in-dispatch marginal
 charge with the authoritative grid-fee bill.
 
+## Electrified Cement: Day-Ahead and aFRR Down
+
+`electrified_cement` applies the same German market design to a clinker line.
+The market layer is literally the same code: `src/flexi_mod/plants/afrr_down/`
+owns bid prices, capacity products, integer bid sizing, activation and the
+objective, and reaches each plant family through the `AFRRDownPlant` protocol.
+Only what the plant consumes and how it dispatches differ.
+
+```text
+afrr_capacity -> day_ahead -> afrr_energy
+```
+
+### Where the flexibility comes from
+
+Cement's kiln line is pinned to the hourly clinker demand, and the model has no
+clinker silo, so surplus clinker cannot be made to soak up energy — the demand
+band forbids it on both trajectories. What is left to offer is the room in the
+thermal store's charging power, plus stage auxiliaries:
+
+```text
+electric heating of any stage on an electricity or hybrid fuel type
++ auxiliary power of every stage (throughput x specific_electricity_aux)
++ electrolyser rated power
++ thermal storage charging power
+```
+
+The auxiliary term is the only electric load on a plain fossil route with no
+store or electrolyser. Omitting it does not raise; it silently caps every bid at
+zero.
+
+### The two trajectories differ from steel
+
+Steel drops its cumulative-output equality on the full-activation twin, because a
+different power draw fights it. Cement keeps its demand band on **both**. Dropping
+it would be wrong twice over: with a store, the twin would absorb the whole bid
+while making no clinker, so the feasibility test proves nothing; without a store
+or electrolyser, the only load is auxiliary power — proportional to output — so
+zero output makes the electricity balance unsatisfiable and forces every bid to
+zero.
+
+The consequence is that cement's twin is genuinely load-bearing. Bids are limited
+by real physics: stage `max_heat_out`, storage state of charge and charging power,
+and heat ramp rates.
+
+### Fuel substitution
+
+A stage on `hybrid_electricity_fossil` chooses its split inside the LP, so unlike
+steel's electrolyser there is no on/off gate — feeding the effective price is
+enough. Its breakeven electricity price is
+
+```text
+(natural_gas_price + ng_co2_factor * co2_price) * eta_electric / eta_fossil
+```
+
+An all-fossil route reports no substitution and runs the Case B path.
+
+### Rule-based variant
+
+`electrified_cement_rule_based` shares everything above but decides production
+timing first, then sizes capacity from whatever that fixed schedule leaves spare.
+It is several times faster. Two consequences matter when reading its output:
+
+- It bounds capacity by each block's **minimum** load, treating aFRR down as
+  re-sourcing already-planned consumption rather than raising it. The
+  co-optimised strategy instead lets the bid raise consumption, bounded by what
+  the twin proves deliverable — a materially larger figure for cement.
+- It never solves a capacity-disabled baseline, so `afrr_capacity_opportunity_cost_EUR`
+  is always zero and `afrr_capacity_net_value_EUR` collapses to plain revenue.
+  **It can therefore report a better "net value" while the plant is worse off.**
+  Only `net_operating_cost_EUR` is comparable between the two strategies.
+
 ## Current Simplifications
 
 The current DA + IDC + aFRR down strategy is deliberately simple:
