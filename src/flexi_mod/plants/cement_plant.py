@@ -59,6 +59,9 @@ CALCINER_TECHNOLOGIES = ("simple_calciner", "leilac_calciner", "oxyfuel_calciner
 #: Technology keys that fill the rotary kiln's role in the kiln line.
 KILN_TECHNOLOGIES = ("simple_kiln", "oxyfuel_kiln")
 
+#: Technology keys that fill the post-combustion CCS role.
+CCS_TECHNOLOGIES = ("amine_ccs", "cryogenic_ccs")
+
 
 def _calciner_technology_name(components: dict[str, object]) -> str | None:
     """Whichever calciner variant is configured, or ``None`` if there isn't one.
@@ -76,6 +79,14 @@ def _calciner_technology_name(components: dict[str, object]) -> str | None:
 def _kiln_technology_name(components: dict[str, object]) -> str | None:
     """Whichever kiln variant is configured, or ``None`` if there isn't one."""
     for name in KILN_TECHNOLOGIES:
+        if name in components:
+            return name
+    return None
+
+
+def _ccs_technology_name(components: dict[str, object]) -> str | None:
+    """Whichever CCS variant is configured, or ``None`` if there isn't one."""
+    for name in CCS_TECHNOLOGIES:
         if name in components:
             return name
     return None
@@ -183,7 +194,8 @@ class CementPlant(DispatchPlant):
 
     Supported technologies for this first FLEXIMOD cement version are
     ``preheater``, one calciner variant, one kiln variant, optional ``electrolyser``,
-    optional ``hydrogen_buffer_storage``, and optional ``thermal_storage``.
+    optional ``hydrogen_buffer_storage``, optional ``thermal_storage``, and one optional
+    CCS variant.
     ``cement_mill`` is intentionally rejected until grinding is modelled.
     """
 
@@ -207,6 +219,8 @@ class CementPlant(DispatchPlant):
             "electrolyser",
             "hydrogen_buffer_storage",
             "thermal_storage",
+            "amine_ccs",
+            "cryogenic_ccs",
         }
     )
     excluded_technologies = frozenset({"cement_mill", "grinding_mill"})
@@ -714,6 +728,10 @@ class CementPlant(DispatchPlant):
                 total += primary_power_mw
             elif technology == "thermal_storage":
                 total += float(component.max_power_charge_mw)
+            elif technology in CCS_TECHNOLOGIES:
+                total += float(component.max_capture_rate_t_per_h) * float(
+                    component.specific_electricity_consumption_mwh_per_t
+                )
             else:
                 total += float(getattr(component, "max_power_mw", 0.0))
         return total
@@ -828,6 +846,15 @@ class CementPlant(DispatchPlant):
         calciner = blocks[calciner_technology] if calciner_technology is not None else None
         kiln_technology = _kiln_technology_name(self.components)
         kiln = blocks[kiln_technology] if kiln_technology is not None else None
+        ccs_technology = _ccs_technology_name(self.components)
+        ccs = blocks[ccs_technology] if ccs_technology is not None else None
+
+        if ccs is not None:
+            emission_sources = [block for block in (preheater, calciner, kiln) if block is not None]
+
+            @container.Constraint(time_steps)
+            def ccs_co2_input(m: pyo.Block, t: int) -> pyo.Constraint:
+                return ccs.co2_in[t] == sum(source.co2_emission[t] for source in emission_sources)
 
         if preheater is not None and kiln is not None:
 
@@ -1018,6 +1045,8 @@ class CementPlant(DispatchPlant):
         calciner = blocks[calciner_technology] if calciner_technology is not None else None
         kiln_technology = _kiln_technology_name(self.components)
         kiln = blocks[kiln_technology] if kiln_technology is not None else None
+        ccs_technology = _ccs_technology_name(self.components)
+        ccs = blocks[ccs_technology] if ccs_technology is not None else None
         terminal = blocks[self._terminal_technology_name()]
 
         def block_value(block: pyo.Block | None, variable: str, t: int) -> float:
@@ -1112,6 +1141,14 @@ class CementPlant(DispatchPlant):
             or (kiln is not None and hasattr(kiln, "oxygen_demand"))
         ):
             data["electrolyser_oxygen_output_t"] = []
+        if ccs is not None:
+            data["gross_co2_emissions_t"] = []
+            data["co2_captured_t"] = []
+            data["co2_residual_t"] = []
+            data["ccs_electricity_consumption_MWh"] = []
+            data["ccs_operating_cost_EUR"] = []
+            if hasattr(ccs, "heat_consumption"):
+                data["ccs_heat_consumption_MWh"] = []
 
         horizon_demand_total = sum(_value(model.clinker_demand_per_timestep[t]) for t in model.T)
         for t in model.T:
@@ -1142,9 +1179,22 @@ class CementPlant(DispatchPlant):
             data["hydrogen_consumption_MWh"].append(
                 sum(block_value(block, "hydrogen_in", t) for block in [preheater, calciner, kiln])
             )
-            data["co2_emissions_t"].append(
-                sum(block_value(block, "co2_emission", t) for block in [preheater, calciner, kiln])
+            gross_co2_emissions = sum(
+                block_value(block, "co2_emission", t) for block in [preheater, calciner, kiln]
             )
+            data["co2_emissions_t"].append(
+                block_value(ccs, "co2_residual", t) if ccs is not None else gross_co2_emissions
+            )
+            if ccs is not None:
+                data["gross_co2_emissions_t"].append(gross_co2_emissions)
+                data["co2_captured_t"].append(block_value(ccs, "co2_captured", t))
+                data["co2_residual_t"].append(block_value(ccs, "co2_residual", t))
+                data["ccs_electricity_consumption_MWh"].append(
+                    block_value(ccs, "electricity_consumption", t)
+                )
+                if "ccs_heat_consumption_MWh" in data:
+                    data["ccs_heat_consumption_MWh"].append(block_value(ccs, "heat_consumption", t))
+                data["ccs_operating_cost_EUR"].append(block_value(ccs, "operating_cost", t))
             if "co2_separated_t" in data:
                 data["co2_separated_t"].append(block_value(calciner, "co2_separated", t))
             data["variable_cost_EUR"].append(variable_cost)
@@ -1463,6 +1513,12 @@ def _detect_cement_route(components: dict[str, object], plant_name: str) -> str:
             + ", ".join(configured_kilns)
         )
     kiln_name = configured_kilns[0] if configured_kilns else None
+    configured_ccs = [name for name in CCS_TECHNOLOGIES if name in components]
+    if len(configured_ccs) > 1:
+        raise ValueError(
+            f"Cement plant '{plant_name}' defines more than one CCS variant: "
+            + ", ".join(configured_ccs)
+        )
     if calciner_name is None and kiln_name is None:
         raise ValueError(
             f"Cement plant '{plant_name}' must define at least one terminal technology: "

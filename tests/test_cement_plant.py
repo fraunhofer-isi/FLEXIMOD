@@ -18,7 +18,9 @@ from flexi_mod.plants.cement_plant import (
 )
 from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.technologies import (
+    AmineCCS,
     CementPreheater,
+    CryogenicCCS,
     LEILACCementCalciner,
     OxyfuelCementCalciner,
     OxyfuelCementKiln,
@@ -662,6 +664,118 @@ def test_oxyfuel_stages_cannot_use_more_than_electrolyser_coproduct(case_dir: Pa
     assert oxygen_from_electrolyser.sum() > 0.0
 
 
+def test_amine_ccs_is_registered_without_changing_the_kiln_route() -> None:
+    baseline = CementPlant.from_rows("cement_1", _cement_rows())
+    plant = CementPlant.from_rows("cement_1", _cement_rows_with(_amine_ccs_rows()))
+
+    assert isinstance(plant.components["amine_ccs"], AmineCCS)
+    assert plant.cement_route == "preheater_simple_calciner_simple_kiln"
+    assert plant.afrr_aggregate_max_power_mw() == pytest.approx(
+        baseline.afrr_aggregate_max_power_mw() + 4.0 * 0.2
+    )
+
+
+def test_amine_ccs_captures_gross_plant_emissions_and_uses_energy(case_dir: Path) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    baseline = CementPlant.from_rows("cement_1", _cement_rows())
+    plant = CementPlant.from_rows("cement_1", _cement_rows_with(_amine_ccs_rows()))
+    forecasts = _cement_forecasts(include_coal=False)
+
+    baseline_result = baseline.solve_horizon(config, forecasts, _signals())
+    result = plant.solve_horizon(config, forecasts, _signals())
+
+    assert result["gross_co2_emissions_t"].to_numpy() == pytest.approx(
+        baseline_result["co2_emissions_t"].to_numpy()
+    )
+    assert result["co2_captured_t"].to_numpy() == pytest.approx(
+        result["gross_co2_emissions_t"].to_numpy() * 0.9
+    )
+    assert result["co2_residual_t"].to_numpy() == pytest.approx(
+        result["gross_co2_emissions_t"].to_numpy() - result["co2_captured_t"].to_numpy()
+    )
+    assert result["co2_emissions_t"].to_numpy() == pytest.approx(
+        result["co2_residual_t"].to_numpy()
+    )
+    assert result["ccs_electricity_consumption_MWh"].to_numpy() == pytest.approx(
+        result["co2_captured_t"].to_numpy() * 0.2
+    )
+    assert result["ccs_heat_consumption_MWh"].to_numpy() == pytest.approx(
+        result["co2_captured_t"].to_numpy()
+    )
+    assert (
+        result["total_electricity_consumption_MWh"]
+        - baseline_result["total_electricity_consumption_MWh"]
+    ).to_numpy() == pytest.approx(result["ccs_electricity_consumption_MWh"].to_numpy())
+
+
+def test_amine_ccs_cost_is_energy_and_variable_cost_less_avoided_co2(case_dir: Path) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    baseline = CementPlant.from_rows("cement_1", _cement_rows())
+    plant = CementPlant.from_rows("cement_1", _cement_rows_with(_amine_ccs_rows()))
+    forecasts = _cement_forecasts(include_coal=False)
+
+    baseline_result = baseline.solve_horizon(config, forecasts, _signals())
+    result = plant.solve_horizon(config, forecasts, _signals())
+
+    expected_ccs_cost = (
+        result["ccs_electricity_consumption_MWh"] * forecasts["electricity_price"]
+        + result["ccs_heat_consumption_MWh"] * 10.0
+        + result["co2_captured_t"] * 4.0
+        - result["co2_captured_t"] * forecasts["co2_price"]
+    )
+    assert result["ccs_operating_cost_EUR"].to_numpy() == pytest.approx(
+        expected_ccs_cost.to_numpy()
+    )
+    assert (
+        result["variable_cost_EUR"] - baseline_result["variable_cost_EUR"]
+    ).to_numpy() == pytest.approx(expected_ccs_cost.to_numpy())
+
+
+def test_cryogenic_ccs_captures_gross_emissions_without_heat(case_dir: Path) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    baseline = CementPlant.from_rows("cement_1", _cement_rows())
+    plant = CementPlant.from_rows("cement_1", _cement_rows_with(_cryogenic_ccs_rows()))
+    forecasts = _cement_forecasts(include_coal=False)
+
+    baseline_result = baseline.solve_horizon(config, forecasts, _signals())
+    result = plant.solve_horizon(config, forecasts, _signals())
+
+    assert isinstance(plant.components["cryogenic_ccs"], CryogenicCCS)
+    assert plant.cement_route == baseline.cement_route
+    assert result["gross_co2_emissions_t"].to_numpy() == pytest.approx(
+        baseline_result["co2_emissions_t"].to_numpy()
+    )
+    assert result["co2_captured_t"].to_numpy() == pytest.approx(
+        result["gross_co2_emissions_t"].to_numpy() * 0.9
+    )
+    assert result["co2_emissions_t"].to_numpy() == pytest.approx(
+        result["gross_co2_emissions_t"].to_numpy() - result["co2_captured_t"].to_numpy()
+    )
+    assert result["ccs_electricity_consumption_MWh"].to_numpy() == pytest.approx(
+        result["co2_captured_t"].to_numpy() * 0.35
+    )
+    assert "ccs_heat_consumption_MWh" not in result
+
+    expected_ccs_cost = (
+        result["ccs_electricity_consumption_MWh"] * forecasts["electricity_price"]
+        + result["co2_captured_t"] * 4.0
+        - result["co2_captured_t"] * forecasts["co2_price"]
+    )
+    assert result["ccs_operating_cost_EUR"].to_numpy() == pytest.approx(
+        expected_ccs_cost.to_numpy()
+    )
+    assert (
+        result["variable_cost_EUR"] - baseline_result["variable_cost_EUR"]
+    ).to_numpy() == pytest.approx(expected_ccs_cost.to_numpy())
+
+
+def test_cement_plant_rejects_more_than_one_ccs_variant() -> None:
+    rows = _cement_rows_with(pd.concat([_amine_ccs_rows(), _cryogenic_ccs_rows()]))
+
+    with pytest.raises(ValueError, match="more than one CCS variant"):
+        CementPlant.from_rows("cement_1", rows)
+
+
 def test_leilac_calciner_is_registered_and_builds() -> None:
     plant = CementPlant.from_rows("cement_1", _leilac_cement_rows())
 
@@ -825,6 +939,46 @@ def _storage_rows(technology: str) -> pd.DataFrame:
     else:
         shared |= {"capacity": 10.0, "min_soc": 0.0, "max_soc": 1.0, "initial_soc": 0.5}
     return pd.DataFrame([shared])
+
+
+def _amine_ccs_rows() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "name": "cement_1",
+                "unit_type": "cement_plant",
+                "node": "north",
+                "objective": "min_variable_cost",
+                "technology": "amine_ccs",
+                "max_capture_rate": 4.0,
+                "capture_efficiency": 0.9,
+                "minimum_capture_fraction": 0.9,
+                "specific_electricity_consumption": 0.2,
+                "specific_heat_consumption": 1.0,
+                "specific_variable_cost": 4.0,
+                "heat_cost": 10.0,
+            }
+        ]
+    )
+
+
+def _cryogenic_ccs_rows() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "name": "cement_1",
+                "unit_type": "cement_plant",
+                "node": "north",
+                "objective": "min_variable_cost",
+                "technology": "cryogenic_ccs",
+                "max_capture_rate": 4.0,
+                "capture_efficiency": 0.9,
+                "minimum_capture_fraction": 0.9,
+                "specific_electricity_consumption": 0.35,
+                "specific_variable_cost": 4.0,
+            }
+        ]
+    )
 
 
 def _hydrogen_cement_rows(include_electrolyser: bool) -> pd.DataFrame:

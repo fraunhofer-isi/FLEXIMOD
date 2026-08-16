@@ -1985,6 +1985,256 @@ class OxyfuelCementKiln(SimpleCementKiln):
 
 
 @dataclass
+class AmineCCS:
+    """Post-combustion amine CO2 capture for a cement plant."""
+
+    max_capture_rate_t_per_h: float
+    capture_efficiency: float
+    specific_electricity_consumption_mwh_per_t: float
+    specific_heat_consumption_mwh_per_t: float
+    minimum_capture_fraction: float = 0.0
+    specific_variable_cost_eur_per_t: float = 0.0
+    heat_cost_eur_per_mwh: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.max_capture_rate_t_per_h <= 0.0:
+            raise ValueError("max_capture_rate_t_per_h must be positive")
+        if not 0.0 <= self.capture_efficiency <= 1.0:
+            raise ValueError("capture_efficiency must be between 0 and 1")
+        if not 0.0 <= self.minimum_capture_fraction <= self.capture_efficiency:
+            raise ValueError(
+                "minimum_capture_fraction must satisfy "
+                "0 <= minimum_capture_fraction <= capture_efficiency"
+            )
+        if self.specific_electricity_consumption_mwh_per_t < 0.0:
+            raise ValueError("specific_electricity_consumption_mwh_per_t must be non-negative")
+        if self.specific_heat_consumption_mwh_per_t < 0.0:
+            raise ValueError("specific_heat_consumption_mwh_per_t must be non-negative")
+        if self.specific_variable_cost_eur_per_t < 0.0:
+            raise ValueError("specific_variable_cost_eur_per_t must be non-negative")
+        if self.heat_cost_eur_per_mwh < 0.0:
+            raise ValueError("heat_cost_eur_per_mwh must be non-negative")
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> AmineCCS:
+        return cls(
+            max_capture_rate_t_per_h=_as_float(
+                _first_present(row.get("max_capture_rate"), row.get("max_co2_capture_rate")),
+                "max_capture_rate",
+            ),
+            capture_efficiency=_as_float(row.get("capture_efficiency"), "capture_efficiency"),
+            specific_electricity_consumption_mwh_per_t=_as_float(
+                _first_present(
+                    row.get("specific_electricity_consumption"),
+                    row.get("specific_capture_electricity"),
+                ),
+                "specific_electricity_consumption",
+            ),
+            specific_heat_consumption_mwh_per_t=_as_float(
+                _first_present(
+                    row.get("specific_heat_consumption"), row.get("specific_capture_heat")
+                ),
+                "specific_heat_consumption",
+            ),
+            minimum_capture_fraction=_as_float(
+                row.get("minimum_capture_fraction"), "minimum_capture_fraction", default=0.0
+            ),
+            specific_variable_cost_eur_per_t=_as_float(
+                _first_present(row.get("specific_variable_cost"), row.get("variable_capture_cost")),
+                "specific_variable_cost",
+                default=0.0,
+            ),
+            heat_cost_eur_per_mwh=_as_float(row.get("heat_cost"), "heat_cost", default=0.0),
+        )
+
+    def add_to_model(
+        self,
+        model: pyo.ConcreteModel,
+        block: pyo.Block,
+        time_steps: pyo.Set,
+        context: dict[str, Any],
+    ) -> pyo.Block:
+        """Add the capture balance, energy demand, and avoided-CO2 credit."""
+        dt_hours = float(context["dt_hours"])
+        block.capture_efficiency = pyo.Param(
+            initialize=self.capture_efficiency, within=pyo.UnitInterval
+        )
+        block.minimum_capture_fraction = pyo.Param(
+            initialize=self.minimum_capture_fraction, within=pyo.UnitInterval
+        )
+        block.max_capture_per_step = pyo.Param(initialize=self.max_capture_rate_t_per_h * dt_hours)
+        block.specific_electricity_consumption = pyo.Param(
+            initialize=self.specific_electricity_consumption_mwh_per_t
+        )
+        block.specific_heat_consumption = pyo.Param(
+            initialize=self.specific_heat_consumption_mwh_per_t
+        )
+        block.specific_variable_cost = pyo.Param(initialize=self.specific_variable_cost_eur_per_t)
+        block.heat_cost = pyo.Param(initialize=self.heat_cost_eur_per_mwh)
+
+        block.co2_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.co2_captured = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.co2_residual = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.electricity_consumption = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.heat_consumption = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.operating_cost = pyo.Var(time_steps, within=pyo.Reals)
+
+        @block.Constraint(time_steps)
+        def co2_balance(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_in[t] == b.co2_captured[t] + b.co2_residual[t]
+
+        @block.Constraint(time_steps)
+        def capture_efficiency_limit(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_captured[t] <= b.co2_in[t] * b.capture_efficiency
+
+        @block.Constraint(time_steps)
+        def capture_capacity_limit(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_captured[t] <= b.max_capture_per_step
+
+        @block.Constraint(time_steps)
+        def minimum_capture_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_captured[t] >= b.co2_in[t] * b.minimum_capture_fraction
+
+        @block.Constraint(time_steps)
+        def electricity_consumption_definition(b: pyo.Block, t: int) -> pyo.Constraint:
+            return (
+                b.electricity_consumption[t]
+                == b.co2_captured[t] * b.specific_electricity_consumption
+            )
+
+        @block.Constraint(time_steps)
+        def heat_consumption_definition(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.heat_consumption[t] == b.co2_captured[t] * b.specific_heat_consumption
+
+        @block.Constraint(time_steps)
+        def operating_cost_definition(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.operating_cost[t] == (
+                b.electricity_consumption[t] * model.electricity_price[t]
+                + b.heat_consumption[t] * b.heat_cost
+                + b.co2_captured[t] * b.specific_variable_cost
+                - b.co2_captured[t] * model.co2_price[t]
+            )
+
+        return block
+
+
+@dataclass
+class CryogenicCCS:
+    """Electricity-intensive cryogenic CO2 capture for a cement plant.
+
+    No CO2 inventory, compressor-train dynamics, or refrigeration-cycle detail is
+    represented. The cryogenic process is reduced to captured and residual CO2 plus
+    its specific electricity demand and variable cost.
+    """
+
+    max_capture_rate_t_per_h: float
+    capture_efficiency: float
+    specific_electricity_consumption_mwh_per_t: float
+    minimum_capture_fraction: float = 0.0
+    specific_variable_cost_eur_per_t: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.max_capture_rate_t_per_h <= 0.0:
+            raise ValueError("max_capture_rate_t_per_h must be positive")
+        if not 0.0 <= self.capture_efficiency <= 1.0:
+            raise ValueError("capture_efficiency must be between 0 and 1")
+        if not 0.0 <= self.minimum_capture_fraction <= self.capture_efficiency:
+            raise ValueError(
+                "minimum_capture_fraction must satisfy "
+                "0 <= minimum_capture_fraction <= capture_efficiency"
+            )
+        if self.specific_electricity_consumption_mwh_per_t < 0.0:
+            raise ValueError("specific_electricity_consumption_mwh_per_t must be non-negative")
+        if self.specific_variable_cost_eur_per_t < 0.0:
+            raise ValueError("specific_variable_cost_eur_per_t must be non-negative")
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> CryogenicCCS:
+        return cls(
+            max_capture_rate_t_per_h=_as_float(
+                _first_present(row.get("max_capture_rate"), row.get("max_co2_capture_rate")),
+                "max_capture_rate",
+            ),
+            capture_efficiency=_as_float(row.get("capture_efficiency"), "capture_efficiency"),
+            specific_electricity_consumption_mwh_per_t=_as_float(
+                _first_present(
+                    row.get("specific_electricity_consumption"),
+                    row.get("specific_capture_electricity"),
+                ),
+                "specific_electricity_consumption",
+            ),
+            minimum_capture_fraction=_as_float(
+                row.get("minimum_capture_fraction"), "minimum_capture_fraction", default=0.0
+            ),
+            specific_variable_cost_eur_per_t=_as_float(
+                _first_present(row.get("specific_variable_cost"), row.get("variable_capture_cost")),
+                "specific_variable_cost",
+                default=0.0,
+            ),
+        )
+
+    def add_to_model(
+        self,
+        model: pyo.ConcreteModel,
+        block: pyo.Block,
+        time_steps: pyo.Set,
+        context: dict[str, Any],
+    ) -> pyo.Block:
+        """Add the capture balance, electricity demand, and avoided-CO2 credit."""
+        dt_hours = float(context["dt_hours"])
+        block.capture_efficiency = pyo.Param(
+            initialize=self.capture_efficiency, within=pyo.UnitInterval
+        )
+        block.minimum_capture_fraction = pyo.Param(
+            initialize=self.minimum_capture_fraction, within=pyo.UnitInterval
+        )
+        block.max_capture_per_step = pyo.Param(initialize=self.max_capture_rate_t_per_h * dt_hours)
+        block.specific_electricity_consumption = pyo.Param(
+            initialize=self.specific_electricity_consumption_mwh_per_t
+        )
+        block.specific_variable_cost = pyo.Param(initialize=self.specific_variable_cost_eur_per_t)
+
+        block.co2_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.co2_captured = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.co2_residual = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.electricity_consumption = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.operating_cost = pyo.Var(time_steps, within=pyo.Reals)
+
+        @block.Constraint(time_steps)
+        def co2_balance(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_in[t] == b.co2_captured[t] + b.co2_residual[t]
+
+        @block.Constraint(time_steps)
+        def capture_efficiency_limit(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_captured[t] <= b.co2_in[t] * b.capture_efficiency
+
+        @block.Constraint(time_steps)
+        def capture_capacity_limit(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_captured[t] <= b.max_capture_per_step
+
+        @block.Constraint(time_steps)
+        def minimum_capture_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_captured[t] >= b.co2_in[t] * b.minimum_capture_fraction
+
+        @block.Constraint(time_steps)
+        def electricity_consumption_definition(b: pyo.Block, t: int) -> pyo.Constraint:
+            return (
+                b.electricity_consumption[t]
+                == b.co2_captured[t] * b.specific_electricity_consumption
+            )
+
+        @block.Constraint(time_steps)
+        def operating_cost_definition(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.operating_cost[t] == (
+                b.electricity_consumption[t] * model.electricity_price[t]
+                + b.co2_captured[t] * b.specific_variable_cost
+                - b.co2_captured[t] * model.co2_price[t]
+            )
+
+        return block
+
+
+@dataclass
 class GenericInventoryStorage(GenericStorage):
     """Generic inventory store for hydrogen energy or DRI mass."""
 
@@ -2164,6 +2414,8 @@ TECHNOLOGY_REGISTRY = {
     "oxyfuel_calciner": OxyfuelCementCalciner,
     "simple_kiln": SimpleCementKiln,
     "oxyfuel_kiln": OxyfuelCementKiln,
+    "amine_ccs": AmineCCS,
+    "cryogenic_ccs": CryogenicCCS,
     "generic_storage": GenericInventoryStorage,
     "hydrogen_buffer_storage": HydrogenBufferStorage,
     "dri_storage": DRIStorage,

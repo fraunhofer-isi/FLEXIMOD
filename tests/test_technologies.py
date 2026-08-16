@@ -7,11 +7,119 @@ import pyomo.environ as pyo
 import pytest
 
 from flexi_mod.plants.technologies import (
+    AmineCCS,
+    CryogenicCCS,
     Electrolyser,
     GasBoiler,
     HydrogenBufferStorage,
     ThermalStorage,
 )
+
+
+def test_amine_ccs_builds_from_csv_aliases_and_scales_capture_capacity() -> None:
+    ccs = AmineCCS.from_row(
+        pd.Series(
+            {
+                "max_co2_capture_rate": 2.0,
+                "capture_efficiency": 0.9,
+                "specific_capture_electricity": 0.2,
+                "specific_capture_heat": 1.0,
+                "minimum_capture_fraction": 0.5,
+                "variable_capture_cost": 4.0,
+                "heat_cost": 10.0,
+            }
+        )
+    )
+    model = pyo.ConcreteModel()
+    model.T = pyo.Set(initialize=[0], ordered=True)
+    model.electricity_price = pyo.Param(model.T, initialize={0: 50.0})
+    model.co2_price = pyo.Param(model.T, initialize={0: 80.0})
+    model.ccs = pyo.Block()
+
+    ccs.add_to_model(model, model.ccs, model.T, {"dt_hours": 0.25})
+
+    assert pyo.value(model.ccs.max_capture_per_step) == pytest.approx(0.5)
+    assert pyo.value(model.ccs.specific_electricity_consumption) == pytest.approx(0.2)
+    assert hasattr(model.ccs, "co2_balance")
+    assert hasattr(model.ccs, "operating_cost_definition")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("max_capture_rate_t_per_h", 0.0, "must be positive"),
+        ("capture_efficiency", 1.01, "must be between 0 and 1"),
+        ("minimum_capture_fraction", 0.91, "must satisfy"),
+        ("specific_electricity_consumption_mwh_per_t", -0.01, "must be non-negative"),
+        ("specific_heat_consumption_mwh_per_t", -0.01, "must be non-negative"),
+        ("specific_variable_cost_eur_per_t", -0.01, "must be non-negative"),
+        ("heat_cost_eur_per_mwh", -0.01, "must be non-negative"),
+    ],
+)
+def test_amine_ccs_rejects_invalid_parameters(field: str, value: float, message: str) -> None:
+    parameters = {
+        "max_capture_rate_t_per_h": 2.0,
+        "capture_efficiency": 0.9,
+        "specific_electricity_consumption_mwh_per_t": 0.2,
+        "specific_heat_consumption_mwh_per_t": 1.0,
+        "minimum_capture_fraction": 0.5,
+        "specific_variable_cost_eur_per_t": 4.0,
+        "heat_cost_eur_per_mwh": 10.0,
+    }
+    parameters[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        AmineCCS(**parameters)
+
+
+def test_cryogenic_ccs_builds_without_a_heat_requirement() -> None:
+    ccs = CryogenicCCS.from_row(
+        pd.Series(
+            {
+                "max_co2_capture_rate": 2.0,
+                "capture_efficiency": 0.9,
+                "specific_capture_electricity": 0.35,
+                "minimum_capture_fraction": 0.5,
+                "variable_capture_cost": 4.0,
+            }
+        )
+    )
+    model = pyo.ConcreteModel()
+    model.T = pyo.Set(initialize=[0], ordered=True)
+    model.electricity_price = pyo.Param(model.T, initialize={0: 50.0})
+    model.co2_price = pyo.Param(model.T, initialize={0: 80.0})
+    model.ccs = pyo.Block()
+
+    ccs.add_to_model(model, model.ccs, model.T, {"dt_hours": 0.25})
+
+    assert pyo.value(model.ccs.max_capture_per_step) == pytest.approx(0.5)
+    assert pyo.value(model.ccs.specific_electricity_consumption) == pytest.approx(0.35)
+    assert hasattr(model.ccs, "electricity_consumption")
+    assert not hasattr(model.ccs, "heat_consumption")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("max_capture_rate_t_per_h", 0.0, "must be positive"),
+        ("capture_efficiency", -0.01, "must be between 0 and 1"),
+        ("minimum_capture_fraction", 0.91, "must satisfy"),
+        ("specific_electricity_consumption_mwh_per_t", -0.01, "must be non-negative"),
+        ("specific_variable_cost_eur_per_t", -0.01, "must be non-negative"),
+    ],
+)
+def test_cryogenic_ccs_rejects_invalid_parameters(field: str, value: float, message: str) -> None:
+    parameters = {
+        "max_capture_rate_t_per_h": 2.0,
+        "capture_efficiency": 0.9,
+        "specific_electricity_consumption_mwh_per_t": 0.35,
+        "minimum_capture_fraction": 0.5,
+        "specific_variable_cost_eur_per_t": 4.0,
+    }
+    parameters[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        CryogenicCCS(**parameters)
 
 
 def test_thermal_storage_adds_expected_pyomo_block() -> None:

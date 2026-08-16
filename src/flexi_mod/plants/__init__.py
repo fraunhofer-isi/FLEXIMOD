@@ -8,9 +8,11 @@ from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 from flexi_mod.plants.steel_plant import SteelDispatchSignals, SteelPlant, SteelRollingState
 from flexi_mod.plants.technologies import (
     TECHNOLOGY_REGISTRY,
+    AmineCCS,
     BasicOxygenFurnace,
     BlastFurnaceBasicOxygenFurnace,
     CementPreheater,
+    CryogenicCCS,
     DRIPlant,
     DRIStorage,
     ElectricArcFurnace,
@@ -29,6 +31,7 @@ from flexi_mod.plants.technologies import (
 
 __all__ = [
     "TECHNOLOGY_REGISTRY",
+    "AmineCCS",
     "BasicOxygenFurnace",
     "BlastFurnaceBasicOxygenFurnace",
     "DRIPlant",
@@ -36,6 +39,7 @@ __all__ = [
     "CementDispatchSignals",
     "CementPlant",
     "CementPreheater",
+    "CryogenicCCS",
     "ElectricArcFurnace",
     "Electrolyser",
     "GasBoiler",
