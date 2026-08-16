@@ -1,5 +1,5 @@
 name,unit_type,technology,node,objective,fuel_type,max_heat_out,max_power,min_power,ramp_up,ramp_down,min_operating_steps,min_down_steps,specific_heat_demand,specific_electricity_aux,eta_electric,eta_fossil,fossil_ng_share,ng_co2_factor,coal_co2_factor,calcination_emission_factor,storage_type,max_capacity,min_capacity,max_power_charge,max_power_discharge,initial_soc,storage_loss_rate,efficiency_charge,efficiency_discharge
 A360,cement_plant,preheater,south,min_variable_cost,fossil,136,,,136,136,,,0.3,0.0015,0.98,0.9,1,0.202,0.341,,,,,,,,,,
 A360,cement_plant,simple_calciner,south,min_variable_cost,fossil,68,,,68,68,0,0,0.7,0.0015,0.98,0.9,0.7,0.202,0.341,0.525,,,,,,,,,
-A360,cement_plant,kiln,south,min_variable_cost,fossil,272,,,272,272,,,1.7,0.0015,0.95,0.9,1,0.202,0.341,,,,,,,,,,
+A360,cement_plant,simple_kiln,south,min_variable_cost,fossil,272,,,272,272,,,1.7,0.0015,0.95,0.9,1,0.202,0.341,,,,,,,,,,
 A360,cement_plant,thermal_storage,south,min_variable_cost,,,136,,136,136,,,,,1,,,,,,short-term_with_generator,272,0,136,272,0,0.001,1,0.99

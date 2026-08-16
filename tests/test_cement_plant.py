@@ -18,11 +18,11 @@ from flexi_mod.plants.cement_plant import (
 )
 from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.technologies import (
-    CementKiln,
     CementPreheater,
     LEILACCementCalciner,
     OxyfuelCementCalciner,
     SimpleCementCalciner,
+    SimpleCementKiln,
 )
 from flexi_mod.simulation.simulation_runner import SimulationRunner
 
@@ -45,8 +45,8 @@ def test_cement_plant_builds_preheater_calciner_kiln_route() -> None:
 
     assert isinstance(plant.components["preheater"], CementPreheater)
     assert isinstance(plant.components["simple_calciner"], SimpleCementCalciner)
-    assert isinstance(plant.components["kiln"], CementKiln)
-    assert plant.cement_route == "preheater_simple_calciner_kiln"
+    assert isinstance(plant.components["simple_kiln"], SimpleCementKiln)
+    assert plant.cement_route == "preheater_simple_calciner_simple_kiln"
 
 
 def test_shared_plant_factory_selects_cement_plant() -> None:
@@ -136,7 +136,7 @@ def test_cement_forecast_discovery_and_conditional_coal_price(case_dir: Path) ->
     assert "custom_clinker_demand" in profile_required
 
     coal_rows = total_rows.copy()
-    coal_rows.loc[coal_rows["technology"] == "kiln", "fossil_ng_share"] = 0.0
+    coal_rows.loc[coal_rows["technology"] == "simple_kiln", "fossil_ng_share"] = 0.0
     coal_required = loader.required_forecast_columns(coal_rows)
     assert "coal_price" in coal_required
 
@@ -204,14 +204,14 @@ def test_cement_runner_applies_german_regulatory_charges(tmp_path: Path) -> None
     ("stages", "route", "terminal"),
     [
         (
-            ["preheater", "simple_calciner", "kiln"],
-            "preheater_simple_calciner_kiln",
-            "kiln",
+            ["preheater", "simple_calciner", "simple_kiln"],
+            "preheater_simple_calciner_simple_kiln",
+            "simple_kiln",
         ),
         (["preheater", "simple_calciner"], "preheater_simple_calciner", "simple_calciner"),
-        (["preheater", "kiln"], "preheater_kiln", "kiln"),
-        (["simple_calciner", "kiln"], "simple_calciner_kiln", "kiln"),
-        (["kiln"], "kiln", "kiln"),
+        (["preheater", "simple_kiln"], "preheater_simple_kiln", "simple_kiln"),
+        (["simple_calciner", "simple_kiln"], "simple_calciner_simple_kiln", "simple_kiln"),
+        (["simple_kiln"], "simple_kiln", "simple_kiln"),
         (["simple_calciner"], "simple_calciner", "simple_calciner"),
     ],
 )
@@ -228,8 +228,12 @@ def test_cement_routes_are_named_and_pick_their_terminal_stage(
     ("stages", "extra", "message"),
     [
         (["preheater"], None, "at least one terminal technology"),
-        (["kiln"], "thermal_storage", "requires a calciner"),
-        (["simple_calciner", "kiln"], "hydrogen_buffer_storage", "without an electrolyser"),
+        (["simple_kiln"], "thermal_storage", "requires a calciner"),
+        (
+            ["simple_calciner", "simple_kiln"],
+            "hydrogen_buffer_storage",
+            "without an electrolyser",
+        ),
     ],
 )
 def test_cement_route_guards_reject_unbuildable_component_sets(
@@ -251,11 +255,11 @@ def test_preheater_kiln_route_feeds_raw_meal_straight_to_the_kiln(case_dir: Path
     stay solvable rather than collapse to zero production.
     """
     config = CaseConfig.from_case_dir(case_dir)
-    plant = CementPlant.from_rows("cement_1", _rows_for_stages(["preheater", "kiln"]))
+    plant = CementPlant.from_rows("cement_1", _rows_for_stages(["preheater", "simple_kiln"]))
 
     result = plant.solve_horizon(config, _cement_forecasts(include_coal=False), _signals())
 
-    assert plant.cement_route == "preheater_kiln"
+    assert plant.cement_route == "preheater_simple_kiln"
     assert result["clinker_output_t"].sum() == pytest.approx(4.0)
     assert result["kiln_clinker_output_t"].sum() == pytest.approx(4.0)
     # raw_meal_out == receiving stage clinker_out * raw_meal_to_clinker_ratio (1.5)
@@ -273,7 +277,7 @@ def test_natural_gas_co2_factor_accepts_the_ng_co2_factor_spelling() -> None:
 
     plant = CementPlant.from_rows("cement_1", rows)
 
-    for stage in ("preheater", "simple_calciner", "kiln"):
+    for stage in ("preheater", "simple_calciner", "simple_kiln"):
         assert plant.components[stage].natural_gas_co2_factor_t_per_mwh == 0.25
 
 
@@ -303,7 +307,7 @@ def test_physical_system_can_be_attached_twice_to_one_model(case_dir: Path) -> N
     # Both trajectories exist with their own variables, and the shared parameters stayed
     # on the model rather than being duplicated into either one.
     for trajectory in (model, model.twin):
-        assert trajectory.technology_blocks["kiln"].clinker_out is not None
+        assert trajectory.technology_blocks["simple_kiln"].clinker_out is not None
         assert trajectory.total_power_input is not None
         assert trajectory.variable_cost is not None
     assert model.twin.total_power_input is not model.total_power_input
@@ -312,7 +316,9 @@ def test_physical_system_can_be_attached_twice_to_one_model(case_dir: Path) -> N
     # The twin carries the same physics: solving still meets demand on both.
     plant._solve_model(config, forecasts, model)
     for trajectory in (model, model.twin):
-        produced = [pyo.value(trajectory.technology_blocks["kiln"].clinker_out[t]) for t in model.T]
+        produced = [
+            pyo.value(trajectory.technology_blocks["simple_kiln"].clinker_out[t]) for t in model.T
+        ]
         assert produced == pytest.approx([1.0, 1.0, 1.0, 1.0])
 
 
@@ -447,14 +453,14 @@ def test_rolling_serves_out_minimum_downtime_inherited_from_the_previous_window(
     """
     config = CaseConfig.from_case_dir(case_dir)
     rows = _cement_rows()
-    rows.loc[rows["technology"] == "kiln", "min_down_time"] = 4
+    rows.loc[rows["technology"] == "simple_kiln", "min_down_time"] = 4
     plant = CementPlant.from_rows("cement_1", rows)
     forecasts = _cement_forecasts(include_coal=False)
 
     def kiln_state(consecutive_status_steps: int) -> CementRollingState:
         return CementRollingState(
             stages={
-                "kiln": CementStageState(
+                "simple_kiln": CementStageState(
                     heat_out_mwh=0.0,
                     operational_status=0,
                     consecutive_status_steps=consecutive_status_steps,
@@ -495,7 +501,7 @@ def test_oxyfuel_calciner_is_registered_and_builds() -> None:
     plant = CementPlant.from_rows("cement_1", _oxyfuel_cement_rows())
 
     assert isinstance(plant.components["oxyfuel_calciner"], OxyfuelCementCalciner)
-    assert plant.cement_route == "preheater_oxyfuel_calciner_kiln"
+    assert plant.cement_route == "preheater_oxyfuel_calciner_simple_kiln"
 
 
 def test_oxyfuel_calciner_rejects_electric_fuel_type() -> None:
@@ -581,7 +587,7 @@ def test_leilac_calciner_is_registered_and_builds() -> None:
     plant = CementPlant.from_rows("cement_1", _leilac_cement_rows())
 
     assert isinstance(plant.components["leilac_calciner"], LEILACCementCalciner)
-    assert plant.cement_route == "preheater_leilac_calciner_kiln"
+    assert plant.cement_route == "preheater_leilac_calciner_simple_kiln"
 
 
 @pytest.mark.parametrize("efficiency", [-0.01, 1.01])
@@ -705,7 +711,7 @@ def _cement_rows() -> pd.DataFrame:
             },
             {
                 **shared,
-                "technology": "kiln",
+                "technology": "simple_kiln",
                 "fuel_type": "fossil",
                 "fossil_ng_share": 1.0,
                 "max_heat_out": 10.0,
@@ -744,7 +750,7 @@ def _storage_rows(technology: str) -> pd.DataFrame:
 
 def _hydrogen_cement_rows(include_electrolyser: bool) -> pd.DataFrame:
     rows = _cement_rows()
-    rows.loc[rows["technology"].isin(["simple_calciner", "kiln"]), "fuel_type"] = "hydrogen"
+    rows.loc[rows["technology"].isin(["simple_calciner", "simple_kiln"]), "fuel_type"] = "hydrogen"
     if include_electrolyser:
         rows = pd.concat(
             [

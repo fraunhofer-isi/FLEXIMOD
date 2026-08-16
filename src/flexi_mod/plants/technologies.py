@@ -982,9 +982,9 @@ class BlastFurnaceBasicOxygenFurnace:
 class CementKilnLineStage:
     """Shared physics for a fuel-switchable cement kiln-line stage.
 
-    ``CementPreheater``, ``SimpleCementCalciner``, and ``CementKiln`` share the same heat
-    balance, fuel-exclusivity, ramping, commitment, and CO2/cost machinery - only a
-    handful of details differ per stage. Those differences are exactly what each
+    ``CementPreheater``, ``SimpleCementCalciner``, and ``SimpleCementKiln`` share the
+    same heat balance, fuel-exclusivity, ramping, commitment, and CO2/cost machinery -
+    only a handful of details differ per stage. Those differences are exactly what each
     subclass overrides:
 
     - ``_output_var_name``: the block attribute its throughput Var is stored under.
@@ -1750,7 +1750,7 @@ class OxyfuelCementCalciner(SimpleCementCalciner):
 
 
 @dataclass
-class CementKiln(CementKilnLineStage):
+class SimpleCementKiln(CementKilnLineStage):
     """Fuel-switchable rotary kiln for final clinkerisation."""
 
     max_heat_out_mw: float
@@ -1771,7 +1771,7 @@ class CementKiln(CementKilnLineStage):
     initial_operational_status: int = 1
 
     @classmethod
-    def from_row(cls, row: pd.Series) -> CementKiln:
+    def from_row(cls, row: pd.Series) -> SimpleCementKiln:
         max_heat = _as_float(
             _first_present(row.get("max_heat_out"), row.get("max_power")),
             "max_heat_out",
@@ -1782,7 +1782,7 @@ class CementKiln(CementKilnLineStage):
                 row.get("specific_heat_demand"), "specific_heat_demand"
             ),
             min_heat_out_mw=_as_float(row.get("min_heat_out"), "min_heat_out", default=0.0),
-            fuel_type=_cement_fuel_type(row, "CementKiln", default=CEMENT_FOSSIL),
+            fuel_type=_cement_fuel_type(row, "SimpleCementKiln", default=CEMENT_FOSSIL),
             eta_electric=_as_float(row.get("eta_electric"), "eta_electric", default=0.95),
             eta_fossil=_as_float(row.get("eta_fossil"), "eta_fossil", default=0.90),
             fossil_ng_share=_as_float(row.get("fossil_ng_share"), "fossil_ng_share", default=1.0),
@@ -2011,7 +2011,7 @@ TECHNOLOGY_REGISTRY = {
     "simple_calciner": SimpleCementCalciner,
     "leilac_calciner": LEILACCementCalciner,
     "oxyfuel_calciner": OxyfuelCementCalciner,
-    "kiln": CementKiln,
+    "simple_kiln": SimpleCementKiln,
     "generic_storage": GenericInventoryStorage,
     "hydrogen_buffer_storage": HydrogenBufferStorage,
     "dri_storage": DRIStorage,

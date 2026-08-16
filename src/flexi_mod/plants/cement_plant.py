@@ -47,7 +47,7 @@ CEMENT_LINE_STAGES = (
     "simple_calciner",
     "leilac_calciner",
     "oxyfuel_calciner",
-    "kiln",
+    "simple_kiln",
 )
 
 #: Technology keys that fill the calciner's role in the kiln line.
@@ -75,7 +75,9 @@ def _stage_report_prefix(technology: str) -> str:
     name from a stored technology key - state carry-over across rolling windows, chiefly
     - must translate through this rather than assume the key and the prefix match.
     """
-    return "simple_calciner" if technology in CALCINER_TECHNOLOGIES else technology
+    if technology in CALCINER_TECHNOLOGIES:
+        return "simple_calciner"
+    return "kiln" if technology == "simple_kiln" else technology
 
 
 @dataclass(frozen=True)
@@ -168,9 +170,9 @@ class CementPlant(DispatchPlant):
     """Cement clinker production model without grinding-mill integration.
 
     Supported technologies for this first FLEXIMOD cement version are
-    ``preheater``, one calciner variant, ``kiln``, optional ``electrolyser``, optional
-    ``hydrogen_buffer_storage``, and optional ``thermal_storage``. ``cement_mill`` is
-    intentionally rejected until grinding is modelled.
+    ``preheater``, one calciner variant, ``simple_kiln``, optional ``electrolyser``,
+    optional ``hydrogen_buffer_storage``, and optional ``thermal_storage``.
+    ``cement_mill`` is intentionally rejected until grinding is modelled.
     """
 
     clinker_demand_column: str = ""
@@ -188,7 +190,7 @@ class CementPlant(DispatchPlant):
             "simple_calciner",
             "leilac_calciner",
             "oxyfuel_calciner",
-            "kiln",
+            "simple_kiln",
             "electrolyser",
             "hydrogen_buffer_storage",
             "thermal_storage",
@@ -283,8 +285,8 @@ class CementPlant(DispatchPlant):
 
     def _terminal_technology_name(self) -> str:
         """The stage whose clinker output is the plant's output."""
-        if "kiln" in self.components:
-            return "kiln"
+        if "simple_kiln" in self.components:
+            return "simple_kiln"
         calciner = _calciner_technology_name(self.components)
         assert calciner is not None, "route validation guarantees a calciner or a kiln"
         return calciner
@@ -297,7 +299,7 @@ class CementPlant(DispatchPlant):
         """
         if "preheater" not in self.components:
             return None
-        return _calciner_technology_name(self.components) or "kiln"
+        return _calciner_technology_name(self.components) or "simple_kiln"
 
     def solve_horizon(
         self,
@@ -802,7 +804,7 @@ class CementPlant(DispatchPlant):
         preheater = blocks["preheater"] if "preheater" in self.components else None
         calciner_technology = _calciner_technology_name(self.components)
         calciner = blocks[calciner_technology] if calciner_technology is not None else None
-        kiln = blocks["kiln"] if "kiln" in self.components else None
+        kiln = blocks["simple_kiln"] if "simple_kiln" in self.components else None
 
         if preheater is not None and kiln is not None:
 
@@ -968,7 +970,7 @@ class CementPlant(DispatchPlant):
         preheater = blocks["preheater"] if "preheater" in self.components else None
         calciner_technology = _calciner_technology_name(self.components)
         calciner = blocks[calciner_technology] if calciner_technology is not None else None
-        kiln = blocks["kiln"] if "kiln" in self.components else None
+        kiln = blocks["simple_kiln"] if "simple_kiln" in self.components else None
         terminal = blocks[self._terminal_technology_name()]
 
         def block_value(block: pyo.Block | None, variable: str, t: int) -> float:
@@ -1032,7 +1034,7 @@ class CementPlant(DispatchPlant):
             "preheater_operational_status": ("preheater", "operational_status"),
             "simple_calciner_operational_status": (calciner_technology, "operational_status"),
             "simple_calciner_oxygen_consumption_t": (calciner_technology, "oxygen_in"),
-            "kiln_operational_status": ("kiln", "operational_status"),
+            "kiln_operational_status": ("simple_kiln", "operational_status"),
             "electrolyser_electricity_consumption_MWh": ("electrolyser", "power_in"),
             "electrolyser_hydrogen_output_MWh": ("electrolyser", "hydrogen_out"),
             "electrolyser_operational_status": ("electrolyser", "operational_status"),
@@ -1371,9 +1373,9 @@ def _detect_cement_route(components: dict[str, object], plant_name: str) -> str:
     """Name the clinker route, and reject component sets that cannot form one.
 
     The name is the configured kiln-line stages in flow order joined by ``_``, giving
-    ``preheater_simple_calciner_kiln`` for a full line down to a bare ``kiln``. A preheater
-    without a calciner is a valid single-stage line in which the kiln itself performs the
-    calcination reaction.
+    ``preheater_simple_calciner_simple_kiln`` for a full line down to a bare
+    ``simple_kiln``. A preheater without a calciner is a valid single-stage line in
+    which the kiln itself performs the calcination reaction.
     """
 
     configured_calciners = [name for name in CALCINER_TECHNOLOGIES if name in components]
@@ -1383,10 +1385,10 @@ def _detect_cement_route(components: dict[str, object], plant_name: str) -> str:
             + ", ".join(configured_calciners)
         )
     calciner_name = configured_calciners[0] if configured_calciners else None
-    if calciner_name is None and "kiln" not in components:
+    if calciner_name is None and "simple_kiln" not in components:
         raise ValueError(
             f"Cement plant '{plant_name}' must define at least one terminal technology: "
-            "simple_calciner, leilac_calciner, oxyfuel_calciner, or kiln"
+            "simple_calciner, leilac_calciner, oxyfuel_calciner, or simple_kiln"
         )
     if "thermal_storage" in components and calciner_name is None:
         raise ValueError(

@@ -409,7 +409,7 @@ Supported technologies are:
 preheater
 simple_calciner
 oxyfuel_calciner
-kiln
+simple_kiln
 electrolyser
 hydrogen_buffer_storage
 thermal_storage
@@ -442,22 +442,22 @@ flow order, joined by `_`:
 
 | Configured stages | `cement_route` | Terminal | Raw meal feeds |
 | --- | --- | --- | --- |
-| preheater + calciner + kiln | `preheater_simple_calciner_kiln` | kiln | calciner |
+| preheater + calciner + kiln | `preheater_simple_calciner_simple_kiln` | kiln | calciner |
 | preheater + calciner | `preheater_simple_calciner` | calciner | calciner |
-| preheater + kiln | `preheater_kiln` | kiln | kiln |
-| calciner + kiln | `simple_calciner_kiln` | kiln | - |
-| kiln | `kiln` | kiln | - |
+| preheater + kiln | `preheater_simple_kiln` | kiln | kiln |
+| calciner + kiln | `simple_calciner_simple_kiln` | kiln | - |
+| kiln | `simple_kiln` | kiln | - |
 | calciner | `simple_calciner` | calciner | - |
 
 An `oxyfuel_calciner` route reads the same way with `oxyfuel_calciner` in the
-calciner's place, e.g. `preheater_oxyfuel_calciner_kiln`. Result columns and
+calciner's place, e.g. `preheater_oxyfuel_calciner_simple_kiln`. Result columns and
 rolling-state carry-over stay keyed on the role (`simple_calciner_*`) regardless
 of which variant is actually configured, so reporting and dispatch logic never
 need to know which one is present.
 
 The terminal stage's `clinker_out` is the plant output. Preheated raw meal feeds
 the calciner where there is one, otherwise the kiln, which then performs the
-calcination reaction itself - so `preheater_kiln` is a valid single-stage line
+calcination reaction itself - so `preheater_simple_kiln` is a valid single-stage line
 rather than an error. A plant must define a calciner or a kiln (not both calciner
 variants at once); `thermal_storage` requires a calciner, and
 `hydrogen_buffer_storage` requires an electrolyser.
