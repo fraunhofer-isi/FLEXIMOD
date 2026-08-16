@@ -40,12 +40,18 @@ from flexi_mod.plants.technologies import (
 )
 
 #: Kiln-line stages in flow order. The route name is those present, joined by ``_``. The
-#: two calciner variants fill the same flow-order slot - a plant may configure only one
+#: calciner variants fill the same flow-order slot - a plant may configure only one
 #: (enforced in ``_detect_cement_route``).
-CEMENT_LINE_STAGES = ("preheater", "simple_calciner", "oxyfuel_calciner", "kiln")
+CEMENT_LINE_STAGES = (
+    "preheater",
+    "simple_calciner",
+    "leilac_calciner",
+    "oxyfuel_calciner",
+    "kiln",
+)
 
 #: Technology keys that fill the calciner's role in the kiln line.
-CALCINER_TECHNOLOGIES = ("simple_calciner", "oxyfuel_calciner")
+CALCINER_TECHNOLOGIES = ("simple_calciner", "leilac_calciner", "oxyfuel_calciner")
 
 
 def _calciner_technology_name(components: dict[str, object]) -> str | None:
@@ -64,7 +70,7 @@ def _calciner_technology_name(components: dict[str, object]) -> str | None:
 def _stage_report_prefix(technology: str) -> str:
     """The result-column prefix a kiln-line stage's own columns are written under.
 
-    Both calciner variants share the ``simple_calciner_*`` prefix (set when
+    All calciner variants share the ``simple_calciner_*`` prefix (set when
     ``_extract_results`` builds the ``data`` dict), so anything that rebuilds a column
     name from a stored technology key - state carry-over across rolling windows, chiefly
     - must translate through this rather than assume the key and the prefix match.
@@ -162,9 +168,9 @@ class CementPlant(DispatchPlant):
     """Cement clinker production model without grinding-mill integration.
 
     Supported technologies for this first FLEXIMOD cement version are
-    ``preheater``, ``simple_calciner``, ``kiln``, optional ``electrolyser``, optional
-    ``hydrogen_buffer_storage``, and optional ``thermal_storage``. ``cement_mill``
-    is intentionally rejected until grinding is modelled.
+    ``preheater``, one calciner variant, ``kiln``, optional ``electrolyser``, optional
+    ``hydrogen_buffer_storage``, and optional ``thermal_storage``. ``cement_mill`` is
+    intentionally rejected until grinding is modelled.
     """
 
     clinker_demand_column: str = ""
@@ -180,6 +186,7 @@ class CementPlant(DispatchPlant):
         {
             "preheater",
             "simple_calciner",
+            "leilac_calciner",
             "oxyfuel_calciner",
             "kiln",
             "electrolyser",
@@ -651,9 +658,7 @@ class CementPlant(DispatchPlant):
         fossil_cost_per_mwh_th = (
             natural_gas_price + float(hybrid.natural_gas_co2_factor_t_per_mwh) * co2_price
         )
-        benchmark = fossil_cost_per_mwh_th * (
-            float(hybrid.eta_electric) / float(hybrid.eta_fossil)
-        )
+        benchmark = fossil_cost_per_mwh_th * (float(hybrid.eta_electric) / float(hybrid.eta_fossil))
         benchmark.name = "fossil_based_electricity_benchmark_EUR_per_MWh_el"
         return FuelSubstitution(benchmark_eur_per_mwh_el=benchmark)
 
@@ -1041,6 +1046,9 @@ class CementPlant(DispatchPlant):
         for column, (technology, _) in optional_variables.items():
             if technology in self.components:
                 data[column] = []
+        if calciner is not None and hasattr(calciner, "co2_separated"):
+            data["co2_separated_t"] = []
+            data["simple_calciner_separated_process_co2_t"] = []
 
         horizon_demand_total = sum(_value(model.clinker_demand_per_timestep[t]) for t in model.T)
         for t in model.T:
@@ -1074,6 +1082,8 @@ class CementPlant(DispatchPlant):
             data["co2_emissions_t"].append(
                 sum(block_value(block, "co2_emission", t) for block in [preheater, calciner, kiln])
             )
+            if "co2_separated_t" in data:
+                data["co2_separated_t"].append(block_value(calciner, "co2_separated", t))
             data["variable_cost_EUR"].append(variable_cost)
             if not market_model:
                 market_price = _value(model.electricity_market_price[t])
@@ -1106,8 +1116,14 @@ class CementPlant(DispatchPlant):
                 block_value(calciner, "power_in", t) + block_value(calciner, "aux_power_in", t)
             )
             data["simple_calciner_process_co2_emissions_t"].append(
-                block_value(calciner, "co2_process", t)
+                block_value(calciner, "co2_process_residual", t)
+                if calciner is not None and hasattr(calciner, "co2_process_residual")
+                else block_value(calciner, "co2_process", t)
             )
+            if "simple_calciner_separated_process_co2_t" in data:
+                data["simple_calciner_separated_process_co2_t"].append(
+                    block_value(calciner, "co2_separated", t)
+                )
             data["kiln_heat_output_MWh"].append(block_value(kiln, "heat_out", t))
             data["kiln_clinker_output_t"].append(block_value(kiln, "clinker_out", t))
             data["kiln_electricity_consumption_MWh"].append(
@@ -1370,7 +1386,7 @@ def _detect_cement_route(components: dict[str, object], plant_name: str) -> str:
     if calciner_name is None and "kiln" not in components:
         raise ValueError(
             f"Cement plant '{plant_name}' must define at least one terminal technology: "
-            "simple_calciner, oxyfuel_calciner, or kiln"
+            "simple_calciner, leilac_calciner, oxyfuel_calciner, or kiln"
         )
     if "thermal_storage" in components and calciner_name is None:
         raise ValueError(

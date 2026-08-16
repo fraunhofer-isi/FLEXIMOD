@@ -1545,6 +1545,95 @@ class SimpleCementCalciner(CementKilnLineStage):
 
 
 @dataclass
+class LEILACCementCalciner(SimpleCementCalciner):
+    """Indirectly heated calciner with direct separation of process CO2.
+
+    The complete heat, fuel-switching, clinker-output, ramping, commitment, and
+    fuel-cost formulation is inherited from ``SimpleCementCalciner``. Direct
+    separation applies only to calcination CO2; combustion CO2 remains emitted.
+    """
+
+    direct_separation_efficiency: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.direct_separation_efficiency <= 1.0:
+            raise ValueError("direct_separation_efficiency must be between 0 and 1")
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> LEILACCementCalciner:
+        """Parse the shared calciner fields via the parent, then separation efficiency."""
+        base = SimpleCementCalciner.from_row(row)
+        return cls(
+            **vars(base),
+            direct_separation_efficiency=_as_float(
+                _first_present(
+                    row.get("direct_separation_efficiency"),
+                    row.get("process_co2_separation_efficiency"),
+                ),
+                "direct_separation_efficiency",
+                default=1.0,
+            ),
+        )
+
+    def _add_stage_parameters(self, block: pyo.Block) -> None:
+        """Add the parent's calcination factor and the direct-separation fraction."""
+        super()._add_stage_parameters(block)
+        block.direct_separation_efficiency = pyo.Param(
+            initialize=self.direct_separation_efficiency,
+            within=pyo.UnitInterval,
+        )
+
+    def _add_stage_variables(self, block: pyo.Block, time_steps: pyo.Set) -> None:
+        super()._add_stage_variables(block, time_steps)
+        block.co2_separated = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.co2_process_residual = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+
+    def _add_emission_and_cost_constraints(
+        self,
+        model: pyo.ConcreteModel,
+        block: pyo.Block,
+        time_steps: pyo.Set,
+        output: pyo.Var,
+    ) -> None:
+        """Separate process CO2 while retaining all fuel-combustion emissions."""
+        fuel_type = self.fuel_type
+
+        @block.Constraint(time_steps)
+        def separated_process_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_separated[t] == (b.co2_process[t] * b.direct_separation_efficiency)
+
+        @block.Constraint(time_steps)
+        def residual_process_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_process_residual[t] == b.co2_process[t] - b.co2_separated[t]
+
+        @block.Constraint(time_steps)
+        def energy_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_energy[t] == (
+                b.natural_gas_in[t] * b.natural_gas_co2_factor + b.coal_in[t] * b.coal_co2_factor
+            )
+
+        @block.Constraint(time_steps)
+        def co2_emission_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_emission[t] == b.co2_process_residual[t] + b.co2_energy[t]
+
+        @block.Constraint(time_steps)
+        def operating_cost_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            cost = b.aux_power_in[t] * model.electricity_price[t]
+            if fuel_type in {CEMENT_ELECTRICITY, CEMENT_HYBRID_ELECTRICITY_FOSSIL}:
+                cost += b.power_in[t] * model.electricity_price[t]
+            if fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}:
+                cost += (
+                    b.natural_gas_in[t] * model.natural_gas_price[t]
+                    + b.coal_in[t] * model.coal_price[t]
+                )
+            if fuel_type == HYDROGEN:
+                cost += b.hydrogen_in[t] * model.hydrogen_price[t]
+            cost += b.co2_emission[t] * model.co2_price[t]
+            cost += self._additional_operating_cost_expr(model, b, t)
+            return b.operating_cost[t] == cost
+
+
+@dataclass
 class OxyfuelCementCalciner(SimpleCementCalciner):
     """A calciner fired with oxygen instead of air, for CO2 capture.
 
@@ -1920,6 +2009,7 @@ TECHNOLOGY_REGISTRY = {
     "bf_bof": BlastFurnaceBasicOxygenFurnace,
     "preheater": CementPreheater,
     "simple_calciner": SimpleCementCalciner,
+    "leilac_calciner": LEILACCementCalciner,
     "oxyfuel_calciner": OxyfuelCementCalciner,
     "kiln": CementKiln,
     "generic_storage": GenericInventoryStorage,

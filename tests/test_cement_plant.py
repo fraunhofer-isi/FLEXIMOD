@@ -20,6 +20,7 @@ from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.technologies import (
     CementKiln,
     CementPreheater,
+    LEILACCementCalciner,
     OxyfuelCementCalciner,
     SimpleCementCalciner,
 )
@@ -576,6 +577,60 @@ def test_oxyfuel_calciner_oxygen_cost_enters_the_objective(case_dir: Path) -> No
     assert expected_extra_cost > 0.0
 
 
+def test_leilac_calciner_is_registered_and_builds() -> None:
+    plant = CementPlant.from_rows("cement_1", _leilac_cement_rows())
+
+    assert isinstance(plant.components["leilac_calciner"], LEILACCementCalciner)
+    assert plant.cement_route == "preheater_leilac_calciner_kiln"
+
+
+@pytest.mark.parametrize("efficiency", [-0.01, 1.01])
+def test_leilac_calciner_rejects_invalid_separation_efficiency(efficiency: float) -> None:
+    rows = _leilac_cement_rows(direct_separation_efficiency=efficiency)
+
+    with pytest.raises(ValueError, match="must be between 0 and 1"):
+        CementPlant.from_rows("cement_1", rows)
+
+
+def test_electric_leilac_calciner_separates_only_process_co2(case_dir: Path) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    rows = _leilac_cement_rows(
+        direct_separation_efficiency=0.95,
+        stages=["simple_calciner"],
+    )
+    rows.loc[rows["technology"] == "leilac_calciner", "fuel_type"] = "electricity"
+    rows.loc[rows["technology"] == "leilac_calciner", "eta_electric"] = 1.0
+    plant = CementPlant.from_rows("cement_1", rows)
+
+    result = plant.solve_horizon(config, _cement_forecasts(include_coal=False), _signals())
+
+    # Four tonnes of clinker generate 2 t process CO2. At 95% direct separation,
+    # 1.9 t is separated and the remaining 0.1 t is emitted.
+    assert result["co2_separated_t"].sum() == pytest.approx(1.9)
+    assert result["simple_calciner_process_co2_emissions_t"].sum() == pytest.approx(0.1)
+    assert result["co2_emissions_t"].sum() == pytest.approx(0.1)
+
+
+def test_fossil_leilac_calciner_keeps_combustion_co2_in_emissions(case_dir: Path) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    plant = CementPlant.from_rows(
+        "cement_1",
+        _leilac_cement_rows(
+            direct_separation_efficiency=0.95,
+            stages=["simple_calciner"],
+        ),
+    )
+
+    result = plant.solve_horizon(config, _cement_forecasts(include_coal=False), _signals())
+
+    # The process balance is the same 1.9 t separated and 0.1 t residual. The
+    # calciner also burns 2 MWh gas, whose 0.4 t CO2 remains fully emitted.
+    assert result["co2_separated_t"].sum() == pytest.approx(1.9)
+    assert result["simple_calciner_process_co2_emissions_t"].sum() == pytest.approx(0.1)
+    assert result["natural_gas_consumption_MWh"].sum() == pytest.approx(2.0)
+    assert result["co2_emissions_t"].sum() == pytest.approx(0.5)
+
+
 def _assert_storage_balance(
     soc: pd.Series,
     charge: pd.Series,
@@ -735,6 +790,19 @@ def _oxyfuel_cement_rows(*, natural_gas_oxygen_demand: float = 0.2) -> pd.DataFr
     is_calciner = rows["technology"] == "simple_calciner"
     rows.loc[is_calciner, "technology"] = "oxyfuel_calciner"
     rows.loc[is_calciner, "natural_gas_oxygen_demand"] = natural_gas_oxygen_demand
+    return rows
+
+
+def _leilac_cement_rows(
+    *,
+    direct_separation_efficiency: float = 0.95,
+    stages: list[str] | None = None,
+) -> pd.DataFrame:
+    """The selected route with a LEILAC calciner in place of the simple one."""
+    rows = _cement_rows() if stages is None else _rows_for_stages(stages)
+    is_calciner = rows["technology"] == "simple_calciner"
+    rows.loc[is_calciner, "technology"] = "leilac_calciner"
+    rows.loc[is_calciner, "direct_separation_efficiency"] = direct_separation_efficiency
     return rows
 
 
