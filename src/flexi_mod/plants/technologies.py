@@ -2235,6 +2235,123 @@ class CryogenicCCS:
 
 
 @dataclass
+class OxyfuelCCS:
+    """CO2 recovery, purification, and compression for an oxyfuel cement route.
+
+    Oxygen production and its electricity demand remain inside the upstream oxyfuel
+    calciner and kiln. This block contains no oxygen, heat, or CO2-storage model.
+    """
+
+    max_capture_rate_t_per_h: float
+    recovery_efficiency: float
+    specific_electricity_consumption_mwh_per_t: float
+    minimum_recovery_fraction: float = 0.0
+    specific_variable_cost_eur_per_t: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.max_capture_rate_t_per_h <= 0.0:
+            raise ValueError("max_capture_rate_t_per_h must be positive")
+        if not 0.0 <= self.recovery_efficiency <= 1.0:
+            raise ValueError("recovery_efficiency must be between 0 and 1")
+        if not 0.0 <= self.minimum_recovery_fraction <= self.recovery_efficiency:
+            raise ValueError(
+                "minimum_recovery_fraction must satisfy "
+                "0 <= minimum_recovery_fraction <= recovery_efficiency"
+            )
+        if self.specific_electricity_consumption_mwh_per_t < 0.0:
+            raise ValueError("specific_electricity_consumption_mwh_per_t must be non-negative")
+        if self.specific_variable_cost_eur_per_t < 0.0:
+            raise ValueError("specific_variable_cost_eur_per_t must be non-negative")
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> OxyfuelCCS:
+        return cls(
+            max_capture_rate_t_per_h=_as_float(
+                _first_present(row.get("max_capture_rate"), row.get("max_co2_capture_rate")),
+                "max_capture_rate",
+            ),
+            recovery_efficiency=_as_float(row.get("recovery_efficiency"), "recovery_efficiency"),
+            specific_electricity_consumption_mwh_per_t=_as_float(
+                _first_present(
+                    row.get("specific_electricity_consumption"),
+                    row.get("specific_capture_electricity"),
+                ),
+                "specific_electricity_consumption",
+            ),
+            minimum_recovery_fraction=_as_float(
+                row.get("minimum_recovery_fraction"),
+                "minimum_recovery_fraction",
+                default=0.0,
+            ),
+            specific_variable_cost_eur_per_t=_as_float(
+                _first_present(row.get("specific_variable_cost"), row.get("variable_capture_cost")),
+                "specific_variable_cost",
+                default=0.0,
+            ),
+        )
+
+    def add_to_model(
+        self,
+        model: pyo.ConcreteModel,
+        block: pyo.Block,
+        time_steps: pyo.Set,
+        context: dict[str, Any],
+    ) -> pyo.Block:
+        """Add CO2 recovery and its purification/compression electricity demand."""
+        dt_hours = float(context["dt_hours"])
+        block.recovery_efficiency = pyo.Param(
+            initialize=self.recovery_efficiency, within=pyo.UnitInterval
+        )
+        block.minimum_recovery_fraction = pyo.Param(
+            initialize=self.minimum_recovery_fraction, within=pyo.UnitInterval
+        )
+        block.max_capture_per_step = pyo.Param(initialize=self.max_capture_rate_t_per_h * dt_hours)
+        block.specific_electricity_consumption = pyo.Param(
+            initialize=self.specific_electricity_consumption_mwh_per_t
+        )
+        block.specific_variable_cost = pyo.Param(initialize=self.specific_variable_cost_eur_per_t)
+
+        block.co2_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.co2_captured = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.co2_residual = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.electricity_consumption = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.operating_cost = pyo.Var(time_steps, within=pyo.Reals)
+
+        @block.Constraint(time_steps)
+        def co2_balance(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_in[t] == b.co2_captured[t] + b.co2_residual[t]
+
+        @block.Constraint(time_steps)
+        def recovery_efficiency_limit(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_captured[t] <= b.co2_in[t] * b.recovery_efficiency
+
+        @block.Constraint(time_steps)
+        def capture_capacity_limit(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_captured[t] <= b.max_capture_per_step
+
+        @block.Constraint(time_steps)
+        def minimum_recovery_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_captured[t] >= b.co2_in[t] * b.minimum_recovery_fraction
+
+        @block.Constraint(time_steps)
+        def electricity_consumption_definition(b: pyo.Block, t: int) -> pyo.Constraint:
+            return (
+                b.electricity_consumption[t]
+                == b.co2_captured[t] * b.specific_electricity_consumption
+            )
+
+        @block.Constraint(time_steps)
+        def operating_cost_definition(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.operating_cost[t] == (
+                b.electricity_consumption[t] * model.electricity_price[t]
+                + b.co2_captured[t] * b.specific_variable_cost
+                - b.co2_captured[t] * model.co2_price[t]
+            )
+
+        return block
+
+
+@dataclass
 class GenericInventoryStorage(GenericStorage):
     """Generic inventory store for hydrogen energy or DRI mass."""
 
@@ -2416,6 +2533,7 @@ TECHNOLOGY_REGISTRY = {
     "oxyfuel_kiln": OxyfuelCementKiln,
     "amine_ccs": AmineCCS,
     "cryogenic_ccs": CryogenicCCS,
+    "oxyfuel_ccs": OxyfuelCCS,
     "generic_storage": GenericInventoryStorage,
     "hydrogen_buffer_storage": HydrogenBufferStorage,
     "dri_storage": DRIStorage,

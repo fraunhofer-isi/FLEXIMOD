@@ -12,6 +12,7 @@ from flexi_mod.plants.technologies import (
     Electrolyser,
     GasBoiler,
     HydrogenBufferStorage,
+    OxyfuelCCS,
     ThermalStorage,
 )
 
@@ -120,6 +121,58 @@ def test_cryogenic_ccs_rejects_invalid_parameters(field: str, value: float, mess
 
     with pytest.raises(ValueError, match=message):
         CryogenicCCS(**parameters)
+
+
+def test_oxyfuel_ccs_builds_without_oxygen_or_heat_requirements() -> None:
+    ccs = OxyfuelCCS.from_row(
+        pd.Series(
+            {
+                "max_co2_capture_rate": 2.0,
+                "recovery_efficiency": 0.95,
+                "specific_capture_electricity": 0.3,
+                "minimum_recovery_fraction": 0.8,
+                "variable_capture_cost": 3.0,
+            }
+        )
+    )
+    model = pyo.ConcreteModel()
+    model.T = pyo.Set(initialize=[0], ordered=True)
+    model.electricity_price = pyo.Param(model.T, initialize={0: 50.0})
+    model.co2_price = pyo.Param(model.T, initialize={0: 80.0})
+    model.ccs = pyo.Block()
+
+    ccs.add_to_model(model, model.ccs, model.T, {"dt_hours": 0.25})
+
+    assert pyo.value(model.ccs.max_capture_per_step) == pytest.approx(0.5)
+    assert pyo.value(model.ccs.recovery_efficiency) == pytest.approx(0.95)
+    assert hasattr(model.ccs, "electricity_consumption")
+    assert not hasattr(model.ccs, "heat_consumption")
+    assert not hasattr(model.ccs, "oxygen_demand")
+    assert not hasattr(model.ccs, "oxygen_generated")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("max_capture_rate_t_per_h", 0.0, "must be positive"),
+        ("recovery_efficiency", 1.01, "must be between 0 and 1"),
+        ("minimum_recovery_fraction", 0.96, "must satisfy"),
+        ("specific_electricity_consumption_mwh_per_t", -0.01, "must be non-negative"),
+        ("specific_variable_cost_eur_per_t", -0.01, "must be non-negative"),
+    ],
+)
+def test_oxyfuel_ccs_rejects_invalid_parameters(field: str, value: float, message: str) -> None:
+    parameters = {
+        "max_capture_rate_t_per_h": 2.0,
+        "recovery_efficiency": 0.95,
+        "specific_electricity_consumption_mwh_per_t": 0.3,
+        "minimum_recovery_fraction": 0.8,
+        "specific_variable_cost_eur_per_t": 3.0,
+    }
+    parameters[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        OxyfuelCCS(**parameters)
 
 
 def test_thermal_storage_adds_expected_pyomo_block() -> None:

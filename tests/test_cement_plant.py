@@ -22,6 +22,7 @@ from flexi_mod.plants.technologies import (
     CementPreheater,
     CryogenicCCS,
     LEILACCementCalciner,
+    OxyfuelCCS,
     OxyfuelCementCalciner,
     OxyfuelCementKiln,
     SimpleCementCalciner,
@@ -776,6 +777,55 @@ def test_cement_plant_rejects_more_than_one_ccs_variant() -> None:
         CementPlant.from_rows("cement_1", rows)
 
 
+def test_oxyfuel_ccs_recovers_only_the_calciner_and_kiln_stream(case_dir: Path) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    oxyfuel_rows = _full_oxyfuel_route_rows()
+    baseline = CementPlant.from_rows("cement_1", oxyfuel_rows)
+    plant = CementPlant.from_rows(
+        "cement_1", pd.concat([oxyfuel_rows, _oxyfuel_ccs_rows()], ignore_index=True)
+    )
+    forecasts = _cement_forecasts(include_coal=False)
+
+    baseline_result = baseline.solve_horizon(config, forecasts, _signals())
+    result = plant.solve_horizon(config, forecasts, _signals())
+
+    assert isinstance(plant.components["oxyfuel_ccs"], OxyfuelCCS)
+    assert plant.cement_route == "preheater_oxyfuel_calciner_oxyfuel_kiln"
+    preheater_co2 = baseline_result["preheater_heat_output_MWh"] * 0.2
+    assert result["ccs_co2_input_t"].to_numpy() == pytest.approx(
+        result["gross_co2_emissions_t"].to_numpy() - preheater_co2.to_numpy()
+    )
+    assert result["co2_captured_t"].to_numpy() == pytest.approx(
+        result["ccs_co2_input_t"].to_numpy() * 0.9
+    )
+    assert result["co2_emissions_t"].to_numpy() == pytest.approx(
+        preheater_co2.to_numpy() + result["co2_residual_t"].to_numpy()
+    )
+    assert result["ccs_electricity_consumption_MWh"].to_numpy() == pytest.approx(
+        result["co2_captured_t"].to_numpy() * 0.3
+    )
+    assert "ccs_heat_consumption_MWh" not in result
+    assert (
+        result["total_electricity_consumption_MWh"]
+        - baseline_result["total_electricity_consumption_MWh"]
+    ).to_numpy() == pytest.approx(result["ccs_electricity_consumption_MWh"].to_numpy())
+    expected_ccs_cost = (
+        result["ccs_electricity_consumption_MWh"] * forecasts["electricity_price"]
+        + result["co2_captured_t"] * 3.0
+        - result["co2_captured_t"] * forecasts["co2_price"]
+    )
+    assert (
+        result["variable_cost_EUR"] - baseline_result["variable_cost_EUR"]
+    ).to_numpy() == pytest.approx(expected_ccs_cost.to_numpy())
+
+
+def test_oxyfuel_ccs_rejects_non_oxyfuel_kiln_line_stages() -> None:
+    rows = _cement_rows_with(_oxyfuel_ccs_rows())
+
+    with pytest.raises(ValueError, match="requires its configured calciner and kiln"):
+        CementPlant.from_rows("cement_1", rows)
+
+
 def test_leilac_calciner_is_registered_and_builds() -> None:
     plant = CementPlant.from_rows("cement_1", _leilac_cement_rows())
 
@@ -981,6 +1031,25 @@ def _cryogenic_ccs_rows() -> pd.DataFrame:
     )
 
 
+def _oxyfuel_ccs_rows() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "name": "cement_1",
+                "unit_type": "cement_plant",
+                "node": "north",
+                "objective": "min_variable_cost",
+                "technology": "oxyfuel_ccs",
+                "max_capture_rate": 4.0,
+                "recovery_efficiency": 0.9,
+                "minimum_recovery_fraction": 0.9,
+                "specific_electricity_consumption": 0.3,
+                "specific_variable_cost": 3.0,
+            }
+        ]
+    )
+
+
 def _hydrogen_cement_rows(include_electrolyser: bool) -> pd.DataFrame:
     rows = _cement_rows()
     rows.loc[rows["technology"].isin(["simple_calciner", "simple_kiln"]), "fuel_type"] = "hydrogen"
@@ -1050,6 +1119,22 @@ def _oxyfuel_kiln_rows(
     rows.loc[is_kiln, "specific_oxygen_electricity_consumption"] = (
         specific_oxygen_electricity_consumption
     )
+    return rows
+
+
+def _full_oxyfuel_route_rows() -> pd.DataFrame:
+    rows = _oxyfuel_cement_rows(
+        natural_gas_oxygen_demand=0.2,
+        specific_oxygen_electricity_consumption=0.2,
+    )
+    is_kiln = rows["technology"] == "simple_kiln"
+    rows.loc[is_kiln, "technology"] = "oxyfuel_kiln"
+    rows.loc[is_kiln, "natural_gas_oxygen_demand"] = 0.2
+    rows.loc[is_kiln, "specific_oxygen_electricity_consumption"] = 0.2
+    is_preheater = rows["technology"] == "preheater"
+    rows.loc[is_preheater, "fuel_type"] = "fossil"
+    rows.loc[is_preheater, "eta_fossil"] = 1.0
+    rows.loc[is_preheater, "natural_gas_co2_factor"] = 0.2
     return rows
 
 

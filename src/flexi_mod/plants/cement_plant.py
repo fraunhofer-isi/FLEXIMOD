@@ -60,7 +60,7 @@ CALCINER_TECHNOLOGIES = ("simple_calciner", "leilac_calciner", "oxyfuel_calciner
 KILN_TECHNOLOGIES = ("simple_kiln", "oxyfuel_kiln")
 
 #: Technology keys that fill the post-combustion CCS role.
-CCS_TECHNOLOGIES = ("amine_ccs", "cryogenic_ccs")
+CCS_TECHNOLOGIES = ("amine_ccs", "cryogenic_ccs", "oxyfuel_ccs")
 
 
 def _calciner_technology_name(components: dict[str, object]) -> str | None:
@@ -221,6 +221,7 @@ class CementPlant(DispatchPlant):
             "thermal_storage",
             "amine_ccs",
             "cryogenic_ccs",
+            "oxyfuel_ccs",
         }
     )
     excluded_technologies = frozenset({"cement_mill", "grinding_mill"})
@@ -850,7 +851,10 @@ class CementPlant(DispatchPlant):
         ccs = blocks[ccs_technology] if ccs_technology is not None else None
 
         if ccs is not None:
-            emission_sources = [block for block in (preheater, calciner, kiln) if block is not None]
+            candidate_sources = (
+                (calciner, kiln) if ccs_technology == "oxyfuel_ccs" else (preheater, calciner, kiln)
+            )
+            emission_sources = [block for block in candidate_sources if block is not None]
 
             @container.Constraint(time_steps)
             def ccs_co2_input(m: pyo.Block, t: int) -> pyo.Constraint:
@@ -1142,6 +1146,7 @@ class CementPlant(DispatchPlant):
         ):
             data["electrolyser_oxygen_output_t"] = []
         if ccs is not None:
+            data["ccs_co2_input_t"] = []
             data["gross_co2_emissions_t"] = []
             data["co2_captured_t"] = []
             data["co2_residual_t"] = []
@@ -1182,10 +1187,14 @@ class CementPlant(DispatchPlant):
             gross_co2_emissions = sum(
                 block_value(block, "co2_emission", t) for block in [preheater, calciner, kiln]
             )
+            ccs_co2_input = block_value(ccs, "co2_in", t)
             data["co2_emissions_t"].append(
-                block_value(ccs, "co2_residual", t) if ccs is not None else gross_co2_emissions
+                gross_co2_emissions - ccs_co2_input + block_value(ccs, "co2_residual", t)
+                if ccs is not None
+                else gross_co2_emissions
             )
             if ccs is not None:
+                data["ccs_co2_input_t"].append(ccs_co2_input)
                 data["gross_co2_emissions_t"].append(gross_co2_emissions)
                 data["co2_captured_t"].append(block_value(ccs, "co2_captured", t))
                 data["co2_residual_t"].append(block_value(ccs, "co2_residual", t))
@@ -1519,6 +1528,17 @@ def _detect_cement_route(components: dict[str, object], plant_name: str) -> str:
             f"Cement plant '{plant_name}' defines more than one CCS variant: "
             + ", ".join(configured_ccs)
         )
+    if "oxyfuel_ccs" in components:
+        non_oxyfuel_stages = [
+            name
+            for name in (calciner_name, kiln_name)
+            if name is not None and name not in {"oxyfuel_calciner", "oxyfuel_kiln"}
+        ]
+        if non_oxyfuel_stages:
+            raise ValueError(
+                f"Cement plant '{plant_name}' oxyfuel_ccs requires its configured calciner "
+                "and kiln stages to be oxyfuel variants"
+            )
     if calciner_name is None and kiln_name is None:
         raise ValueError(
             f"Cement plant '{plant_name}' must define at least one terminal technology: "
