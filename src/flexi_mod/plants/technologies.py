@@ -23,6 +23,8 @@ CEMENT_HYBRID_ELECTRICITY_FOSSIL = "hybrid_electricity_fossil"
 CEMENT_FUEL_TYPES = frozenset(
     {CEMENT_ELECTRICITY, CEMENT_FOSSIL, HYDROGEN, CEMENT_HYBRID_ELECTRICITY_FOSSIL}
 )
+
+
 class GenericStorage(ABC):
     """Common interface for energy stores and material inventories."""
 
@@ -1458,20 +1460,17 @@ class CementKilnLineStage:
 
         @block.Constraint(time_steps)
         def rdf_fossil_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return (
-                b.co2_rdf_fossil[t] == b.rdf_in[t] * b.rdf_mixed_fossil_co2_factor
-            )
+            return b.co2_rdf_fossil[t] == b.rdf_in[t] * b.rdf_mixed_fossil_co2_factor
 
         @block.Constraint(time_steps)
         def rdf_biogenic_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return (
-                b.co2_rdf_biogenic[t] == b.rdf_in[t] * b.rdf_mixed_biogenic_co2_factor
-            )
+            return b.co2_rdf_biogenic[t] == b.rdf_in[t] * b.rdf_mixed_biogenic_co2_factor
 
         @block.Constraint(time_steps)
         def fossil_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
             return b.co2_fossil[t] == (
-                b.natural_gas_in[t] * b.natural_gas_co2_factor + b.coal_in[t] * b.coal_co2_factor
+                b.natural_gas_in[t] * b.natural_gas_co2_factor
+                + b.coal_in[t] * b.coal_co2_factor
                 + b.co2_rdf_fossil[t]
             )
 
@@ -1886,20 +1885,17 @@ class LEILACCementCalciner(SimpleCementCalciner):
 
         @block.Constraint(time_steps)
         def rdf_fossil_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return (
-                b.co2_rdf_fossil[t] == b.rdf_in[t] * b.rdf_mixed_fossil_co2_factor
-            )
+            return b.co2_rdf_fossil[t] == b.rdf_in[t] * b.rdf_mixed_fossil_co2_factor
 
         @block.Constraint(time_steps)
         def rdf_biogenic_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return (
-                b.co2_rdf_biogenic[t] == b.rdf_in[t] * b.rdf_mixed_biogenic_co2_factor
-            )
+            return b.co2_rdf_biogenic[t] == b.rdf_in[t] * b.rdf_mixed_biogenic_co2_factor
 
         @block.Constraint(time_steps)
         def fossil_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
             return b.co2_fossil[t] == (
-                b.natural_gas_in[t] * b.natural_gas_co2_factor + b.coal_in[t] * b.coal_co2_factor
+                b.natural_gas_in[t] * b.natural_gas_co2_factor
+                + b.coal_in[t] * b.coal_co2_factor
                 + b.co2_rdf_fossil[t]
             )
 
@@ -2531,15 +2527,11 @@ class AmineCCS:
 
         @block.Constraint(time_steps)
         def unpriced_co2_balance(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_unpriced_in[t] == (
-                b.co2_unpriced_captured[t] + b.co2_unpriced_residual[t]
-            )
+            return b.co2_unpriced_in[t] == (b.co2_unpriced_captured[t] + b.co2_unpriced_residual[t])
 
         @block.Constraint(time_steps)
         def captured_co2_accounting_balance(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_captured[t] == (
-                b.co2_priced_captured[t] + b.co2_unpriced_captured[t]
-            )
+            return b.co2_captured[t] == (b.co2_priced_captured[t] + b.co2_unpriced_captured[t])
 
         @block.Constraint(time_steps)
         def priced_capture_efficiency_limit(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -2555,15 +2547,11 @@ class AmineCCS:
 
         @block.Constraint(time_steps)
         def minimum_priced_capture_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_priced_captured[t] >= (
-                b.co2_priced_in[t] * b.minimum_capture_fraction
-            )
+            return b.co2_priced_captured[t] >= (b.co2_priced_in[t] * b.minimum_capture_fraction)
 
         @block.Constraint(time_steps)
         def minimum_unpriced_capture_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_unpriced_captured[t] >= (
-                b.co2_unpriced_in[t] * b.minimum_capture_fraction
-            )
+            return b.co2_unpriced_captured[t] >= (b.co2_unpriced_in[t] * b.minimum_capture_fraction)
 
         @block.Constraint(time_steps)
         def electricity_consumption_definition(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -2690,15 +2678,11 @@ class CryogenicCCS:
 
         @block.Constraint(time_steps)
         def unpriced_co2_balance(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_unpriced_in[t] == (
-                b.co2_unpriced_captured[t] + b.co2_unpriced_residual[t]
-            )
+            return b.co2_unpriced_in[t] == (b.co2_unpriced_captured[t] + b.co2_unpriced_residual[t])
 
         @block.Constraint(time_steps)
         def captured_co2_accounting_balance(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_captured[t] == (
-                b.co2_priced_captured[t] + b.co2_unpriced_captured[t]
-            )
+            return b.co2_captured[t] == (b.co2_priced_captured[t] + b.co2_unpriced_captured[t])
 
         @block.Constraint(time_steps)
         def priced_capture_efficiency_limit(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -2714,15 +2698,11 @@ class CryogenicCCS:
 
         @block.Constraint(time_steps)
         def minimum_priced_capture_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_priced_captured[t] >= (
-                b.co2_priced_in[t] * b.minimum_capture_fraction
-            )
+            return b.co2_priced_captured[t] >= (b.co2_priced_in[t] * b.minimum_capture_fraction)
 
         @block.Constraint(time_steps)
         def minimum_unpriced_capture_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_unpriced_captured[t] >= (
-                b.co2_unpriced_in[t] * b.minimum_capture_fraction
-            )
+            return b.co2_unpriced_captured[t] >= (b.co2_unpriced_in[t] * b.minimum_capture_fraction)
 
         @block.Constraint(time_steps)
         def electricity_consumption_definition(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -2845,15 +2825,11 @@ class OxyfuelCCS:
 
         @block.Constraint(time_steps)
         def unpriced_co2_balance(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_unpriced_in[t] == (
-                b.co2_unpriced_captured[t] + b.co2_unpriced_residual[t]
-            )
+            return b.co2_unpriced_in[t] == (b.co2_unpriced_captured[t] + b.co2_unpriced_residual[t])
 
         @block.Constraint(time_steps)
         def captured_co2_accounting_balance(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_captured[t] == (
-                b.co2_priced_captured[t] + b.co2_unpriced_captured[t]
-            )
+            return b.co2_captured[t] == (b.co2_priced_captured[t] + b.co2_unpriced_captured[t])
 
         @block.Constraint(time_steps)
         def priced_recovery_efficiency_limit(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -2869,9 +2845,7 @@ class OxyfuelCCS:
 
         @block.Constraint(time_steps)
         def minimum_priced_recovery_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_priced_captured[t] >= (
-                b.co2_priced_in[t] * b.minimum_recovery_fraction
-            )
+            return b.co2_priced_captured[t] >= (b.co2_priced_in[t] * b.minimum_recovery_fraction)
 
         @block.Constraint(time_steps)
         def minimum_unpriced_recovery_constraint(b: pyo.Block, t: int) -> pyo.Constraint:

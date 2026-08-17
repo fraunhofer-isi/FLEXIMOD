@@ -726,9 +726,7 @@ class CementPlant(DispatchPlant):
         rdf_cost = rdf_price + rdf_priced_co2_factor * co2_price
         fossil_share = 1.0 - biomass_share - rdf_share
         combustion_cost_per_mwh = (
-            biomass_share * biomass_cost
-            + rdf_share * rdf_cost
-            + fossil_share * fossil_blend_cost
+            biomass_share * biomass_cost + rdf_share * rdf_cost + fossil_share * fossil_blend_cost
         )
         benchmark = combustion_cost_per_mwh * (
             float(hybrid.eta_electric) / float(hybrid.eta_fossil)
@@ -1345,12 +1343,8 @@ class CementPlant(DispatchPlant):
                 data["ccs_co2_priced_input_t"].append(ccs_co2_priced_input)
                 data["gross_co2_emissions_t"].append(gross_co2_emissions)
                 data["co2_captured_t"].append(block_value(ccs, "co2_captured", t))
-                data["co2_priced_captured_t"].append(
-                    block_value(ccs, "co2_priced_captured", t)
-                )
-                data["co2_unpriced_captured_t"].append(
-                    block_value(ccs, "co2_unpriced_captured", t)
-                )
+                data["co2_priced_captured_t"].append(block_value(ccs, "co2_priced_captured", t))
+                data["co2_unpriced_captured_t"].append(block_value(ccs, "co2_unpriced_captured", t))
                 data["co2_residual_t"].append(block_value(ccs, "co2_residual", t))
                 ccs_co2_priced_residual = block_value(ccs, "co2_priced_residual", t)
                 data["ccs_co2_priced_residual_t"].append(ccs_co2_priced_residual)

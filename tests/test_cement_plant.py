@@ -215,15 +215,11 @@ def test_r2_fuel_mix_prices_rdf_separately_and_preserves_its_physical_co2(
     assert result["biomass_consumption_MWh"].to_numpy() == pytest.approx(
         combustion.to_numpy() * 0.245
     )
-    assert result["rdf_consumption_MWh"].to_numpy() == pytest.approx(
-        combustion.to_numpy() * 0.489
-    )
+    assert result["rdf_consumption_MWh"].to_numpy() == pytest.approx(combustion.to_numpy() * 0.489)
     assert result["natural_gas_consumption_MWh"].to_numpy() == pytest.approx(
         combustion.to_numpy() * 0.009
     )
-    assert result["coal_consumption_MWh"].to_numpy() == pytest.approx(
-        combustion.to_numpy() * 0.257
-    )
+    assert result["coal_consumption_MWh"].to_numpy() == pytest.approx(combustion.to_numpy() * 0.257)
 
     expected_rdf_fossil = result["rdf_consumption_MWh"] * 0.243
     expected_rdf_biogenic = result["rdf_consumption_MWh"] * 0.3
@@ -233,14 +229,10 @@ def test_r2_fuel_mix_prices_rdf_separately_and_preserves_its_physical_co2(
         + result["coal_consumption_MWh"] * 0.3
         + expected_rdf_fossil
     )
-    expected_biogenic_co2 = (
-        result["biomass_consumption_MWh"] * 0.4 + expected_rdf_biogenic
-    )
+    expected_biogenic_co2 = result["biomass_consumption_MWh"] * 0.4 + expected_rdf_biogenic
     expected_process_co2 = result["clinker_output_t"] * 0.5
     assert result["co2_rdf_t"].to_numpy() == pytest.approx(expected_rdf_co2.to_numpy())
-    assert result["co2_rdf_fossil_t"].to_numpy() == pytest.approx(
-        expected_rdf_fossil.to_numpy()
-    )
+    assert result["co2_rdf_fossil_t"].to_numpy() == pytest.approx(expected_rdf_fossil.to_numpy())
     assert result["co2_rdf_biogenic_t"].to_numpy() == pytest.approx(
         expected_rdf_biogenic.to_numpy()
     )
@@ -304,10 +296,7 @@ def test_ccs_receives_rdf_fossil_and_biogenic_co2(case_dir: Path) -> None:
         result["ccs_co2_priced_input_t"].to_numpy() * 0.9
     )
     assert result["co2_unpriced_captured_t"].to_numpy() == pytest.approx(
-        (
-            result["ccs_co2_input_t"] - result["ccs_co2_priced_input_t"]
-        ).to_numpy()
-        * 0.9
+        (result["ccs_co2_input_t"] - result["ccs_co2_priced_input_t"]).to_numpy() * 0.9
     )
     assert result["co2_priced_emissions_t"].to_numpy() == pytest.approx(
         result["co2_priced_t"].to_numpy() * 0.1

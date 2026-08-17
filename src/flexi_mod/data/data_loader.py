@@ -505,9 +505,7 @@ def _cement_requires_coal_price(plants: pd.DataFrame) -> bool:
             ).where(route_is_r2, CementKilnLineStage.default_fossil_ng_share)
         )
     else:
-        fossil_ng_share = pd.Series(
-            CementKilnLineStage.default_fossil_ng_share, index=plants.index
-        )
+        fossil_ng_share = pd.Series(CementKilnLineStage.default_fossil_ng_share, index=plants.index)
         fossil_ng_share.loc[route_is_r2] = CementKilnLineStage.r2_fossil_ng_share
     if "biomass_share" in plants.columns:
         biomass_share = pd.to_numeric(plants["biomass_share"], errors="coerce")
