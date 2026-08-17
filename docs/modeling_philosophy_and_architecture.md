@@ -447,6 +447,9 @@ without an electrolyser, hydrogen is purchased externally at `hydrogen_price`.
 
 #### Cement physical routes
 
+For the complete cement technology, fuel, CO2, CCS, input and output reference, see
+[Cement plant model](cement_plant_model.md).
+
 Like `steel_plant`, a cement plant resolves a named route once at build time and
 reports it as `cement_route`. The route is the configured kiln-line stages in
 flow order, joined by `_`:
