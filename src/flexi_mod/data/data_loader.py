@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.plants.technologies import CementKilnLineStage
 
 
 class DataValidationError(ValueError):
@@ -183,6 +184,8 @@ class DataLoader:
             required.add("coal_price")
         if _cement_requires_biomass_price(plants):
             required.add("biomass_price")
+        if _cement_requires_rdf_price(plants):
+            required.add("rdf_price")
 
         return required
 
@@ -492,26 +495,91 @@ def _cement_requires_coal_price(plants: pd.DataFrame) -> bool:
         return False
     unit_type = plants["unit_type"].astype(str).str.strip().str.lower()
     fuel_type = plants["fuel_type"].astype(str).str.strip().str.lower()
+    route_is_r2 = _cement_route_ids(plants).isin({"R2", "2"})
     if "fossil_ng_share" in plants.columns:
-        fossil_ng_share = pd.to_numeric(plants["fossil_ng_share"], errors="coerce").fillna(1.0)
+        fossil_ng_share = pd.to_numeric(plants["fossil_ng_share"], errors="coerce")
+        fossil_ng_share = fossil_ng_share.fillna(
+            pd.Series(
+                CementKilnLineStage.r2_fossil_ng_share,
+                index=plants.index,
+            ).where(route_is_r2, CementKilnLineStage.default_fossil_ng_share)
+        )
     else:
-        fossil_ng_share = pd.Series(1.0, index=plants.index)
+        fossil_ng_share = pd.Series(
+            CementKilnLineStage.default_fossil_ng_share, index=plants.index
+        )
+        fossil_ng_share.loc[route_is_r2] = CementKilnLineStage.r2_fossil_ng_share
     if "biomass_share" in plants.columns:
-        biomass_share = pd.to_numeric(plants["biomass_share"], errors="coerce").fillna(0.0)
+        biomass_share = pd.to_numeric(plants["biomass_share"], errors="coerce")
+        biomass_share = biomass_share.fillna(
+            pd.Series(CementKilnLineStage.r2_biomass_share, index=plants.index).where(
+                route_is_r2, CementKilnLineStage.default_biomass_share
+            )
+        )
     else:
         biomass_share = pd.Series(0.0, index=plants.index)
+        biomass_share.loc[route_is_r2] = CementKilnLineStage.r2_biomass_share
+    if "rdf_share" in plants.columns:
+        rdf_share = pd.to_numeric(plants["rdf_share"], errors="coerce")
+        rdf_share = rdf_share.fillna(
+            pd.Series(CementKilnLineStage.r2_rdf_share, index=plants.index).where(
+                route_is_r2, CementKilnLineStage.default_rdf_share
+            )
+        )
+    else:
+        rdf_share = pd.Series(0.0, index=plants.index)
+        rdf_share.loc[route_is_r2] = CementKilnLineStage.r2_rdf_share
     cement = unit_type == "cement_plant"
     fossil = fuel_type.isin({"fossil", "hybrid_electricity_fossil"})
-    coal_share = (biomass_share < 1.0) & (fossil_ng_share < 1.0)
+    coal_share = (biomass_share + rdf_share < 1.0) & (fossil_ng_share < 1.0)
     return bool((cement & fossil & coal_share).any())
 
 
 def _cement_requires_biomass_price(plants: pd.DataFrame) -> bool:
-    if not {"unit_type", "fuel_type", "biomass_share"}.issubset(plants.columns):
+    if not {"unit_type", "fuel_type"}.issubset(plants.columns):
         return False
     unit_type = plants["unit_type"].astype(str).str.strip().str.lower()
     fuel_type = plants["fuel_type"].astype(str).str.strip().str.lower()
-    biomass_share = pd.to_numeric(plants["biomass_share"], errors="coerce").fillna(0.0)
+    route_is_r2 = _cement_route_ids(plants).isin({"R2", "2"})
+    if "biomass_share" in plants.columns:
+        biomass_share = pd.to_numeric(plants["biomass_share"], errors="coerce")
+        biomass_share = biomass_share.fillna(
+            pd.Series(CementKilnLineStage.r2_biomass_share, index=plants.index).where(
+                route_is_r2, CementKilnLineStage.default_biomass_share
+            )
+        )
+    else:
+        biomass_share = pd.Series(0.0, index=plants.index)
+        biomass_share.loc[route_is_r2] = CementKilnLineStage.r2_biomass_share
     cement = unit_type == "cement_plant"
     combustion = fuel_type.isin({"fossil", "hybrid_electricity_fossil"})
     return bool((cement & combustion & (biomass_share > 0.0)).any())
+
+
+def _cement_requires_rdf_price(plants: pd.DataFrame) -> bool:
+    share_column = "rdf_share" if "rdf_share" in plants.columns else None
+    if not {"unit_type", "fuel_type"}.issubset(plants.columns):
+        return False
+    unit_type = plants["unit_type"].astype(str).str.strip().str.lower()
+    fuel_type = plants["fuel_type"].astype(str).str.strip().str.lower()
+    route_is_r2 = _cement_route_ids(plants).isin({"R2", "2"})
+    if share_column is None:
+        rdf_share = pd.Series(0.0, index=plants.index)
+        rdf_share.loc[route_is_r2] = CementKilnLineStage.r2_rdf_share
+    else:
+        rdf_share = pd.to_numeric(plants[share_column], errors="coerce")
+        rdf_share = rdf_share.fillna(
+            pd.Series(CementKilnLineStage.r2_rdf_share, index=plants.index).where(
+                route_is_r2, CementKilnLineStage.default_rdf_share
+            )
+        )
+    cement = unit_type == "cement_plant"
+    combustion = fuel_type.isin({"fossil", "hybrid_electricity_fossil"})
+    return bool((cement & combustion & (rdf_share > 0.0)).any())
+
+
+def _cement_route_ids(plants: pd.DataFrame) -> pd.Series:
+    for column in ("cement_route_id", "route_id", "route"):
+        if column in plants.columns:
+            return plants[column].fillna("").astype(str).str.strip().str.upper()
+    return pd.Series("", index=plants.index)

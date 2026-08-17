@@ -53,6 +53,40 @@ def test_cement_plant_builds_preheater_calciner_kiln_route() -> None:
     assert plant.cement_route == "preheater_simple_calciner_simple_kiln"
 
 
+def test_cement_route_fuel_mix_defaults_and_csv_overrides() -> None:
+    conventional_rows = _cement_rows().drop(columns="fossil_ng_share")
+    conventional_rows["cement_route_id"] = "R1"
+    conventional = CementPlant.from_rows("cement_1", conventional_rows)
+
+    assert conventional.components["simple_calciner"].fossil_ng_share == pytest.approx(0.034)
+    assert conventional.components["simple_kiln"].fossil_ng_share == pytest.approx(0.034)
+
+    r2_rows = _cement_rows().drop(columns="fossil_ng_share")
+    r2_rows["cement_route_id"] = "R2"
+    r2_rows["biomass_co2_factor"] = 0.4
+    r2_rows["rdf_mixed_biogenic_co2_factor"] = 0.3
+    r2 = CementPlant.from_rows("cement_1", r2_rows)
+
+    for technology in ("simple_calciner", "simple_kiln"):
+        component = r2.components[technology]
+        assert component.biomass_share == pytest.approx(0.245)
+        assert component.rdf_share == pytest.approx(0.489)
+        assert component.fossil_ng_share == pytest.approx(0.009 / 0.266)
+        assert component.rdf_mixed_fossil_co2_factor_t_per_mwh == pytest.approx(0.243)
+    assert r2.components["preheater"].biomass_share == pytest.approx(0.0)
+    assert r2.components["preheater"].rdf_share == pytest.approx(0.0)
+
+    r2_rows["biomass_share"] = 0.10
+    r2_rows["rdf_share"] = 0.20
+    r2_rows["fossil_ng_share"] = 0.50
+    overridden = CementPlant.from_rows("cement_1", r2_rows)
+    for technology in ("simple_calciner", "simple_kiln"):
+        component = overridden.components[technology]
+        assert component.biomass_share == pytest.approx(0.10)
+        assert component.rdf_share == pytest.approx(0.20)
+        assert component.fossil_ng_share == pytest.approx(0.50)
+
+
 def test_shared_plant_factory_selects_cement_plant() -> None:
     plants = build_plants(_cement_rows())
 
@@ -161,6 +195,134 @@ def test_ccs_receives_physical_biogenic_co2(case_dir: Path) -> None:
     )
 
 
+def test_r2_fuel_mix_prices_rdf_separately_and_preserves_its_physical_co2(
+    case_dir: Path,
+) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    plant = CementPlant.from_rows("cement_1", _rdf_cement_rows())
+    forecasts = _cement_forecasts(include_coal=True)
+    forecasts["biomass_price"] = 25.0
+    forecasts["rdf_price"] = 10.0
+
+    result = plant.solve_horizon(config, forecasts, _signals())
+
+    combustion = (
+        result["biomass_consumption_MWh"]
+        + result["rdf_consumption_MWh"]
+        + result["natural_gas_consumption_MWh"]
+        + result["coal_consumption_MWh"]
+    )
+    assert result["biomass_consumption_MWh"].to_numpy() == pytest.approx(
+        combustion.to_numpy() * 0.245
+    )
+    assert result["rdf_consumption_MWh"].to_numpy() == pytest.approx(
+        combustion.to_numpy() * 0.489
+    )
+    assert result["natural_gas_consumption_MWh"].to_numpy() == pytest.approx(
+        combustion.to_numpy() * 0.009
+    )
+    assert result["coal_consumption_MWh"].to_numpy() == pytest.approx(
+        combustion.to_numpy() * 0.257
+    )
+
+    expected_rdf_fossil = result["rdf_consumption_MWh"] * 0.243
+    expected_rdf_biogenic = result["rdf_consumption_MWh"] * 0.3
+    expected_rdf_co2 = expected_rdf_fossil + expected_rdf_biogenic
+    expected_fossil_co2 = (
+        result["natural_gas_consumption_MWh"] * 0.2
+        + result["coal_consumption_MWh"] * 0.3
+        + expected_rdf_fossil
+    )
+    expected_biogenic_co2 = (
+        result["biomass_consumption_MWh"] * 0.4 + expected_rdf_biogenic
+    )
+    expected_process_co2 = result["clinker_output_t"] * 0.5
+    assert result["co2_rdf_t"].to_numpy() == pytest.approx(expected_rdf_co2.to_numpy())
+    assert result["co2_rdf_fossil_t"].to_numpy() == pytest.approx(
+        expected_rdf_fossil.to_numpy()
+    )
+    assert result["co2_rdf_biogenic_t"].to_numpy() == pytest.approx(
+        expected_rdf_biogenic.to_numpy()
+    )
+    assert result["co2_fossil_t"].to_numpy() == pytest.approx(expected_fossil_co2.to_numpy())
+    assert result["co2_biogenic_t"].to_numpy() == pytest.approx(expected_biogenic_co2.to_numpy())
+    assert result["co2_emissions_t"].to_numpy() == pytest.approx(
+        (expected_process_co2 + expected_fossil_co2 + expected_biogenic_co2).to_numpy()
+    )
+    assert result["co2_priced_t"].to_numpy() == pytest.approx(
+        (expected_process_co2 + expected_fossil_co2).to_numpy()
+    )
+
+    expected_cost = (
+        result["natural_gas_consumption_MWh"] * forecasts["natural_gas_price"]
+        + result["coal_consumption_MWh"] * forecasts["coal_price"]
+        + result["biomass_consumption_MWh"] * forecasts["biomass_price"]
+        + result["rdf_consumption_MWh"] * forecasts["rdf_price"]
+        + result["co2_priced_t"] * forecasts["co2_price"]
+    )
+    assert result["variable_cost_EUR"].to_numpy() == pytest.approx(expected_cost.to_numpy())
+
+
+def test_rdf_uses_default_fossil_factor_and_requires_biogenic_factor() -> None:
+    rows = _rdf_cement_rows()
+    rows["rdf_mixed_biogenic_co2_factor"] = float("nan")
+    with pytest.raises(ValueError, match="rdf_mixed_biogenic_co2_factor"):
+        CementPlant.from_rows("cement_1", rows)
+
+
+def test_rdf_excl_biomass_share_is_not_used_as_mixed_rdf() -> None:
+    rows = _cement_rows()
+    rows["rdf_excl_biomass_share"] = 0.489
+
+    plant = CementPlant.from_rows("cement_1", rows)
+
+    assert plant.components["simple_calciner"].rdf_share == pytest.approx(0.0)
+    assert plant.components["simple_kiln"].rdf_share == pytest.approx(0.0)
+
+
+def test_ccs_receives_rdf_fossil_and_biogenic_co2(case_dir: Path) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    ccs_rows = _amine_ccs_rows()
+    ccs_rows["max_capture_rate"] = 20.0
+    rows = pd.concat([_rdf_cement_rows(), ccs_rows], ignore_index=True)
+    plant = CementPlant.from_rows("cement_1", rows)
+    forecasts = _cement_forecasts(include_coal=True)
+    forecasts["biomass_price"] = 25.0
+    forecasts["rdf_price"] = 10.0
+
+    result = plant.solve_horizon(config, forecasts, _signals())
+
+    assert result["co2_rdf_fossil_t"].sum() > 0.0
+    assert result["co2_rdf_biogenic_t"].sum() > 0.0
+    assert result["ccs_co2_input_t"].to_numpy() == pytest.approx(
+        result["gross_co2_emissions_t"].to_numpy()
+    )
+    assert result["ccs_co2_priced_input_t"].to_numpy() == pytest.approx(
+        result["co2_priced_t"].to_numpy()
+    )
+    assert result["co2_priced_captured_t"].to_numpy() == pytest.approx(
+        result["ccs_co2_priced_input_t"].to_numpy() * 0.9
+    )
+    assert result["co2_unpriced_captured_t"].to_numpy() == pytest.approx(
+        (
+            result["ccs_co2_input_t"] - result["ccs_co2_priced_input_t"]
+        ).to_numpy()
+        * 0.9
+    )
+    assert result["co2_priced_emissions_t"].to_numpy() == pytest.approx(
+        result["co2_priced_t"].to_numpy() * 0.1
+    )
+    expected_ccs_cost = (
+        result["ccs_electricity_consumption_MWh"] * forecasts["electricity_price"]
+        + result["ccs_heat_consumption_MWh"] * 10.0
+        + result["co2_captured_t"] * 4.0
+        - result["co2_priced_captured_t"] * forecasts["co2_price"]
+    )
+    assert result["ccs_operating_cost_EUR"].to_numpy() == pytest.approx(
+        expected_ccs_cost.to_numpy()
+    )
+
+
 def test_biomass_share_requires_a_physical_co2_factor() -> None:
     rows = _biomass_cement_rows()
     rows["biomass_co2_factor"] = float("nan")
@@ -226,6 +388,18 @@ def test_cement_forecast_discovery_and_conditional_coal_price(case_dir: Path) ->
     pure_biomass_required = loader.required_forecast_columns(pure_biomass_rows)
     assert "biomass_price" in pure_biomass_required
     assert "coal_price" not in pure_biomass_required
+
+    rdf_required = loader.required_forecast_columns(_rdf_cement_rows())
+    assert "rdf_price" in rdf_required
+    assert "biomass_price" in rdf_required
+    assert "coal_price" in rdf_required
+
+    default_r2_rows = _cement_rows().drop(columns="fossil_ng_share")
+    default_r2_rows["route_id"] = "R2"
+    default_r2_required = loader.required_forecast_columns(default_r2_rows)
+    assert "biomass_price" in default_r2_required
+    assert "rdf_price" in default_r2_required
+    assert "coal_price" in default_r2_required
 
 
 def test_cement_runner_uses_day_ahead_price_and_writes_outputs(tmp_path: Path) -> None:
@@ -1080,6 +1254,22 @@ def _biomass_cement_rows() -> pd.DataFrame:
     return rows
 
 
+def _rdf_cement_rows() -> pd.DataFrame:
+    rows = _cement_rows()
+    rows["fuel_type"] = "fossil"
+    rows["eta_fossil"] = 1.0
+    rows["biomass_share"] = 0.245
+    rows["rdf_share"] = 0.489
+    rows["fossil_ng_share"] = 0.009 / (0.009 + 0.257)
+    rows["natural_gas_co2_factor"] = 0.2
+    rows["coal_co2_factor"] = 0.3
+    rows["biomass_co2_factor"] = 0.4
+    rows["biomass_co2_accounting_share"] = 0.0
+    rows["rdf_mixed_biogenic_co2_factor"] = 0.3
+    rows["rdf_biogenic_co2_accounting_share"] = 0.0
+    return rows
+
+
 def _rows_for_stages(stages: list[str]) -> pd.DataFrame:
     """The standard fixture restricted to *stages*, for exercising each cement route."""
     rows = _cement_rows()
@@ -1247,6 +1437,7 @@ def _full_oxyfuel_route_rows() -> pd.DataFrame:
     rows.loc[is_kiln, "specific_oxygen_electricity_consumption"] = 0.2
     is_preheater = rows["technology"] == "preheater"
     rows.loc[is_preheater, "fuel_type"] = "fossil"
+    rows.loc[is_preheater, "fossil_ng_share"] = 1.0
     rows.loc[is_preheater, "eta_fossil"] = 1.0
     rows.loc[is_preheater, "natural_gas_co2_factor"] = 0.2
     return rows

@@ -28,6 +28,7 @@ from flexi_mod.strategies.electrified_cement_strategy import (
     CO2_PRICE_SIGNAL,
     HYDROGEN_PRICE_SIGNAL,
     NATURAL_GAS_PRICE_SIGNAL,
+    RDF_PRICE_SIGNAL,
     ElectrifiedCementStrategy,
 )
 from flexi_mod.strategies.electrified_steel_rule_based_strategy import (
@@ -64,5 +65,6 @@ class ElectrifiedCementRuleBasedStrategy(
             hydrogen_price_col=HYDROGEN_PRICE_SIGNAL,
             coal_price_col=COAL_PRICE_SIGNAL,
             biomass_price_col=BIOMASS_PRICE_SIGNAL,
+            rdf_price_col=RDF_PRICE_SIGNAL,
             co2_price_col=CO2_PRICE_SIGNAL,
         )

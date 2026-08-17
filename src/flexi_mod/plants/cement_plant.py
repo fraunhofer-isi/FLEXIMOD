@@ -114,6 +114,7 @@ class CementDispatchSignals:
     hydrogen_price_col: str = "hydrogen_price"
     coal_price_col: str = "coal_price"
     biomass_price_col: str = "biomass_price"
+    rdf_price_col: str = "rdf_price"
     co2_price_col: str = "co2_price"
 
 
@@ -130,6 +131,7 @@ class CementAFRRDownCommoditySignals:
     hydrogen_price_col: str
     coal_price_col: str = "coal_price"
     biomass_price_col: str = "biomass_price"
+    rdf_price_col: str = "rdf_price"
 
 
 @dataclass(frozen=True)
@@ -560,6 +562,8 @@ class CementPlant(DispatchPlant):
             required.add(commodities.coal_price_col)
         if self._requires_biomass_price():
             required.add(commodities.biomass_price_col)
+        if self._requires_rdf_price():
+            required.add(commodities.rdf_price_col)
         missing = required - set(forecasts.columns)
         if missing:
             raise ValueError(
@@ -603,6 +607,12 @@ class CementPlant(DispatchPlant):
             else {t: 0.0 for t in model.T}
         )
         model.biomass_price = pyo.Param(model.T, initialize=biomass_prices)
+        rdf_prices = (
+            values(commodity_signals.rdf_price_col)
+            if self._requires_rdf_price()
+            else {t: 0.0 for t in model.T}
+        )
+        model.rdf_price = pyo.Param(model.T, initialize=rdf_prices)
         model.co2_price = pyo.Param(model.T, initialize=values(commodity_signals.co2_price_col))
 
         demand = self._validated_demand_profile(forecasts)
@@ -694,9 +704,11 @@ class CementPlant(DispatchPlant):
         natural_gas_price = price("natural_gas_price")
         coal_price = price("coal_price")
         biomass_price = price("biomass_price")
+        rdf_price = price("rdf_price")
         co2_price = forecasts["co2_price"].astype(float)
         natural_gas_share = float(hybrid.fossil_ng_share)
         biomass_share = float(hybrid.biomass_share)
+        rdf_share = float(hybrid.rdf_share)
         fossil_blend_cost = natural_gas_share * (
             natural_gas_price + float(hybrid.natural_gas_co2_factor_t_per_mwh) * co2_price
         ) + (1.0 - natural_gas_share) * (
@@ -707,8 +719,16 @@ class CementPlant(DispatchPlant):
             * float(hybrid.biomass_co2_accounting_share)
             * co2_price
         )
+        rdf_priced_co2_factor = float(hybrid.rdf_mixed_fossil_co2_factor_t_per_mwh) + (
+            float(hybrid.rdf_mixed_biogenic_co2_factor_t_per_mwh)
+            * float(hybrid.rdf_biogenic_co2_accounting_share)
+        )
+        rdf_cost = rdf_price + rdf_priced_co2_factor * co2_price
+        fossil_share = 1.0 - biomass_share - rdf_share
         combustion_cost_per_mwh = (
-            biomass_share * biomass_cost + (1.0 - biomass_share) * fossil_blend_cost
+            biomass_share * biomass_cost
+            + rdf_share * rdf_cost
+            + fossil_share * fossil_blend_cost
         )
         benchmark = combustion_cost_per_mwh * (
             float(hybrid.eta_electric) / float(hybrid.eta_fossil)
@@ -749,7 +769,9 @@ class CementPlant(DispatchPlant):
                         )
                         oxygen_per_mwh = (
                             component.biomass_share * component.biomass_oxygen_demand_t_per_mwh
-                            + (1.0 - component.biomass_share) * fossil_oxygen_per_mwh
+                            + component.rdf_share * component.rdf_oxygen_demand_t_per_mwh
+                            + (1.0 - component.biomass_share - component.rdf_share)
+                            * fossil_oxygen_per_mwh
                         )
                     maximum_fuel_mw = component.max_heat_out_mw / max(component.eta_fossil, 1e-9)
                     oxygen_generation_power_mw = (
@@ -815,6 +837,12 @@ class CementPlant(DispatchPlant):
             else {t: 0.0 for t in model.T}
         )
         model.biomass_price = pyo.Param(model.T, initialize=biomass_prices)
+        rdf_prices = (
+            values(signals.rdf_price_col)
+            if self._requires_rdf_price()
+            else {t: 0.0 for t in model.T}
+        )
+        model.rdf_price = pyo.Param(model.T, initialize=rdf_prices)
         model.co2_price = pyo.Param(model.T, initialize=values(signals.co2_price_col))
 
         demand = self._validated_demand_profile(forecasts)
@@ -910,6 +938,12 @@ class CementPlant(DispatchPlant):
             @container.Constraint(time_steps)
             def ccs_co2_input(m: pyo.Block, t: int) -> pyo.Constraint:
                 return ccs.co2_in[t] == sum(source.co2_emission[t] for source in emission_sources)
+
+            @container.Constraint(time_steps)
+            def ccs_priced_co2_input(m: pyo.Block, t: int) -> pyo.Constraint:
+                return ccs.co2_priced_in[t] == sum(
+                    source.co2_priced[t] for source in emission_sources
+                )
 
         if preheater is not None and kiln is not None:
 
@@ -1198,15 +1232,26 @@ class CementPlant(DispatchPlant):
             data["electrolyser_oxygen_output_t"] = []
         if ccs is not None:
             data["ccs_co2_input_t"] = []
+            data["ccs_co2_priced_input_t"] = []
             data["gross_co2_emissions_t"] = []
             data["co2_captured_t"] = []
+            data["co2_priced_captured_t"] = []
+            data["co2_unpriced_captured_t"] = []
             data["co2_residual_t"] = []
+            data["ccs_co2_priced_residual_t"] = []
+            data["co2_priced_emissions_t"] = []
             data["ccs_electricity_consumption_MWh"] = []
             data["ccs_operating_cost_EUR"] = []
             if hasattr(ccs, "heat_consumption"):
                 data["ccs_heat_consumption_MWh"] = []
         if self._requires_biomass_price():
             data["biomass_consumption_MWh"] = []
+        if self._requires_rdf_price():
+            data["rdf_consumption_MWh"] = []
+            data["co2_rdf_t"] = []
+            data["co2_rdf_fossil_t"] = []
+            data["co2_rdf_biogenic_t"] = []
+        if self._requires_biomass_price() or self._requires_rdf_price():
             data["co2_fossil_t"] = []
             data["co2_biogenic_t"] = []
             data["co2_priced_t"] = []
@@ -1246,6 +1291,26 @@ class CementPlant(DispatchPlant):
                         block_value(block, "biomass_in", t) for block in [preheater, calciner, kiln]
                     )
                 )
+            if "rdf_consumption_MWh" in data:
+                data["rdf_consumption_MWh"].append(
+                    sum(block_value(block, "rdf_in", t) for block in [preheater, calciner, kiln])
+                )
+                data["co2_rdf_t"].append(
+                    sum(block_value(block, "co2_rdf", t) for block in [preheater, calciner, kiln])
+                )
+                data["co2_rdf_fossil_t"].append(
+                    sum(
+                        block_value(block, "co2_rdf_fossil", t)
+                        for block in [preheater, calciner, kiln]
+                    )
+                )
+                data["co2_rdf_biogenic_t"].append(
+                    sum(
+                        block_value(block, "co2_rdf_biogenic", t)
+                        for block in [preheater, calciner, kiln]
+                    )
+                )
+            if "co2_fossil_t" in data:
                 data["co2_fossil_t"].append(
                     sum(
                         block_value(block, "co2_fossil", t) for block in [preheater, calciner, kiln]
@@ -1265,6 +1330,9 @@ class CementPlant(DispatchPlant):
             gross_co2_emissions = sum(
                 block_value(block, "co2_emission", t) for block in [preheater, calciner, kiln]
             )
+            gross_co2_priced = sum(
+                block_value(block, "co2_priced", t) for block in [preheater, calciner, kiln]
+            )
             ccs_co2_input = block_value(ccs, "co2_in", t)
             data["co2_emissions_t"].append(
                 gross_co2_emissions - ccs_co2_input + block_value(ccs, "co2_residual", t)
@@ -1272,10 +1340,23 @@ class CementPlant(DispatchPlant):
                 else gross_co2_emissions
             )
             if ccs is not None:
+                ccs_co2_priced_input = block_value(ccs, "co2_priced_in", t)
                 data["ccs_co2_input_t"].append(ccs_co2_input)
+                data["ccs_co2_priced_input_t"].append(ccs_co2_priced_input)
                 data["gross_co2_emissions_t"].append(gross_co2_emissions)
                 data["co2_captured_t"].append(block_value(ccs, "co2_captured", t))
+                data["co2_priced_captured_t"].append(
+                    block_value(ccs, "co2_priced_captured", t)
+                )
+                data["co2_unpriced_captured_t"].append(
+                    block_value(ccs, "co2_unpriced_captured", t)
+                )
                 data["co2_residual_t"].append(block_value(ccs, "co2_residual", t))
+                ccs_co2_priced_residual = block_value(ccs, "co2_priced_residual", t)
+                data["ccs_co2_priced_residual_t"].append(ccs_co2_priced_residual)
+                data["co2_priced_emissions_t"].append(
+                    gross_co2_priced - ccs_co2_priced_input + ccs_co2_priced_residual
+                )
                 data["ccs_electricity_consumption_MWh"].append(
                     block_value(ccs, "electricity_consumption", t)
                 )
@@ -1553,8 +1634,9 @@ class CementPlant(DispatchPlant):
             fuel_type = getattr(component, "fuel_type", "")
             fossil_share = float(getattr(component, "fossil_ng_share", 1.0))
             biomass_share = float(getattr(component, "biomass_share", 0.0))
+            rdf_share = float(getattr(component, "rdf_share", 0.0))
             if fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}:
-                if biomass_share < 1.0 - 1e-12 and fossil_share < 1.0 - 1e-12:
+                if biomass_share + rdf_share < 1.0 - 1e-12 and fossil_share < 1.0 - 1e-12:
                     return True
         return False
 
@@ -1562,6 +1644,13 @@ class CementPlant(DispatchPlant):
         return any(
             getattr(component, "fuel_type", "") in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}
             and float(getattr(component, "biomass_share", 0.0)) > 1e-12
+            for component in self.components.values()
+        )
+
+    def _requires_rdf_price(self) -> bool:
+        return any(
+            getattr(component, "fuel_type", "") in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}
+            and float(getattr(component, "rdf_share", 0.0)) > 1e-12
             for component in self.components.values()
         )
 
@@ -1580,6 +1669,8 @@ class CementPlant(DispatchPlant):
             columns.add(signals.coal_price_col)
         if self._requires_biomass_price():
             columns.add(signals.biomass_price_col)
+        if self._requires_rdf_price():
+            columns.add(signals.rdf_price_col)
         missing = columns - set(forecasts.columns)
         if missing:
             raise ValueError(

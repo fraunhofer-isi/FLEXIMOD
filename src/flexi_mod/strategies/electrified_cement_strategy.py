@@ -24,6 +24,7 @@ CO2_PRICE_SIGNAL = "co2_price"
 NATURAL_GAS_PRICE_SIGNAL = "natural_gas_price"
 HYDROGEN_PRICE_SIGNAL = "hydrogen_price"
 BIOMASS_PRICE_SIGNAL = "biomass_price"
+RDF_PRICE_SIGNAL = "rdf_price"
 
 
 class ElectrifiedCementStrategy(ElectrifiedAFRRDownStrategy):
@@ -48,5 +49,6 @@ class ElectrifiedCementStrategy(ElectrifiedAFRRDownStrategy):
                 natural_gas_price_col=NATURAL_GAS_PRICE_SIGNAL,
                 hydrogen_price_col=HYDROGEN_PRICE_SIGNAL,
                 biomass_price_col=BIOMASS_PRICE_SIGNAL,
+                rdf_price_col=RDF_PRICE_SIGNAL,
             ),
         )
