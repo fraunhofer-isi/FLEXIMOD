@@ -892,10 +892,20 @@ class CementPlant(DispatchPlant):
         ccs = blocks[ccs_technology] if ccs_technology is not None else None
 
         if ccs is not None:
-            candidate_sources = (
-                (calciner, kiln) if ccs_technology == "oxyfuel_ccs" else (preheater, calciner, kiln)
-            )
-            emission_sources = [block for block in candidate_sources if block is not None]
+            if ccs_technology == "oxyfuel_ccs":
+                # The CPU only receives the oxy-combustion stream: whichever of the
+                # calciner/kiln are actually the oxyfuel variant, not every configured
+                # stage. A conventional (air-fired) stage sharing the line - the partial-
+                # oxyfuel route - keeps its own CO2 out of this capture unit entirely.
+                candidate_sources = (calciner, kiln)
+                emission_sources = [
+                    block
+                    for block in candidate_sources
+                    if block is not None and hasattr(block, "oxygen_from_electrolyser")
+                ]
+            else:
+                candidate_sources = (preheater, calciner, kiln)
+                emission_sources = [block for block in candidate_sources if block is not None]
 
             @container.Constraint(time_steps)
             def ccs_co2_input(m: pyo.Block, t: int) -> pyo.Constraint:
@@ -1607,15 +1617,15 @@ def _detect_cement_route(components: dict[str, object], plant_name: str) -> str:
             + ", ".join(configured_ccs)
         )
     if "oxyfuel_ccs" in components:
-        non_oxyfuel_stages = [
-            name
-            for name in (calciner_name, kiln_name)
-            if name is not None and name not in {"oxyfuel_calciner", "oxyfuel_kiln"}
-        ]
-        if non_oxyfuel_stages:
+        # At least one oxy-fired stage is required to give the CPU an oxy-combustion
+        # stream to capture from - the other stage may stay conventional (the partial-
+        # oxyfuel route), and its CO2 simply isn't captured by this unit.
+        oxyfuel_stage_names = {"oxyfuel_calciner", "oxyfuel_kiln"}
+        configured_stage_names = [name for name in (calciner_name, kiln_name) if name is not None]
+        if not any(name in oxyfuel_stage_names for name in configured_stage_names):
             raise ValueError(
-                f"Cement plant '{plant_name}' oxyfuel_ccs requires its configured calciner "
-                "and kiln stages to be oxyfuel variants"
+                f"Cement plant '{plant_name}' oxyfuel_ccs requires at least one configured "
+                "calciner or kiln stage to be an oxyfuel variant"
             )
     if calciner_name is None and kiln_name is None:
         raise ValueError(

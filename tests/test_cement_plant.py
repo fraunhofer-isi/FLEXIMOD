@@ -902,11 +902,29 @@ def test_oxyfuel_ccs_recovers_only_the_calciner_and_kiln_stream(case_dir: Path) 
     ).to_numpy() == pytest.approx(expected_ccs_cost.to_numpy())
 
 
-def test_oxyfuel_ccs_rejects_non_oxyfuel_kiln_line_stages() -> None:
+def test_oxyfuel_ccs_rejects_route_with_no_oxyfuel_stage() -> None:
     rows = _cement_rows_with(_oxyfuel_ccs_rows())
 
-    with pytest.raises(ValueError, match="requires its configured calciner and kiln"):
+    with pytest.raises(ValueError, match="requires at least one configured"):
         CementPlant.from_rows("cement_1", rows)
+
+
+def test_oxyfuel_ccs_allows_partial_oxyfuel_route(case_dir: Path) -> None:
+    """The CPU may sit downstream of just the oxyfuel calciner, with a conventional kiln
+    left uncaptured - the partial-oxyfuel route."""
+    config = CaseConfig.from_case_dir(case_dir)
+    rows = _oxyfuel_cement_rows()
+    rows = pd.concat([rows, _oxyfuel_ccs_rows()], ignore_index=True)
+    plant = CementPlant.from_rows("cement_1", rows)
+    assert plant.cement_route == "preheater_oxyfuel_calciner_simple_kiln"
+
+    forecasts = _cement_forecasts(include_coal=False)
+    result = plant.solve_horizon(config, forecasts, _signals())
+
+    # The kiln's own combustion CO2 must never enter the CPU's input.
+    kiln_only_co2 = result["gross_co2_emissions_t"] - result["ccs_co2_input_t"]
+    assert (kiln_only_co2 > 0.0).any()
+    assert (result["co2_emissions_t"] >= kiln_only_co2 - 1e-9).all()
 
 
 def test_leilac_calciner_is_registered_and_builds() -> None:
