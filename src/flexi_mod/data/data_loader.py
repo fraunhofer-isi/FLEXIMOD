@@ -181,6 +181,8 @@ class DataLoader:
             required.add("coal_price")
         if _cement_requires_coal_price(plants):
             required.add("coal_price")
+        if _cement_requires_biomass_price(plants):
+            required.add("biomass_price")
 
         return required
 
@@ -494,7 +496,22 @@ def _cement_requires_coal_price(plants: pd.DataFrame) -> bool:
         fossil_ng_share = pd.to_numeric(plants["fossil_ng_share"], errors="coerce").fillna(1.0)
     else:
         fossil_ng_share = pd.Series(1.0, index=plants.index)
+    if "biomass_share" in plants.columns:
+        biomass_share = pd.to_numeric(plants["biomass_share"], errors="coerce").fillna(0.0)
+    else:
+        biomass_share = pd.Series(0.0, index=plants.index)
     cement = unit_type == "cement_plant"
     fossil = fuel_type.isin({"fossil", "hybrid_electricity_fossil"})
-    coal_share = fossil_ng_share < 1.0
+    coal_share = (biomass_share < 1.0) & (fossil_ng_share < 1.0)
     return bool((cement & fossil & coal_share).any())
+
+
+def _cement_requires_biomass_price(plants: pd.DataFrame) -> bool:
+    if not {"unit_type", "fuel_type", "biomass_share"}.issubset(plants.columns):
+        return False
+    unit_type = plants["unit_type"].astype(str).str.strip().str.lower()
+    fuel_type = plants["fuel_type"].astype(str).str.strip().str.lower()
+    biomass_share = pd.to_numeric(plants["biomass_share"], errors="coerce").fillna(0.0)
+    cement = unit_type == "cement_plant"
+    combustion = fuel_type.isin({"fossil", "hybrid_electricity_fossil"})
+    return bool((cement & combustion & (biomass_share > 0.0)).any())

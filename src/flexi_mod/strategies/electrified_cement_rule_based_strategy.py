@@ -24,6 +24,7 @@ from typing import Any
 
 from flexi_mod.plants.cement_plant import CementDispatchSignals
 from flexi_mod.strategies.electrified_cement_strategy import (
+    BIOMASS_PRICE_SIGNAL,
     CO2_PRICE_SIGNAL,
     HYDROGEN_PRICE_SIGNAL,
     NATURAL_GAS_PRICE_SIGNAL,
@@ -62,5 +63,6 @@ class ElectrifiedCementRuleBasedStrategy(
             natural_gas_price_col=NATURAL_GAS_PRICE_SIGNAL,
             hydrogen_price_col=HYDROGEN_PRICE_SIGNAL,
             coal_price_col=COAL_PRICE_SIGNAL,
+            biomass_price_col=BIOMASS_PRICE_SIGNAL,
             co2_price_col=CO2_PRICE_SIGNAL,
         )

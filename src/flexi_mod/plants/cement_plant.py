@@ -113,6 +113,7 @@ class CementDispatchSignals:
     natural_gas_price_col: str = "natural_gas_price"
     hydrogen_price_col: str = "hydrogen_price"
     coal_price_col: str = "coal_price"
+    biomass_price_col: str = "biomass_price"
     co2_price_col: str = "co2_price"
 
 
@@ -128,6 +129,7 @@ class CementAFRRDownCommoditySignals:
     natural_gas_price_col: str
     hydrogen_price_col: str
     coal_price_col: str = "coal_price"
+    biomass_price_col: str = "biomass_price"
 
 
 @dataclass(frozen=True)
@@ -556,6 +558,8 @@ class CementPlant(DispatchPlant):
             required.add(commodities.hydrogen_price_col)
         if self._requires_coal_price():
             required.add(commodities.coal_price_col)
+        if self._requires_biomass_price():
+            required.add(commodities.biomass_price_col)
         missing = required - set(forecasts.columns)
         if missing:
             raise ValueError(
@@ -593,6 +597,12 @@ class CementPlant(DispatchPlant):
             else {t: 0.0 for t in model.T}
         )
         model.coal_price = pyo.Param(model.T, initialize=coal_prices)
+        biomass_prices = (
+            values(commodity_signals.biomass_price_col)
+            if self._requires_biomass_price()
+            else {t: 0.0 for t in model.T}
+        )
+        model.biomass_price = pyo.Param(model.T, initialize=biomass_prices)
         model.co2_price = pyo.Param(model.T, initialize=values(commodity_signals.co2_price_col))
 
         demand = self._validated_demand_profile(forecasts)
@@ -656,9 +666,9 @@ class CementPlant(DispatchPlant):
     def afrr_fuel_substitution(self, forecasts: pd.DataFrame) -> FuelSubstitution | None:
         """Electricity price at which electric heat matches burner heat on a hybrid stage.
 
-        A ``hybrid_electricity_fossil`` stage forms heat as
-        ``power_in * eta_electric + fossil_in * eta_fossil``, so the two routes break even
-        at ``(gas price + CO2) * eta_electric / eta_fossil`` per MWh of electricity.
+        A ``hybrid_electricity_fossil`` stage forms heat from electricity or its fixed
+        biomass/natural-gas/coal blend. The benchmark is the blend's fuel and accounted
+        CO2 cost, converted through the two heat efficiencies.
 
         Unlike steel's electrolyser this is a continuous blend, not an on/off decision:
         the stage can take any split. So there is no gate column and no gated load - the
@@ -676,12 +686,33 @@ class CementPlant(DispatchPlant):
         if hybrid is None:
             return None
 
-        natural_gas_price = forecasts["natural_gas_price"].astype(float)
+        def price(column: str) -> pd.Series:
+            if column in forecasts:
+                return forecasts[column].astype(float)
+            return pd.Series(0.0, index=forecasts.index)
+
+        natural_gas_price = price("natural_gas_price")
+        coal_price = price("coal_price")
+        biomass_price = price("biomass_price")
         co2_price = forecasts["co2_price"].astype(float)
-        fossil_cost_per_mwh_th = (
+        natural_gas_share = float(hybrid.fossil_ng_share)
+        biomass_share = float(hybrid.biomass_share)
+        fossil_blend_cost = natural_gas_share * (
             natural_gas_price + float(hybrid.natural_gas_co2_factor_t_per_mwh) * co2_price
+        ) + (1.0 - natural_gas_share) * (
+            coal_price + float(hybrid.coal_co2_factor_t_per_mwh) * co2_price
         )
-        benchmark = fossil_cost_per_mwh_th * (float(hybrid.eta_electric) / float(hybrid.eta_fossil))
+        biomass_cost = biomass_price + (
+            float(hybrid.biomass_co2_factor_t_per_mwh)
+            * float(hybrid.biomass_co2_accounting_share)
+            * co2_price
+        )
+        combustion_cost_per_mwh = (
+            biomass_share * biomass_cost + (1.0 - biomass_share) * fossil_blend_cost
+        )
+        benchmark = combustion_cost_per_mwh * (
+            float(hybrid.eta_electric) / float(hybrid.eta_fossil)
+        )
         benchmark.name = "fossil_based_electricity_benchmark_EUR_per_MWh_el"
         return FuelSubstitution(benchmark_eur_per_mwh_el=benchmark)
 
@@ -710,11 +741,15 @@ class CementPlant(DispatchPlant):
                     if component.fuel_type == HYDROGEN:
                         oxygen_per_mwh = component.hydrogen_oxygen_demand_t_per_mwh
                     else:
-                        oxygen_per_mwh = (
+                        fossil_oxygen_per_mwh = (
                             component.fossil_ng_share
                             * component.natural_gas_oxygen_demand_t_per_mwh
                             + (1.0 - component.fossil_ng_share)
                             * component.coal_oxygen_demand_t_per_mwh
+                        )
+                        oxygen_per_mwh = (
+                            component.biomass_share * component.biomass_oxygen_demand_t_per_mwh
+                            + (1.0 - component.biomass_share) * fossil_oxygen_per_mwh
                         )
                     maximum_fuel_mw = component.max_heat_out_mw / max(component.eta_fossil, 1e-9)
                     oxygen_generation_power_mw = (
@@ -774,6 +809,12 @@ class CementPlant(DispatchPlant):
             else {t: 0.0 for t in model.T}
         )
         model.coal_price = pyo.Param(model.T, initialize=coal_prices)
+        biomass_prices = (
+            values(signals.biomass_price_col)
+            if self._requires_biomass_price()
+            else {t: 0.0 for t in model.T}
+        )
+        model.biomass_price = pyo.Param(model.T, initialize=biomass_prices)
         model.co2_price = pyo.Param(model.T, initialize=values(signals.co2_price_col))
 
         demand = self._validated_demand_profile(forecasts)
@@ -1154,6 +1195,11 @@ class CementPlant(DispatchPlant):
             data["ccs_operating_cost_EUR"] = []
             if hasattr(ccs, "heat_consumption"):
                 data["ccs_heat_consumption_MWh"] = []
+        if self._requires_biomass_price():
+            data["biomass_consumption_MWh"] = []
+            data["co2_fossil_t"] = []
+            data["co2_biogenic_t"] = []
+            data["co2_priced_t"] = []
 
         horizon_demand_total = sum(_value(model.clinker_demand_per_timestep[t]) for t in model.T)
         for t in model.T:
@@ -1184,6 +1230,28 @@ class CementPlant(DispatchPlant):
             data["hydrogen_consumption_MWh"].append(
                 sum(block_value(block, "hydrogen_in", t) for block in [preheater, calciner, kiln])
             )
+            if "biomass_consumption_MWh" in data:
+                data["biomass_consumption_MWh"].append(
+                    sum(
+                        block_value(block, "biomass_in", t) for block in [preheater, calciner, kiln]
+                    )
+                )
+                data["co2_fossil_t"].append(
+                    sum(
+                        block_value(block, "co2_fossil", t) for block in [preheater, calciner, kiln]
+                    )
+                )
+                data["co2_biogenic_t"].append(
+                    sum(
+                        block_value(block, "co2_biogenic", t)
+                        for block in [preheater, calciner, kiln]
+                    )
+                )
+                data["co2_priced_t"].append(
+                    sum(
+                        block_value(block, "co2_priced", t) for block in [preheater, calciner, kiln]
+                    )
+                )
             gross_co2_emissions = sum(
                 block_value(block, "co2_emission", t) for block in [preheater, calciner, kiln]
             )
@@ -1474,10 +1542,18 @@ class CementPlant(DispatchPlant):
         for component in self.components.values():
             fuel_type = getattr(component, "fuel_type", "")
             fossil_share = float(getattr(component, "fossil_ng_share", 1.0))
+            biomass_share = float(getattr(component, "biomass_share", 0.0))
             if fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}:
-                if fossil_share < 1.0 - 1e-12:
+                if biomass_share < 1.0 - 1e-12 and fossil_share < 1.0 - 1e-12:
                     return True
         return False
+
+    def _requires_biomass_price(self) -> bool:
+        return any(
+            getattr(component, "fuel_type", "") in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}
+            and float(getattr(component, "biomass_share", 0.0)) > 1e-12
+            for component in self.components.values()
+        )
 
     def _validate_signal_columns(
         self,
@@ -1492,6 +1568,8 @@ class CementPlant(DispatchPlant):
         }
         if self._requires_coal_price():
             columns.add(signals.coal_price_col)
+        if self._requires_biomass_price():
+            columns.add(signals.biomass_price_col)
         missing = columns - set(forecasts.columns)
         if missing:
             raise ValueError(

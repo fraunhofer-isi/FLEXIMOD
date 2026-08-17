@@ -1069,6 +1069,14 @@ class CementKilnLineStage:
         )
         if not 0.0 <= self.fossil_ng_share <= 1.0:
             raise ValueError("fossil_ng_share must be between 0 and 1")
+        if not 0.0 <= self.biomass_share <= 1.0:
+            raise ValueError("biomass_share must be between 0 and 1")
+        if self.biomass_co2_factor_t_per_mwh < 0.0:
+            raise ValueError("biomass_co2_factor must be non-negative")
+        if self.biomass_share > 0.0 and self.biomass_co2_factor_t_per_mwh <= 0.0:
+            raise ValueError("biomass_co2_factor must be positive when biomass_share is positive")
+        if not 0.0 <= self.biomass_co2_accounting_share <= 1.0:
+            raise ValueError("biomass_co2_accounting_share must be between 0 and 1")
 
         block.max_heat_out = pyo.Param(initialize=max_heat_mwh)
         block.min_heat_out = pyo.Param(initialize=min_heat_mwh)
@@ -1080,10 +1088,15 @@ class CementKilnLineStage:
         block.eta_electric = pyo.Param(initialize=self.eta_electric)
         block.eta_fossil = pyo.Param(initialize=self.eta_fossil)
         block.fossil_ng_share = pyo.Param(initialize=self.fossil_ng_share, within=pyo.UnitInterval)
+        block.biomass_share = pyo.Param(initialize=self.biomass_share, within=pyo.UnitInterval)
         block.ramp_up = pyo.Param(initialize=ramp_up * dt_hours)
         block.ramp_down = pyo.Param(initialize=ramp_down * dt_hours)
         block.natural_gas_co2_factor = pyo.Param(initialize=self.natural_gas_co2_factor_t_per_mwh)
         block.coal_co2_factor = pyo.Param(initialize=self.coal_co2_factor_t_per_mwh)
+        block.biomass_co2_factor = pyo.Param(initialize=self.biomass_co2_factor_t_per_mwh)
+        block.biomass_co2_accounting_share = pyo.Param(
+            initialize=self.biomass_co2_accounting_share, within=pyo.UnitInterval
+        )
         block.min_operating_steps = pyo.Param(initialize=self.min_operating_steps)
         block.min_down_steps = pyo.Param(initialize=self.min_down_steps)
         initial_status = int(
@@ -1103,8 +1116,9 @@ class CementKilnLineStage:
 
         - **Variables**: heat and fuel flows every stage has (``heat_out``,
           ``power_in``, ``aux_power_in``, ``natural_gas_in``, ``coal_in``,
-          ``hydrogen_in``, ``fossil_in``), the stage's throughput output, CO2 and
-          operating cost, and the commitment binaries.
+          ``biomass_in``, ``hydrogen_in``, ``fossil_in``, ``combustion_in``), the
+          stage's throughput output, physical/accounted CO2, operating cost, and the
+          commitment binaries.
         """
         max_heat_mwh = float(pyo.value(block.max_heat_out))
         max_power_mwh = float(pyo.value(block.max_power))
@@ -1117,11 +1131,17 @@ class CementKilnLineStage:
         block.aux_power_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.natural_gas_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.coal_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.biomass_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.hydrogen_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.fossil_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.combustion_in = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         setattr(block, self._output_var_name, pyo.Var(time_steps, within=pyo.NonNegativeReals))
         block.co2_process = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.co2_energy = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.co2_fossil = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.co2_biogenic = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.co2_physical = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+        block.co2_priced = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.co2_emission = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.operating_cost = pyo.Var(time_steps, within=pyo.Reals)
         block.operational_status = pyo.Var(time_steps, within=pyo.Binary)
@@ -1181,12 +1201,9 @@ class CementKilnLineStage:
             if fuel_type == CEMENT_ELECTRICITY:
                 generated_heat = b.power_in[t] * b.eta_electric
             elif fuel_type == CEMENT_FOSSIL:
-                generated_heat = (b.natural_gas_in[t] + b.coal_in[t]) * b.eta_fossil
+                generated_heat = b.combustion_in[t] * b.eta_fossil
             elif fuel_type == CEMENT_HYBRID_ELECTRICITY_FOSSIL:
-                generated_heat = (
-                    b.power_in[t] * b.eta_electric
-                    + (b.natural_gas_in[t] + b.coal_in[t]) * b.eta_fossil
-                )
+                generated_heat = b.power_in[t] * b.eta_electric + b.combustion_in[t] * b.eta_fossil
             else:
                 generated_heat = b.hydrogen_in[t] * b.eta_fossil
             return b.heat_out[t] == generated_heat + self._external_heat_expr(b, t)
@@ -1195,7 +1212,15 @@ class CementKilnLineStage:
 
             @block.Constraint(time_steps)
             def zero_non_electric_inputs(b: pyo.Block, t: int) -> pyo.Constraint:
-                return b.natural_gas_in[t] + b.coal_in[t] + b.hydrogen_in[t] + b.fossil_in[t] == 0
+                return (
+                    b.natural_gas_in[t]
+                    + b.coal_in[t]
+                    + b.biomass_in[t]
+                    + b.hydrogen_in[t]
+                    + b.fossil_in[t]
+                    + b.combustion_in[t]
+                    == 0
+                )
 
         elif fuel_type == CEMENT_FOSSIL:
 
@@ -1213,9 +1238,25 @@ class CementKilnLineStage:
 
             @block.Constraint(time_steps)
             def zero_electric_and_fossil_inputs(b: pyo.Block, t: int) -> pyo.Constraint:
-                return b.power_in[t] + b.natural_gas_in[t] + b.coal_in[t] + b.fossil_in[t] == 0
+                return (
+                    b.power_in[t]
+                    + b.natural_gas_in[t]
+                    + b.coal_in[t]
+                    + b.biomass_in[t]
+                    + b.fossil_in[t]
+                    + b.combustion_in[t]
+                    == 0
+                )
 
         if fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}:
+
+            @block.Constraint(time_steps)
+            def combustion_sum_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+                return b.combustion_in[t] == b.biomass_in[t] + b.fossil_in[t]
+
+            @block.Constraint(time_steps)
+            def biomass_split_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+                return b.biomass_in[t] == b.biomass_share * b.combustion_in[t]
 
             @block.Constraint(time_steps)
             def fossil_sum_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -1344,13 +1385,33 @@ class CementKilnLineStage:
 
         @block.Constraint(time_steps)
         def energy_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_energy[t] == (
+            return b.co2_energy[t] == b.co2_fossil[t] + b.co2_biogenic[t]
+
+        @block.Constraint(time_steps)
+        def fossil_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_fossil[t] == (
                 b.natural_gas_in[t] * b.natural_gas_co2_factor + b.coal_in[t] * b.coal_co2_factor
             )
 
         @block.Constraint(time_steps)
+        def biogenic_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_biogenic[t] == b.biomass_in[t] * b.biomass_co2_factor
+
+        @block.Constraint(time_steps)
+        def physical_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_physical[t] == b.co2_process[t] + b.co2_fossil[t] + b.co2_biogenic[t]
+
+        @block.Constraint(time_steps)
+        def priced_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_priced[t] == (
+                b.co2_process[t]
+                + b.co2_fossil[t]
+                + b.co2_biogenic[t] * b.biomass_co2_accounting_share
+            )
+
+        @block.Constraint(time_steps)
         def co2_emission_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_emission[t] == b.co2_process[t] + b.co2_energy[t]
+            return b.co2_emission[t] == b.co2_physical[t]
 
         @block.Constraint(time_steps)
         def operating_cost_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -1361,10 +1422,11 @@ class CementKilnLineStage:
                 cost += (
                     b.natural_gas_in[t] * model.natural_gas_price[t]
                     + b.coal_in[t] * model.coal_price[t]
+                    + b.biomass_in[t] * model.biomass_price[t]
                 )
             if fuel_type == HYDROGEN:
                 cost += b.hydrogen_in[t] * model.hydrogen_price[t]
-            cost += b.co2_emission[t] * model.co2_price[t]
+            cost += b.co2_priced[t] * model.co2_price[t]
             cost += self._additional_operating_cost_expr(model, b, t)
             return b.operating_cost[t] == cost
 
@@ -1382,12 +1444,15 @@ class CementPreheater(CementKilnLineStage):
     eta_electric: float = 0.98
     eta_fossil: float = 0.90
     fossil_ng_share: float = 1.0
+    biomass_share: float = 0.0
     max_electric_power_mw: float | None = None
     specific_electricity_aux_mwh_per_t: float = 0.0
     ramp_up_mw_per_step: float | None = None
     ramp_down_mw_per_step: float | None = None
     natural_gas_co2_factor_t_per_mwh: float = 0.202
     coal_co2_factor_t_per_mwh: float = 0.341
+    biomass_co2_factor_t_per_mwh: float = 0.0
+    biomass_co2_accounting_share: float = 0.0
     min_operating_steps: int = 0
     min_down_steps: int = 0
     initial_operational_status: int = 1
@@ -1398,6 +1463,7 @@ class CementPreheater(CementKilnLineStage):
             _first_present(row.get("max_heat_out"), row.get("max_power")),
             "max_heat_out",
         )
+        biomass_share = _as_float(row.get("biomass_share"), "biomass_share", default=0.0)
         return cls(
             max_heat_out_mw=max_heat,
             specific_heat_demand_mwh_per_t=_as_float(
@@ -1408,6 +1474,7 @@ class CementPreheater(CementKilnLineStage):
             eta_electric=_as_float(row.get("eta_electric"), "eta_electric", default=0.98),
             eta_fossil=_as_float(row.get("eta_fossil"), "eta_fossil", default=0.90),
             fossil_ng_share=_as_float(row.get("fossil_ng_share"), "fossil_ng_share", default=1.0),
+            biomass_share=biomass_share,
             max_electric_power_mw=_as_optional_float(
                 _first_present(row.get("max_electric_power"), row.get("max_power_electric"))
             ),
@@ -1423,6 +1490,16 @@ class CementPreheater(CementKilnLineStage):
             ),
             coal_co2_factor_t_per_mwh=_as_float(
                 row.get("coal_co2_factor"), "coal_co2_factor", default=0.341
+            ),
+            biomass_co2_factor_t_per_mwh=_as_float(
+                row.get("biomass_co2_factor"),
+                "biomass_co2_factor",
+                default=None if biomass_share > 0.0 else 0.0,
+            ),
+            biomass_co2_accounting_share=_as_float(
+                row.get("biomass_co2_accounting_share"),
+                "biomass_co2_accounting_share",
+                default=0.0,
             ),
             min_operating_steps=_as_int(
                 _first_present(row.get("min_operating_steps"), row.get("min_operating_time")),
@@ -1469,6 +1546,7 @@ class SimpleCementCalciner(CementKilnLineStage):
     eta_electric: float = 0.95
     eta_fossil: float = 0.90
     fossil_ng_share: float = 1.0
+    biomass_share: float = 0.0
     max_electric_power_mw: float | None = None
     specific_electricity_aux_mwh_per_t: float = 0.0
     ramp_up_mw_per_step: float | None = None
@@ -1476,6 +1554,8 @@ class SimpleCementCalciner(CementKilnLineStage):
     calcination_emission_factor_t_per_t: float = 0.525
     natural_gas_co2_factor_t_per_mwh: float = 0.202
     coal_co2_factor_t_per_mwh: float = 0.341
+    biomass_co2_factor_t_per_mwh: float = 0.0
+    biomass_co2_accounting_share: float = 0.0
     min_operating_steps: int = 0
     min_down_steps: int = 0
     initial_operational_status: int = 1
@@ -1486,6 +1566,7 @@ class SimpleCementCalciner(CementKilnLineStage):
             _first_present(row.get("max_heat_out"), row.get("max_power")),
             "max_heat_out",
         )
+        biomass_share = _as_float(row.get("biomass_share"), "biomass_share", default=0.0)
         return cls(
             max_heat_out_mw=max_heat,
             specific_heat_demand_mwh_per_t=_as_float(
@@ -1496,6 +1577,7 @@ class SimpleCementCalciner(CementKilnLineStage):
             eta_electric=_as_float(row.get("eta_electric"), "eta_electric", default=0.95),
             eta_fossil=_as_float(row.get("eta_fossil"), "eta_fossil", default=0.90),
             fossil_ng_share=_as_float(row.get("fossil_ng_share"), "fossil_ng_share", default=1.0),
+            biomass_share=biomass_share,
             max_electric_power_mw=_as_optional_float(
                 _first_present(row.get("max_electric_power"), row.get("max_power_electric"))
             ),
@@ -1516,6 +1598,16 @@ class SimpleCementCalciner(CementKilnLineStage):
             ),
             coal_co2_factor_t_per_mwh=_as_float(
                 row.get("coal_co2_factor"), "coal_co2_factor", default=0.341
+            ),
+            biomass_co2_factor_t_per_mwh=_as_float(
+                row.get("biomass_co2_factor"),
+                "biomass_co2_factor",
+                default=None if biomass_share > 0.0 else 0.0,
+            ),
+            biomass_co2_accounting_share=_as_float(
+                row.get("biomass_co2_accounting_share"),
+                "biomass_co2_accounting_share",
+                default=0.0,
             ),
             min_operating_steps=_as_int(
                 _first_present(row.get("min_operating_steps"), row.get("min_operating_time")),
@@ -1624,13 +1716,35 @@ class LEILACCementCalciner(SimpleCementCalciner):
 
         @block.Constraint(time_steps)
         def energy_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_energy[t] == (
+            return b.co2_energy[t] == b.co2_fossil[t] + b.co2_biogenic[t]
+
+        @block.Constraint(time_steps)
+        def fossil_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_fossil[t] == (
                 b.natural_gas_in[t] * b.natural_gas_co2_factor + b.coal_in[t] * b.coal_co2_factor
             )
 
         @block.Constraint(time_steps)
+        def biogenic_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_biogenic[t] == b.biomass_in[t] * b.biomass_co2_factor
+
+        @block.Constraint(time_steps)
+        def physical_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_physical[t] == (
+                b.co2_process_residual[t] + b.co2_fossil[t] + b.co2_biogenic[t]
+            )
+
+        @block.Constraint(time_steps)
+        def priced_co2_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.co2_priced[t] == (
+                b.co2_process_residual[t]
+                + b.co2_fossil[t]
+                + b.co2_biogenic[t] * b.biomass_co2_accounting_share
+            )
+
+        @block.Constraint(time_steps)
         def co2_emission_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.co2_emission[t] == b.co2_process_residual[t] + b.co2_energy[t]
+            return b.co2_emission[t] == b.co2_physical[t]
 
         @block.Constraint(time_steps)
         def operating_cost_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -1641,10 +1755,11 @@ class LEILACCementCalciner(SimpleCementCalciner):
                 cost += (
                     b.natural_gas_in[t] * model.natural_gas_price[t]
                     + b.coal_in[t] * model.coal_price[t]
+                    + b.biomass_in[t] * model.biomass_price[t]
                 )
             if fuel_type == HYDROGEN:
                 cost += b.hydrogen_in[t] * model.hydrogen_price[t]
-            cost += b.co2_emission[t] * model.co2_price[t]
+            cost += b.co2_priced[t] * model.co2_price[t]
             cost += self._additional_operating_cost_expr(model, b, t)
             return b.operating_cost[t] == cost
 
@@ -1662,6 +1777,7 @@ class OxyfuelCementCalciner(SimpleCementCalciner):
 
     natural_gas_oxygen_demand_t_per_mwh: float = 0.0
     coal_oxygen_demand_t_per_mwh: float = 0.0
+    biomass_oxygen_demand_t_per_mwh: float = 0.0
     hydrogen_oxygen_demand_t_per_mwh: float = 0.0
     specific_oxygen_electricity_consumption_mwh_per_t: float = 0.0
 
@@ -1673,14 +1789,26 @@ class OxyfuelCementCalciner(SimpleCementCalciner):
                 "Use simple_calciner for a fully electric calciner."
             )
         if self.fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}:
-            if self.fossil_ng_share > 0.0 and self.natural_gas_oxygen_demand_t_per_mwh <= 0.0:
+            if (
+                self.biomass_share < 1.0
+                and self.fossil_ng_share > 0.0
+                and self.natural_gas_oxygen_demand_t_per_mwh <= 0.0
+            ):
                 raise ValueError(
                     "natural_gas_oxygen_demand must be positive when the oxyfuel calciner "
                     "uses natural gas."
                 )
-            if self.fossil_ng_share < 1.0 and self.coal_oxygen_demand_t_per_mwh <= 0.0:
+            if (
+                self.biomass_share < 1.0
+                and self.fossil_ng_share < 1.0
+                and self.coal_oxygen_demand_t_per_mwh <= 0.0
+            ):
                 raise ValueError(
                     "coal_oxygen_demand must be positive when the oxyfuel calciner uses coal."
+                )
+            if self.biomass_share > 0.0 and self.biomass_oxygen_demand_t_per_mwh <= 0.0:
+                raise ValueError(
+                    "biomass_oxygen_demand must be positive when the oxyfuel calciner uses biomass."
                 )
         if self.fuel_type == HYDROGEN and self.hydrogen_oxygen_demand_t_per_mwh <= 0.0:
             raise ValueError(
@@ -1694,8 +1822,11 @@ class OxyfuelCementCalciner(SimpleCementCalciner):
         """Parse the shared calciner fields via the parent, then this stage's own."""
         base = SimpleCementCalciner.from_row(row)
         fossil_route = base.fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}
-        natural_gas_required = fossil_route and base.fossil_ng_share > 0.0
-        coal_required = fossil_route and base.fossil_ng_share < 1.0
+        natural_gas_required = (
+            fossil_route and base.biomass_share < 1.0 and base.fossil_ng_share > 0.0
+        )
+        coal_required = fossil_route and base.biomass_share < 1.0 and base.fossil_ng_share < 1.0
+        biomass_required = fossil_route and base.biomass_share > 0.0
         hydrogen_required = base.fuel_type == HYDROGEN
 
         return cls(
@@ -1709,6 +1840,11 @@ class OxyfuelCementCalciner(SimpleCementCalciner):
                 row.get("coal_oxygen_demand"),
                 "coal_oxygen_demand",
                 default=None if coal_required else 0.0,
+            ),
+            biomass_oxygen_demand_t_per_mwh=_as_float(
+                row.get("biomass_oxygen_demand"),
+                "biomass_oxygen_demand",
+                default=None if biomass_required else 0.0,
             ),
             hydrogen_oxygen_demand_t_per_mwh=_as_float(
                 _first_present(row.get("hydrogen_oxygen_demand"), row.get("h2_oxygen_demand")),
@@ -1732,6 +1868,7 @@ class OxyfuelCementCalciner(SimpleCementCalciner):
             initialize=self.natural_gas_oxygen_demand_t_per_mwh
         )
         block.coal_oxygen_demand = pyo.Param(initialize=self.coal_oxygen_demand_t_per_mwh)
+        block.biomass_oxygen_demand = pyo.Param(initialize=self.biomass_oxygen_demand_t_per_mwh)
         block.hydrogen_oxygen_demand = pyo.Param(initialize=self.hydrogen_oxygen_demand_t_per_mwh)
         block.specific_oxygen_electricity_consumption = pyo.Param(
             initialize=self.specific_oxygen_electricity_consumption_mwh_per_t
@@ -1755,6 +1892,7 @@ class OxyfuelCementCalciner(SimpleCementCalciner):
             return b.oxygen_demand[t] == (
                 b.natural_gas_in[t] * b.natural_gas_oxygen_demand
                 + b.coal_in[t] * b.coal_oxygen_demand
+                + b.biomass_in[t] * b.biomass_oxygen_demand
                 + b.hydrogen_in[t] * b.hydrogen_oxygen_demand
             )
 
@@ -1789,12 +1927,15 @@ class SimpleCementKiln(CementKilnLineStage):
     eta_electric: float = 0.95
     eta_fossil: float = 0.90
     fossil_ng_share: float = 1.0
+    biomass_share: float = 0.0
     max_electric_power_mw: float | None = None
     specific_electricity_aux_mwh_per_t: float = 0.0
     ramp_up_mw_per_step: float | None = None
     ramp_down_mw_per_step: float | None = None
     natural_gas_co2_factor_t_per_mwh: float = 0.202
     coal_co2_factor_t_per_mwh: float = 0.341
+    biomass_co2_factor_t_per_mwh: float = 0.0
+    biomass_co2_accounting_share: float = 0.0
     min_operating_steps: int = 0
     min_down_steps: int = 0
     initial_operational_status: int = 1
@@ -1805,6 +1946,7 @@ class SimpleCementKiln(CementKilnLineStage):
             _first_present(row.get("max_heat_out"), row.get("max_power")),
             "max_heat_out",
         )
+        biomass_share = _as_float(row.get("biomass_share"), "biomass_share", default=0.0)
         return cls(
             max_heat_out_mw=max_heat,
             specific_heat_demand_mwh_per_t=_as_float(
@@ -1815,6 +1957,7 @@ class SimpleCementKiln(CementKilnLineStage):
             eta_electric=_as_float(row.get("eta_electric"), "eta_electric", default=0.95),
             eta_fossil=_as_float(row.get("eta_fossil"), "eta_fossil", default=0.90),
             fossil_ng_share=_as_float(row.get("fossil_ng_share"), "fossil_ng_share", default=1.0),
+            biomass_share=biomass_share,
             max_electric_power_mw=_as_optional_float(
                 _first_present(row.get("max_electric_power"), row.get("max_power_electric"))
             ),
@@ -1830,6 +1973,16 @@ class SimpleCementKiln(CementKilnLineStage):
             ),
             coal_co2_factor_t_per_mwh=_as_float(
                 row.get("coal_co2_factor"), "coal_co2_factor", default=0.341
+            ),
+            biomass_co2_factor_t_per_mwh=_as_float(
+                row.get("biomass_co2_factor"),
+                "biomass_co2_factor",
+                default=None if biomass_share > 0.0 else 0.0,
+            ),
+            biomass_co2_accounting_share=_as_float(
+                row.get("biomass_co2_accounting_share"),
+                "biomass_co2_accounting_share",
+                default=0.0,
             ),
             min_operating_steps=_as_int(
                 _first_present(row.get("min_operating_steps"), row.get("min_operating_time")),
@@ -1874,6 +2027,7 @@ class OxyfuelCementKiln(SimpleCementKiln):
 
     natural_gas_oxygen_demand_t_per_mwh: float = 0.0
     coal_oxygen_demand_t_per_mwh: float = 0.0
+    biomass_oxygen_demand_t_per_mwh: float = 0.0
     hydrogen_oxygen_demand_t_per_mwh: float = 0.0
     specific_oxygen_electricity_consumption_mwh_per_t: float = 0.0
 
@@ -1884,14 +2038,26 @@ class OxyfuelCementKiln(SimpleCementKiln):
                 "Use simple_kiln for a fully electric kiln."
             )
         if self.fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}:
-            if self.fossil_ng_share > 0.0 and self.natural_gas_oxygen_demand_t_per_mwh <= 0.0:
+            if (
+                self.biomass_share < 1.0
+                and self.fossil_ng_share > 0.0
+                and self.natural_gas_oxygen_demand_t_per_mwh <= 0.0
+            ):
                 raise ValueError(
                     "natural_gas_oxygen_demand must be positive when the oxyfuel kiln "
                     "uses natural gas."
                 )
-            if self.fossil_ng_share < 1.0 and self.coal_oxygen_demand_t_per_mwh <= 0.0:
+            if (
+                self.biomass_share < 1.0
+                and self.fossil_ng_share < 1.0
+                and self.coal_oxygen_demand_t_per_mwh <= 0.0
+            ):
                 raise ValueError(
                     "coal_oxygen_demand must be positive when the oxyfuel kiln uses coal."
+                )
+            if self.biomass_share > 0.0 and self.biomass_oxygen_demand_t_per_mwh <= 0.0:
+                raise ValueError(
+                    "biomass_oxygen_demand must be positive when the oxyfuel kiln uses biomass."
                 )
         if self.fuel_type == HYDROGEN and self.hydrogen_oxygen_demand_t_per_mwh <= 0.0:
             raise ValueError(
@@ -1905,8 +2071,11 @@ class OxyfuelCementKiln(SimpleCementKiln):
         """Parse the shared kiln fields via the parent, then oxygen parameters."""
         base = SimpleCementKiln.from_row(row)
         fossil_route = base.fuel_type in {CEMENT_FOSSIL, CEMENT_HYBRID_ELECTRICITY_FOSSIL}
-        natural_gas_required = fossil_route and base.fossil_ng_share > 0.0
-        coal_required = fossil_route and base.fossil_ng_share < 1.0
+        natural_gas_required = (
+            fossil_route and base.biomass_share < 1.0 and base.fossil_ng_share > 0.0
+        )
+        coal_required = fossil_route and base.biomass_share < 1.0 and base.fossil_ng_share < 1.0
+        biomass_required = fossil_route and base.biomass_share > 0.0
         hydrogen_required = base.fuel_type == HYDROGEN
 
         return cls(
@@ -1920,6 +2089,11 @@ class OxyfuelCementKiln(SimpleCementKiln):
                 row.get("coal_oxygen_demand"),
                 "coal_oxygen_demand",
                 default=None if coal_required else 0.0,
+            ),
+            biomass_oxygen_demand_t_per_mwh=_as_float(
+                row.get("biomass_oxygen_demand"),
+                "biomass_oxygen_demand",
+                default=None if biomass_required else 0.0,
             ),
             hydrogen_oxygen_demand_t_per_mwh=_as_float(
                 _first_present(row.get("hydrogen_oxygen_demand"), row.get("h2_oxygen_demand")),
@@ -1938,6 +2112,7 @@ class OxyfuelCementKiln(SimpleCementKiln):
             initialize=self.natural_gas_oxygen_demand_t_per_mwh
         )
         block.coal_oxygen_demand = pyo.Param(initialize=self.coal_oxygen_demand_t_per_mwh)
+        block.biomass_oxygen_demand = pyo.Param(initialize=self.biomass_oxygen_demand_t_per_mwh)
         block.hydrogen_oxygen_demand = pyo.Param(initialize=self.hydrogen_oxygen_demand_t_per_mwh)
         block.specific_oxygen_electricity_consumption = pyo.Param(
             initialize=self.specific_oxygen_electricity_consumption_mwh_per_t
@@ -1961,6 +2136,7 @@ class OxyfuelCementKiln(SimpleCementKiln):
             return b.oxygen_demand[t] == (
                 b.natural_gas_in[t] * b.natural_gas_oxygen_demand
                 + b.coal_in[t] * b.coal_oxygen_demand
+                + b.biomass_in[t] * b.biomass_oxygen_demand
                 + b.hydrogen_in[t] * b.hydrogen_oxygen_demand
             )
 

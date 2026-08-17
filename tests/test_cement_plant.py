@@ -97,6 +97,78 @@ def test_cement_preheater_calciner_kiln_solve_and_balances(case_dir: Path) -> No
     assert result["co2_emissions_t"].sum() > 0
 
 
+def test_simple_cement_route_splits_biomass_ng_and_coal_and_prices_accounted_co2(
+    case_dir: Path,
+) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    plant = CementPlant.from_rows("cement_1", _biomass_cement_rows())
+    forecasts = _cement_forecasts(include_coal=True)
+    forecasts["biomass_price"] = 25.0
+
+    result = plant.solve_horizon(config, forecasts, _signals())
+
+    combustion = (
+        result["biomass_consumption_MWh"]
+        + result["natural_gas_consumption_MWh"]
+        + result["coal_consumption_MWh"]
+    )
+    assert result["biomass_consumption_MWh"].to_numpy() == pytest.approx(
+        combustion.to_numpy() * 0.40
+    )
+    assert result["natural_gas_consumption_MWh"].to_numpy() == pytest.approx(
+        combustion.to_numpy() * 0.15
+    )
+    assert result["coal_consumption_MWh"].to_numpy() == pytest.approx(combustion.to_numpy() * 0.45)
+
+    expected_fossil_co2 = (
+        result["natural_gas_consumption_MWh"] * 0.2 + result["coal_consumption_MWh"] * 0.3
+    )
+    expected_biogenic_co2 = result["biomass_consumption_MWh"] * 0.4
+    expected_process_co2 = result["clinker_output_t"] * 0.5
+    assert result["co2_fossil_t"].to_numpy() == pytest.approx(expected_fossil_co2.to_numpy())
+    assert result["co2_biogenic_t"].to_numpy() == pytest.approx(expected_biogenic_co2.to_numpy())
+    assert result["co2_emissions_t"].to_numpy() == pytest.approx(
+        (expected_process_co2 + expected_fossil_co2 + expected_biogenic_co2).to_numpy()
+    )
+    assert result["co2_priced_t"].to_numpy() == pytest.approx(
+        (expected_process_co2 + expected_fossil_co2).to_numpy()
+    )
+
+    expected_cost = (
+        result["natural_gas_consumption_MWh"] * forecasts["natural_gas_price"]
+        + result["coal_consumption_MWh"] * forecasts["coal_price"]
+        + result["biomass_consumption_MWh"] * forecasts["biomass_price"]
+        + result["co2_priced_t"] * forecasts["co2_price"]
+    )
+    assert result["variable_cost_EUR"].to_numpy() == pytest.approx(expected_cost.to_numpy())
+
+
+def test_ccs_receives_physical_biogenic_co2(case_dir: Path) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    rows = pd.concat([_biomass_cement_rows(), _amine_ccs_rows()], ignore_index=True)
+    plant = CementPlant.from_rows("cement_1", rows)
+    forecasts = _cement_forecasts(include_coal=True)
+    forecasts["biomass_price"] = 25.0
+
+    result = plant.solve_horizon(config, forecasts, _signals())
+
+    assert result["co2_biogenic_t"].sum() > 0.0
+    assert result["ccs_co2_input_t"].to_numpy() == pytest.approx(
+        result["gross_co2_emissions_t"].to_numpy()
+    )
+    assert result["co2_captured_t"].to_numpy() == pytest.approx(
+        result["gross_co2_emissions_t"].to_numpy() * 0.9
+    )
+
+
+def test_biomass_share_requires_a_physical_co2_factor() -> None:
+    rows = _biomass_cement_rows()
+    rows["biomass_co2_factor"] = float("nan")
+
+    with pytest.raises(ValueError, match="biomass_co2_factor"):
+        CementPlant.from_rows("cement_1", rows)
+
+
 def test_cement_hydrogen_with_electrolyser_is_constrained_by_electrolyser_output(
     case_dir: Path,
 ) -> None:
@@ -143,6 +215,17 @@ def test_cement_forecast_discovery_and_conditional_coal_price(case_dir: Path) ->
     coal_rows.loc[coal_rows["technology"] == "simple_kiln", "fossil_ng_share"] = 0.0
     coal_required = loader.required_forecast_columns(coal_rows)
     assert "coal_price" in coal_required
+
+    biomass_required = loader.required_forecast_columns(_biomass_cement_rows())
+    assert "biomass_price" in biomass_required
+    assert "coal_price" in biomass_required
+
+    pure_biomass_rows = _biomass_cement_rows()
+    pure_biomass_rows["biomass_share"] = 1.0
+    pure_biomass_rows["fossil_ng_share"] = 0.0
+    pure_biomass_required = loader.required_forecast_columns(pure_biomass_rows)
+    assert "biomass_price" in pure_biomass_required
+    assert "coal_price" not in pure_biomass_required
 
 
 def test_cement_runner_uses_day_ahead_price_and_writes_outputs(tmp_path: Path) -> None:
@@ -964,6 +1047,19 @@ def _cement_rows() -> pd.DataFrame:
             },
         ]
     )
+
+
+def _biomass_cement_rows() -> pd.DataFrame:
+    rows = _cement_rows()
+    rows["fuel_type"] = "fossil"
+    rows["eta_fossil"] = 1.0
+    rows["biomass_share"] = 0.40
+    rows["fossil_ng_share"] = 0.25
+    rows["natural_gas_co2_factor"] = 0.2
+    rows["coal_co2_factor"] = 0.3
+    rows["biomass_co2_factor"] = 0.4
+    rows["biomass_co2_accounting_share"] = 0.0
+    return rows
 
 
 def _rows_for_stages(stages: list[str]) -> pd.DataFrame:
