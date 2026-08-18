@@ -181,6 +181,7 @@ class CaseConfig:
             "electrified_steel_rule_based",
             "cement_cost_minimization",
             "electrified_cement",
+            "hybrid_strategy_cement",
             "electrified_cement_rule_based",
         }
         strategy_name = str(self.case["strategy"].get("name", ""))
@@ -198,6 +199,7 @@ class CaseConfig:
             "electrified_steel_rule_based",
             "cement_cost_minimization",
             "electrified_cement",
+            "hybrid_strategy_cement",
             "electrified_cement_rule_based",
         }:
             if not bool(self.case["markets"].get("day_ahead", {}).get("enabled", False)):

@@ -38,10 +38,10 @@ from flexi_mod.strategies.electrified_steel_rule_based_strategy import (
 COAL_PRICE_SIGNAL = "coal_price"
 
 
-class ElectrifiedCementRuleBasedStrategy(
+class HybridStrategyCement(
     ElectrifiedCementStrategy, ElectrifiedSteelRuleBasedStrategy
 ):
-    """DA/aFRR market timing decided by rules instead of a joint MILP, for clinker.
+    """DA/aFRR strategy for hybrid electricity/fuel switching in a clinker line.
 
     Takes its market configuration and commodity columns from
     :class:`ElectrifiedCementStrategy`, and its ``dispatch`` from the rule-based steel
@@ -68,3 +68,8 @@ class ElectrifiedCementRuleBasedStrategy(
             rdf_price_col=RDF_PRICE_SIGNAL,
             co2_price_col=CO2_PRICE_SIGNAL,
         )
+
+
+# Backward-compatible import alias for existing user code. New case configurations
+# should use the clearer ``hybrid_strategy_cement`` strategy identifier.
+ElectrifiedCementRuleBasedStrategy = HybridStrategyCement

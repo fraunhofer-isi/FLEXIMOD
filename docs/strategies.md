@@ -820,7 +820,7 @@ An all-fossil route reports no substitution and runs the Case B path.
 
 ### Rule-based variant
 
-`electrified_cement_rule_based` shares everything above but decides production
+`hybrid_strategy_cement` shares everything above but decides production
 timing first, then sizes capacity from whatever that fixed schedule leaves spare.
 It is several times faster. Two consequences matter when reading its output:
 
