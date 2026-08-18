@@ -17,11 +17,10 @@ from flexi_mod.plants.technologies import (
 )
 
 
-def test_amine_ccs_builds_from_csv_aliases_and_scales_capture_capacity() -> None:
+def test_amine_ccs_uses_plant_computed_capture_capacity() -> None:
     ccs = AmineCCS.from_row(
         pd.Series(
             {
-                "max_co2_capture_rate": 2.0,
                 "capture_efficiency": 0.9,
                 "specific_capture_electricity": 0.2,
                 "specific_capture_heat": 1.0,
@@ -37,7 +36,12 @@ def test_amine_ccs_builds_from_csv_aliases_and_scales_capture_capacity() -> None
     model.co2_price = pyo.Param(model.T, initialize={0: 80.0})
     model.ccs = pyo.Block()
 
-    ccs.add_to_model(model, model.ccs, model.T, {"dt_hours": 0.25})
+    ccs.add_to_model(
+        model,
+        model.ccs,
+        model.T,
+        {"dt_hours": 0.25, "max_capture_rate_t_per_h": 2.0},
+    )
 
     assert pyo.value(model.ccs.max_capture_per_step) == pytest.approx(0.5)
     assert pyo.value(model.ccs.specific_electricity_consumption) == pytest.approx(0.2)
@@ -48,7 +52,6 @@ def test_amine_ccs_builds_from_csv_aliases_and_scales_capture_capacity() -> None
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("max_capture_rate_t_per_h", 0.0, "must be positive"),
         ("capture_efficiency", 1.01, "must be between 0 and 1"),
         ("minimum_capture_fraction", 0.91, "must satisfy"),
         ("specific_electricity_consumption_mwh_per_t", -0.01, "must be non-negative"),
@@ -59,7 +62,6 @@ def test_amine_ccs_builds_from_csv_aliases_and_scales_capture_capacity() -> None
 )
 def test_amine_ccs_rejects_invalid_parameters(field: str, value: float, message: str) -> None:
     parameters = {
-        "max_capture_rate_t_per_h": 2.0,
         "capture_efficiency": 0.9,
         "specific_electricity_consumption_mwh_per_t": 0.2,
         "specific_heat_consumption_mwh_per_t": 1.0,
@@ -77,7 +79,6 @@ def test_cryogenic_ccs_builds_without_a_heat_requirement() -> None:
     ccs = CryogenicCCS.from_row(
         pd.Series(
             {
-                "max_co2_capture_rate": 2.0,
                 "capture_efficiency": 0.9,
                 "specific_capture_electricity": 0.35,
                 "minimum_capture_fraction": 0.5,
@@ -91,7 +92,12 @@ def test_cryogenic_ccs_builds_without_a_heat_requirement() -> None:
     model.co2_price = pyo.Param(model.T, initialize={0: 80.0})
     model.ccs = pyo.Block()
 
-    ccs.add_to_model(model, model.ccs, model.T, {"dt_hours": 0.25})
+    ccs.add_to_model(
+        model,
+        model.ccs,
+        model.T,
+        {"dt_hours": 0.25, "max_capture_rate_t_per_h": 2.0},
+    )
 
     assert pyo.value(model.ccs.max_capture_per_step) == pytest.approx(0.5)
     assert pyo.value(model.ccs.specific_electricity_consumption) == pytest.approx(0.35)
@@ -102,7 +108,6 @@ def test_cryogenic_ccs_builds_without_a_heat_requirement() -> None:
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("max_capture_rate_t_per_h", 0.0, "must be positive"),
         ("capture_efficiency", -0.01, "must be between 0 and 1"),
         ("minimum_capture_fraction", 0.91, "must satisfy"),
         ("specific_electricity_consumption_mwh_per_t", -0.01, "must be non-negative"),
@@ -111,7 +116,6 @@ def test_cryogenic_ccs_builds_without_a_heat_requirement() -> None:
 )
 def test_cryogenic_ccs_rejects_invalid_parameters(field: str, value: float, message: str) -> None:
     parameters = {
-        "max_capture_rate_t_per_h": 2.0,
         "capture_efficiency": 0.9,
         "specific_electricity_consumption_mwh_per_t": 0.35,
         "minimum_capture_fraction": 0.5,
@@ -127,7 +131,6 @@ def test_oxyfuel_ccs_builds_without_oxygen_or_heat_requirements() -> None:
     ccs = OxyfuelCCS.from_row(
         pd.Series(
             {
-                "max_co2_capture_rate": 2.0,
                 "recovery_efficiency": 0.95,
                 "specific_capture_electricity": 0.3,
                 "minimum_recovery_fraction": 0.8,
@@ -141,7 +144,12 @@ def test_oxyfuel_ccs_builds_without_oxygen_or_heat_requirements() -> None:
     model.co2_price = pyo.Param(model.T, initialize={0: 80.0})
     model.ccs = pyo.Block()
 
-    ccs.add_to_model(model, model.ccs, model.T, {"dt_hours": 0.25})
+    ccs.add_to_model(
+        model,
+        model.ccs,
+        model.T,
+        {"dt_hours": 0.25, "max_capture_rate_t_per_h": 2.0},
+    )
 
     assert pyo.value(model.ccs.max_capture_per_step) == pytest.approx(0.5)
     assert pyo.value(model.ccs.recovery_efficiency) == pytest.approx(0.95)
@@ -154,7 +162,6 @@ def test_oxyfuel_ccs_builds_without_oxygen_or_heat_requirements() -> None:
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("max_capture_rate_t_per_h", 0.0, "must be positive"),
         ("recovery_efficiency", 1.01, "must be between 0 and 1"),
         ("minimum_recovery_fraction", 0.96, "must satisfy"),
         ("specific_electricity_consumption_mwh_per_t", -0.01, "must be non-negative"),
@@ -163,7 +170,6 @@ def test_oxyfuel_ccs_builds_without_oxygen_or_heat_requirements() -> None:
 )
 def test_oxyfuel_ccs_rejects_invalid_parameters(field: str, value: float, message: str) -> None:
     parameters = {
-        "max_capture_rate_t_per_h": 2.0,
         "recovery_efficiency": 0.95,
         "specific_electricity_consumption_mwh_per_t": 0.3,
         "minimum_recovery_fraction": 0.8,

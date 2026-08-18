@@ -275,12 +275,23 @@ def test_rdf_excl_biomass_share_is_not_used_as_mixed_rdf() -> None:
 def test_ccs_receives_rdf_fossil_and_biogenic_co2(case_dir: Path) -> None:
     config = CaseConfig.from_case_dir(case_dir)
     ccs_rows = _amine_ccs_rows()
-    ccs_rows["max_capture_rate"] = 20.0
     rows = pd.concat([_rdf_cement_rows(), ccs_rows], ignore_index=True)
     plant = CementPlant.from_rows("cement_1", rows)
     forecasts = _cement_forecasts(include_coal=True)
     forecasts["biomass_price"] = 25.0
     forecasts["rdf_price"] = 10.0
+
+    fossil_share = 1.0 - 0.245 - 0.489
+    fossil_factor = (0.009 / 0.266) * 0.2 + (0.257 / 0.266) * 0.3
+    physical_combustion_factor = (
+        fossil_share * fossil_factor + 0.245 * 0.4 + 0.489 * (0.243 + 0.3)
+    )
+    expected_maximum_capture_rate = 0.9 * (
+        12.5 * 0.5 + (1.875 + 6.25 + 10.0) * physical_combustion_factor
+    )
+    assert plant._maximum_ccs_capture_rate_t_per_h("amine_ccs") == pytest.approx(
+        expected_maximum_capture_rate
+    )
 
     result = plant.solve_horizon(config, forecasts, _signals())
 
@@ -917,9 +928,24 @@ def test_amine_ccs_is_registered_without_changing_the_kiln_route() -> None:
 
     assert isinstance(plant.components["amine_ccs"], AmineCCS)
     assert plant.cement_route == "preheater_simple_calciner_simple_kiln"
+    expected_maximum_capture_rate = 0.9 * (12.5 * 0.5 + 6.25 * 0.2 + 10.0 * 0.2)
     assert plant.afrr_aggregate_max_power_mw() == pytest.approx(
-        baseline.afrr_aggregate_max_power_mw() + 4.0 * 0.2
+        baseline.afrr_aggregate_max_power_mw() + expected_maximum_capture_rate * 0.2
     )
+
+
+def test_cement_stage_reads_explicit_electrical_ratings() -> None:
+    rows = _cement_rows()
+    is_preheater = rows["technology"] == "preheater"
+    rows.loc[is_preheater, "max_power"] = 4.0
+    rows.loc[is_preheater, "min_power"] = 1.0
+
+    plant = CementPlant.from_rows("cement_1", rows)
+    preheater = plant.components["preheater"]
+
+    assert preheater.max_heat_out_mw == pytest.approx(10.0)
+    assert preheater.max_electric_power_mw == pytest.approx(4.0)
+    assert preheater.min_electric_power_mw == pytest.approx(1.0)
 
 
 def test_amine_ccs_captures_gross_plant_emissions_and_uses_energy(case_dir: Path) -> None:
@@ -1293,7 +1319,6 @@ def _amine_ccs_rows() -> pd.DataFrame:
                 "node": "north",
                 "objective": "min_variable_cost",
                 "technology": "amine_ccs",
-                "max_capture_rate": 4.0,
                 "capture_efficiency": 0.9,
                 "minimum_capture_fraction": 0.9,
                 "specific_electricity_consumption": 0.2,
@@ -1314,7 +1339,6 @@ def _cryogenic_ccs_rows() -> pd.DataFrame:
                 "node": "north",
                 "objective": "min_variable_cost",
                 "technology": "cryogenic_ccs",
-                "max_capture_rate": 4.0,
                 "capture_efficiency": 0.9,
                 "minimum_capture_fraction": 0.9,
                 "specific_electricity_consumption": 0.35,
@@ -1333,7 +1357,6 @@ def _oxyfuel_ccs_rows() -> pd.DataFrame:
                 "node": "north",
                 "objective": "min_variable_cost",
                 "technology": "oxyfuel_ccs",
-                "max_capture_rate": 4.0,
                 "recovery_efficiency": 0.9,
                 "minimum_recovery_fraction": 0.9,
                 "specific_electricity_consumption": 0.3,

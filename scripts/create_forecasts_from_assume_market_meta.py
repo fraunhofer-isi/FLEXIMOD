@@ -21,6 +21,7 @@ aligned by calendar month/day/time:
 * ``hard coal for industry`` -> ``coal_price``
 * ``natural gas for industry`` -> ``natural_gas_price``
 * ``solid biomass for industry`` -> ``biomass_price``
+* ``naphtha for industry`` -> ``naphtha_price``
 * ``co2`` -> ``co2_price``
 * ``hydrogen`` -> ``hydrogen_price``
 
@@ -75,6 +76,7 @@ FUEL_PRICE_COLUMNS = {
     "hard coal for industry": "coal_price",
     "natural gas for industry": "natural_gas_price",
     "solid biomass for industry": "biomass_price",
+    "naphtha for industry": "naphtha_price",
     "co2": "co2_price",
     "hydrogen": "hydrogen_price",
 }

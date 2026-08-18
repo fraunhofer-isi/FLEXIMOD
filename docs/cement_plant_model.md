@@ -366,7 +366,18 @@ co2_residual = co2_priced_residual + co2_unpriced_residual
 ```
 
 The configured capture/recovery minimum and maximum fractions apply independently to
-the priced and unpriced streams, while `max_capture_rate` limits total physical capture.
+the priced and unpriced streams. The plant derives the installed maximum capture rate
+from the maximum common clinker throughput and the corresponding maximum physical CO2
+stream:
+
+```text
+max_capture_rate = capture_efficiency Ã— max_physical_co2_input_rate
+```
+
+For oxyfuel CCS, `recovery_efficiency` replaces `capture_efficiency`. Physical process,
+fossil and biogenic CO2 are all included. The result is exposed on the CCS block as
+`max_capture_per_step`; it is not a literature input in `plants.csv`.
+
 This is a linear accounting formulation. If the configured minimum equals the maximum
 efficiency/recovery fraction, each component is captured at exactly that fraction. If
 capture is allowed to vary between the bounds, the cost optimisation may preferentially
@@ -386,8 +397,8 @@ This prevents zero-rated biogenic CO2 from incorrectly earning a full ETS credit
 ### Amine CCS
 
 `amine_ccs` is post-combustion capture. It applies `capture_efficiency`,
-`minimum_capture_fraction`, total `max_capture_rate`, electrical SEC, thermal SEC,
-variable capture cost and an explicit `heat_cost`.
+`minimum_capture_fraction`, electrical SEC, thermal SEC, variable capture cost and an
+explicit `heat_cost`.
 
 It receives physical and priced CO2 from all configured preheater, calciner and kiln
 blocks.
@@ -395,16 +406,16 @@ blocks.
 ### Cryogenic CCS
 
 `cryogenic_ccs` is the same high-level capture boundary but without regeneration heat.
-It uses `capture_efficiency`, `minimum_capture_fraction`, total capture capacity,
-electrical SEC and variable processing cost.
+It uses `capture_efficiency`, `minimum_capture_fraction`, electrical SEC and variable
+processing cost.
 
 It also receives all configured preheater, calciner and kiln emissions.
 
 ### Oxyfuel CCS
 
 `oxyfuel_ccs` is a CO2 recovery, purification and compression block. It uses
-`recovery_efficiency`, `minimum_recovery_fraction`, total recovery capacity, electrical
-SEC and variable processing cost. It includes no oxygen, ASU, heat or storage model.
+`recovery_efficiency`, `minimum_recovery_fraction`, electrical SEC and variable
+processing cost. It includes no oxygen, ASU, heat or storage model.
 
 It receives only the configured oxyfuel calciner and/or oxyfuel kiln stream. In a
 partial oxyfuel route, conventional-stage emissions remain outside this CPU and remain
@@ -434,8 +445,10 @@ The following is a concise operational reference for kiln-line rows.
 
 | Field | Applies to | Unit / interpretation |
 | --- | --- | --- |
-| `max_heat_out` | all stages | MW_th heat rating; `max_power` is accepted as an input alias. |
+| `max_heat_out` | all stages | MW_th useful-heat rating. If absent, legacy inputs may use `max_power` as its alias. |
+| `max_power` | all stages with `max_heat_out` | MW_el primary electrical-input rating; zero for stages without electric heating. |
 | `min_heat_out` | all stages | MW_th turndown floor while on. |
+| `min_power` | all stages | MW_el primary electrical-input floor while on; normally zero unless electrically fired equipment has a justified minimum load. |
 | `specific_heat_demand` | all stages | MWh_th/t output. |
 | `fuel_type` | all stages | One of the four fuel modes above. |
 | `eta_electric`, `eta_fossil` | relevant modes | Heat efficiency. |
@@ -455,9 +468,10 @@ The following is a concise operational reference for kiln-line rows.
 | `*_oxygen_demand` | oxyfuel stages | t oxygen/MWh of the named fuel. Required for each used combustion fuel. |
 | `specific_oxygen_electricity_consumption` | oxyfuel stages | MWh_el/t oxygen internally generated. |
 
-CCS rows use `max_capture_rate` (or `max_co2_capture_rate`), the relevant
-capture/recovery efficiency, minimum fraction, `specific_electricity_consumption`,
-`specific_variable_cost`, and, for amine, `specific_heat_consumption` and `heat_cost`.
+CCS rows use the relevant capture/recovery efficiency, minimum fraction,
+`specific_electricity_consumption`, `specific_variable_cost`, and, for amine,
+`specific_heat_consumption` and `heat_cost`. Capture capacity is calculated by the
+plant and must not be supplied as an independent literature assumption.
 
 The common plant-level fields are:
 
@@ -468,6 +482,47 @@ The common plant-level fields are:
 | `waste_heat_per_t_clinker` | Kiln waste heat available per t clinker. |
 | `waste_heat_utilization_efficiency` | Usable fraction of available kiln waste heat. |
 | `cement_route_id`, `route_id` or `route` | Optional route identifier used for defaults, notably R2. |
+
+## Scenario capacity sizing from clinker demand
+
+The scenario load-profile workbooks contain tonnes of clinker required in each
+15-minute timestep. For a plant, the design clinker rate is the largest demand value
+across the 2030, 2035, 2040 and 2045 sheets, converted to an hourly rate:
+
+```text
+design_clinker_rate_t_per_h = max(demand_t_per_15_min) / 0.25 h
+```
+
+For a design rate `C`, the kiln-line heat ratings are:
+
+```text
+preheater max_heat_out = C Ã— raw_meal_to_clinker_ratio Ã— preheater specific_heat_demand
+calciner  max_heat_out = C Ã— calciner specific_heat_demand
+kiln      max_heat_out = C Ã— kiln specific_heat_demand
+```
+
+For an electric or hybrid-electric stage, `max_power` is the installed primary
+electrical heating input. It is `max_heat_out / eta_electric` for a calciner or kiln.
+For the preheater, useful kiln waste heat is deducted before conversion through the
+electrical efficiency:
+
+```text
+preheater max_power =
+    max(0, preheater max_heat_out
+           - C Ã— waste_heat_per_t_clinker Ã— waste_heat_utilization_efficiency)
+    / eta_electric
+```
+
+Stages without electric heating use `max_power = 0`; auxiliary and oxyfuel oxygen
+loads remain separate modeled loads. A demand profile does not identify technical
+turndown or equipment ramp capability. In the scenario-sizing convention shared with
+the steel database, `min_heat_out = 0`, `min_power = 0`, and both heat ramp limits equal
+`max_heat_out`, representing full-range operation and a full thermal ramp in one model
+timestep.
+
+After those stage ratings are set, the cement plant computes CCS capacity internally
+from the maximum physical CO2 rate, including eligible process, fossil and biogenic CO2.
+No independent `max_capture_rate` input is needed.
 
 ### R2 example
 

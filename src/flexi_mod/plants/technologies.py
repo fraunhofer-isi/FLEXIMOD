@@ -1089,7 +1089,14 @@ class CementKilnLineStage:
             if self.max_electric_power_mw is not None
             else self.max_heat_out_mw / max(1e-9, self.eta_electric)
         )
+        if max_electric_power_mw < 0.0:
+            raise ValueError("max_power must be non-negative")
         max_power_mwh = max_electric_power_mw * dt_hours
+        min_power_mwh = self.min_electric_power_mw * dt_hours
+        if self.min_electric_power_mw < 0.0:
+            raise ValueError("min_power must be non-negative")
+        if self.min_electric_power_mw > max_electric_power_mw:
+            raise ValueError("min_power must not exceed max_power")
         ramp_up = (
             self.max_heat_out_mw if self.ramp_up_mw_per_step is None else self.ramp_up_mw_per_step
         )
@@ -1122,6 +1129,7 @@ class CementKilnLineStage:
         block.max_heat_out = pyo.Param(initialize=max_heat_mwh)
         block.min_heat_out = pyo.Param(initialize=min_heat_mwh)
         block.max_power = pyo.Param(initialize=max_power_mwh)
+        block.min_power = pyo.Param(initialize=min_power_mwh)
         block.specific_heat_demand = pyo.Param(initialize=self.specific_heat_demand_mwh_per_t)
         block.specific_electricity_aux = pyo.Param(
             initialize=self.specific_electricity_aux_mwh_per_t
@@ -1360,6 +1368,10 @@ class CementKilnLineStage:
             return b.heat_out[t] >= b.min_heat_out * b.operational_status[t]
 
         @block.Constraint(time_steps)
+        def min_power_if_on(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.power_in[t] >= b.min_power * b.operational_status[t]
+
+        @block.Constraint(time_steps)
         def heat_ramp_up(b: pyo.Block, t: int) -> pyo.Constraint:
             position = ordered_steps.index(t)
             previous = (
@@ -1530,6 +1542,7 @@ class CementPreheater(CementKilnLineStage):
     biomass_share: float = CementKilnLineStage.default_biomass_share
     rdf_share: float = CementKilnLineStage.default_rdf_share
     max_electric_power_mw: float | None = None
+    min_electric_power_mw: float = 0.0
     specific_electricity_aux_mwh_per_t: float = 0.0
     ramp_up_mw_per_step: float | None = None
     ramp_down_mw_per_step: float | None = None
@@ -1577,9 +1590,8 @@ class CementPreheater(CementKilnLineStage):
             ),
             biomass_share=biomass_share,
             rdf_share=rdf_share,
-            max_electric_power_mw=_as_optional_float(
-                _first_present(row.get("max_electric_power"), row.get("max_power_electric"))
-            ),
+            max_electric_power_mw=_cement_max_electric_power(row),
+            min_electric_power_mw=_as_float(row.get("min_power"), "min_power", default=0.0),
             specific_electricity_aux_mwh_per_t=_as_float(
                 row.get("specific_electricity_aux"), "specific_electricity_aux", default=0.0
             ),
@@ -1669,6 +1681,7 @@ class SimpleCementCalciner(CementKilnLineStage):
     biomass_share: float = CementKilnLineStage.default_biomass_share
     rdf_share: float = CementKilnLineStage.default_rdf_share
     max_electric_power_mw: float | None = None
+    min_electric_power_mw: float = 0.0
     specific_electricity_aux_mwh_per_t: float = 0.0
     ramp_up_mw_per_step: float | None = None
     ramp_down_mw_per_step: float | None = None
@@ -1717,9 +1730,8 @@ class SimpleCementCalciner(CementKilnLineStage):
             ),
             biomass_share=biomass_share,
             rdf_share=rdf_share,
-            max_electric_power_mw=_as_optional_float(
-                _first_present(row.get("max_electric_power"), row.get("max_power_electric"))
-            ),
+            max_electric_power_mw=_cement_max_electric_power(row),
+            min_electric_power_mw=_as_float(row.get("min_power"), "min_power", default=0.0),
             specific_electricity_aux_mwh_per_t=_as_float(
                 row.get("specific_electricity_aux"), "specific_electricity_aux", default=0.0
             ),
@@ -2126,6 +2138,7 @@ class SimpleCementKiln(CementKilnLineStage):
     biomass_share: float = CementKilnLineStage.default_biomass_share
     rdf_share: float = CementKilnLineStage.default_rdf_share
     max_electric_power_mw: float | None = None
+    min_electric_power_mw: float = 0.0
     specific_electricity_aux_mwh_per_t: float = 0.0
     ramp_up_mw_per_step: float | None = None
     ramp_down_mw_per_step: float | None = None
@@ -2173,9 +2186,8 @@ class SimpleCementKiln(CementKilnLineStage):
             ),
             biomass_share=biomass_share,
             rdf_share=rdf_share,
-            max_electric_power_mw=_as_optional_float(
-                _first_present(row.get("max_electric_power"), row.get("max_power_electric"))
-            ),
+            max_electric_power_mw=_cement_max_electric_power(row),
+            min_electric_power_mw=_as_float(row.get("min_power"), "min_power", default=0.0),
             specific_electricity_aux_mwh_per_t=_as_float(
                 row.get("specific_electricity_aux"), "specific_electricity_aux", default=0.0
             ),
@@ -2416,7 +2428,6 @@ class OxyfuelCementKiln(SimpleCementKiln):
 class AmineCCS:
     """Post-combustion amine CO2 capture for a cement plant."""
 
-    max_capture_rate_t_per_h: float
     capture_efficiency: float
     specific_electricity_consumption_mwh_per_t: float
     specific_heat_consumption_mwh_per_t: float
@@ -2425,8 +2436,6 @@ class AmineCCS:
     heat_cost_eur_per_mwh: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.max_capture_rate_t_per_h <= 0.0:
-            raise ValueError("max_capture_rate_t_per_h must be positive")
         if not 0.0 <= self.capture_efficiency <= 1.0:
             raise ValueError("capture_efficiency must be between 0 and 1")
         if not 0.0 <= self.minimum_capture_fraction <= self.capture_efficiency:
@@ -2446,10 +2455,6 @@ class AmineCCS:
     @classmethod
     def from_row(cls, row: pd.Series) -> AmineCCS:
         return cls(
-            max_capture_rate_t_per_h=_as_float(
-                _first_present(row.get("max_capture_rate"), row.get("max_co2_capture_rate")),
-                "max_capture_rate",
-            ),
             capture_efficiency=_as_float(row.get("capture_efficiency"), "capture_efficiency"),
             specific_electricity_consumption_mwh_per_t=_as_float(
                 _first_present(
@@ -2484,13 +2489,16 @@ class AmineCCS:
     ) -> pyo.Block:
         """Add physical/accounting capture balances, energy demand, and priced credit."""
         dt_hours = float(context["dt_hours"])
+        max_capture_rate_t_per_h = float(context["max_capture_rate_t_per_h"])
+        if max_capture_rate_t_per_h < 0.0:
+            raise ValueError("Plant-computed max_capture_rate_t_per_h must be non-negative")
         block.capture_efficiency = pyo.Param(
             initialize=self.capture_efficiency, within=pyo.UnitInterval
         )
         block.minimum_capture_fraction = pyo.Param(
             initialize=self.minimum_capture_fraction, within=pyo.UnitInterval
         )
-        block.max_capture_per_step = pyo.Param(initialize=self.max_capture_rate_t_per_h * dt_hours)
+        block.max_capture_per_step = pyo.Param(initialize=max_capture_rate_t_per_h * dt_hours)
         block.specific_electricity_consumption = pyo.Param(
             initialize=self.specific_electricity_consumption_mwh_per_t
         )
@@ -2585,15 +2593,12 @@ class CryogenicCCS:
     its specific electricity demand and variable cost.
     """
 
-    max_capture_rate_t_per_h: float
     capture_efficiency: float
     specific_electricity_consumption_mwh_per_t: float
     minimum_capture_fraction: float = 0.0
     specific_variable_cost_eur_per_t: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.max_capture_rate_t_per_h <= 0.0:
-            raise ValueError("max_capture_rate_t_per_h must be positive")
         if not 0.0 <= self.capture_efficiency <= 1.0:
             raise ValueError("capture_efficiency must be between 0 and 1")
         if not 0.0 <= self.minimum_capture_fraction <= self.capture_efficiency:
@@ -2609,10 +2614,6 @@ class CryogenicCCS:
     @classmethod
     def from_row(cls, row: pd.Series) -> CryogenicCCS:
         return cls(
-            max_capture_rate_t_per_h=_as_float(
-                _first_present(row.get("max_capture_rate"), row.get("max_co2_capture_rate")),
-                "max_capture_rate",
-            ),
             capture_efficiency=_as_float(row.get("capture_efficiency"), "capture_efficiency"),
             specific_electricity_consumption_mwh_per_t=_as_float(
                 _first_present(
@@ -2640,13 +2641,16 @@ class CryogenicCCS:
     ) -> pyo.Block:
         """Add physical/accounting capture balances, electricity demand, and priced credit."""
         dt_hours = float(context["dt_hours"])
+        max_capture_rate_t_per_h = float(context["max_capture_rate_t_per_h"])
+        if max_capture_rate_t_per_h < 0.0:
+            raise ValueError("Plant-computed max_capture_rate_t_per_h must be non-negative")
         block.capture_efficiency = pyo.Param(
             initialize=self.capture_efficiency, within=pyo.UnitInterval
         )
         block.minimum_capture_fraction = pyo.Param(
             initialize=self.minimum_capture_fraction, within=pyo.UnitInterval
         )
-        block.max_capture_per_step = pyo.Param(initialize=self.max_capture_rate_t_per_h * dt_hours)
+        block.max_capture_per_step = pyo.Param(initialize=max_capture_rate_t_per_h * dt_hours)
         block.specific_electricity_consumption = pyo.Param(
             initialize=self.specific_electricity_consumption_mwh_per_t
         )
@@ -2730,15 +2734,12 @@ class OxyfuelCCS:
     calciner and kiln. This block contains no oxygen, heat, or CO2-storage model.
     """
 
-    max_capture_rate_t_per_h: float
     recovery_efficiency: float
     specific_electricity_consumption_mwh_per_t: float
     minimum_recovery_fraction: float = 0.0
     specific_variable_cost_eur_per_t: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.max_capture_rate_t_per_h <= 0.0:
-            raise ValueError("max_capture_rate_t_per_h must be positive")
         if not 0.0 <= self.recovery_efficiency <= 1.0:
             raise ValueError("recovery_efficiency must be between 0 and 1")
         if not 0.0 <= self.minimum_recovery_fraction <= self.recovery_efficiency:
@@ -2754,10 +2755,6 @@ class OxyfuelCCS:
     @classmethod
     def from_row(cls, row: pd.Series) -> OxyfuelCCS:
         return cls(
-            max_capture_rate_t_per_h=_as_float(
-                _first_present(row.get("max_capture_rate"), row.get("max_co2_capture_rate")),
-                "max_capture_rate",
-            ),
             recovery_efficiency=_as_float(row.get("recovery_efficiency"), "recovery_efficiency"),
             specific_electricity_consumption_mwh_per_t=_as_float(
                 _first_present(
@@ -2787,13 +2784,16 @@ class OxyfuelCCS:
     ) -> pyo.Block:
         """Add physical/accounting recovery and purification/compression demand."""
         dt_hours = float(context["dt_hours"])
+        max_capture_rate_t_per_h = float(context["max_capture_rate_t_per_h"])
+        if max_capture_rate_t_per_h < 0.0:
+            raise ValueError("Plant-computed max_capture_rate_t_per_h must be non-negative")
         block.recovery_efficiency = pyo.Param(
             initialize=self.recovery_efficiency, within=pyo.UnitInterval
         )
         block.minimum_recovery_fraction = pyo.Param(
             initialize=self.minimum_recovery_fraction, within=pyo.UnitInterval
         )
-        block.max_capture_per_step = pyo.Param(initialize=self.max_capture_rate_t_per_h * dt_hours)
+        block.max_capture_per_step = pyo.Param(initialize=max_capture_rate_t_per_h * dt_hours)
         block.specific_electricity_consumption = pyo.Param(
             initialize=self.specific_electricity_consumption_mwh_per_t
         )
@@ -3151,6 +3151,24 @@ def _cement_fuel_type(row: pd.Series, owner: str, *, default: str) -> str:
         allowed = ", ".join(sorted(CEMENT_FUEL_TYPES))
         raise ValueError(f"{owner} fuel_type must be one of: {allowed}")
     return fuel_type
+
+
+def _cement_max_electric_power(row: pd.Series) -> float | None:
+    """Read the electrical rating without breaking the legacy heat-rating alias.
+
+    Older cement inputs used ``max_power`` when ``max_heat_out`` was absent. Once the
+    explicit heat rating is present, ``max_power`` has its normal meaning: the primary
+    electrical-input rating of the stage.
+    """
+    explicit_alias = _first_present(
+        row.get("max_electric_power"),
+        row.get("max_power_electric"),
+    )
+    if explicit_alias is not None:
+        return _as_optional_float(explicit_alias)
+    if _first_present(row.get("max_heat_out")) is not None:
+        return _as_optional_float(row.get("max_power"))
+    return None
 
 
 def _as_int(value: Any, default: int) -> int:

@@ -74,6 +74,7 @@ def test_assume_market_meta_includes_hourly_fuel_prices_when_present() -> None:
         assert forecasts["coal_price"].tolist() == pytest.approx([30.0] * 4 + [40.0] * 4)
         assert forecasts["natural_gas_price"].tolist() == pytest.approx([50.0] * 4 + [60.0] * 4)
         assert forecasts["biomass_price"].tolist() == pytest.approx([35.0] * 4 + [45.0] * 4)
+        assert forecasts["naphtha_price"].tolist() == pytest.approx([55.0] * 4 + [65.0] * 4)
         assert forecasts["co2_price"].tolist() == pytest.approx([70.0] * 4 + [80.0] * 4)
         assert forecasts["hydrogen_price"].tolist() == pytest.approx([90.0] * 4 + [100.0] * 4)
     finally:
@@ -100,6 +101,7 @@ def test_assume_market_meta_can_skip_present_fuel_prices() -> None:
         assert "coal_price" not in forecasts.columns
         assert "natural_gas_price" not in forecasts.columns
         assert "biomass_price" not in forecasts.columns
+        assert "naphtha_price" not in forecasts.columns
         assert "co2_price" not in forecasts.columns
         assert "hydrogen_price" not in forecasts.columns
     finally:
@@ -461,6 +463,7 @@ def _fuel_prices(
             "hard coal for industry": [30.0, 40.0],
             "natural gas for industry": [50.0, 60.0],
             "solid biomass for industry": [35.0, 45.0],
+            "naphtha for industry": [55.0, 65.0],
             "co2": [70.0, 80.0],
             "hydrogen": [90.0, 100.0],
         }

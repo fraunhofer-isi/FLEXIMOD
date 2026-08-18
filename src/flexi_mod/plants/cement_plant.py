@@ -785,12 +785,108 @@ class CementPlant(DispatchPlant):
             elif technology == "thermal_storage":
                 total += float(component.max_power_charge_mw)
             elif technology in CCS_TECHNOLOGIES:
-                total += float(component.max_capture_rate_t_per_h) * float(
+                total += self._maximum_ccs_capture_rate_t_per_h(technology) * float(
                     component.specific_electricity_consumption_mwh_per_t
                 )
             else:
                 total += float(getattr(component, "max_power_mw", 0.0))
         return total
+
+    def _maximum_clinker_rate_t_per_h(self) -> float:
+        """Maximum common kiln-line throughput implied by the installed stage ratings."""
+        capacities = []
+        for technology in CEMENT_LINE_STAGES:
+            component = self.components.get(technology)
+            if component is None:
+                continue
+            throughput = float(component.max_heat_out_mw) / float(
+                component.specific_heat_demand_mwh_per_t
+            )
+            if technology == "preheater":
+                throughput /= self.raw_meal_to_clinker_ratio
+            capacities.append(throughput)
+        if not capacities:
+            raise ValueError(f"Cement plant '{self.name}' has no rated kiln-line stage")
+        return min(capacities)
+
+    def _maximum_stage_physical_co2_rate_t_per_h(
+        self,
+        technology: str,
+        clinker_rate_t_per_h: float,
+    ) -> float:
+        """Physical process and combustion CO2 at the common design clinker rate."""
+        component = self.components[technology]
+        process_co2 = 0.0
+        if technology in CALCINER_TECHNOLOGIES:
+            process_co2 = clinker_rate_t_per_h * float(
+                component.calcination_emission_factor_t_per_t
+            )
+            if technology == "leilac_calciner":
+                process_co2 *= 1.0 - float(component.direct_separation_efficiency)
+
+        if component.fuel_type not in {
+            CEMENT_FOSSIL,
+            CEMENT_HYBRID_ELECTRICITY_FOSSIL,
+        }:
+            return process_co2
+
+        if technology == "preheater":
+            useful_heat_mw = (
+                clinker_rate_t_per_h
+                * self.raw_meal_to_clinker_ratio
+                * float(component.specific_heat_demand_mwh_per_t)
+            )
+            recovered_heat_mw = (
+                clinker_rate_t_per_h
+                * self.waste_heat_per_t_clinker_mwh
+                * self.waste_heat_utilization_efficiency
+            )
+            generated_heat_mw = max(0.0, useful_heat_mw - recovered_heat_mw)
+        else:
+            generated_heat_mw = clinker_rate_t_per_h * float(
+                component.specific_heat_demand_mwh_per_t
+            )
+
+        combustion_rate_mwh_per_h = generated_heat_mw / max(
+            float(component.eta_fossil), 1e-9
+        )
+        fossil_factor = float(component.fossil_ng_share) * float(
+            component.natural_gas_co2_factor_t_per_mwh
+        ) + (1.0 - float(component.fossil_ng_share)) * float(
+            component.coal_co2_factor_t_per_mwh
+        )
+        biomass_share = float(component.biomass_share)
+        rdf_share = float(component.rdf_share)
+        physical_factor = (
+            (1.0 - biomass_share - rdf_share) * fossil_factor
+            + biomass_share * float(component.biomass_co2_factor_t_per_mwh)
+            + rdf_share
+            * (
+                float(component.rdf_mixed_fossil_co2_factor_t_per_mwh)
+                + float(component.rdf_mixed_biogenic_co2_factor_t_per_mwh)
+            )
+        )
+        return process_co2 + combustion_rate_mwh_per_h * physical_factor
+
+    def _maximum_ccs_capture_rate_t_per_h(self, technology: str) -> float:
+        """Installed capture rate derived from the route's maximum physical CO2 stream."""
+        component = self.components[technology]
+        clinker_rate = self._maximum_clinker_rate_t_per_h()
+        if technology == "oxyfuel_ccs":
+            sources = [
+                name
+                for name in (*CALCINER_TECHNOLOGIES, *KILN_TECHNOLOGIES)
+                if name in self.components and name.startswith("oxyfuel_")
+            ]
+            efficiency = float(component.recovery_efficiency)
+        else:
+            sources = [name for name in CEMENT_LINE_STAGES if name in self.components]
+            efficiency = float(component.capture_efficiency)
+        maximum_physical_co2_rate = sum(
+            self._maximum_stage_physical_co2_rate_t_per_h(source, clinker_rate)
+            for source in sources
+        )
+        return efficiency * maximum_physical_co2_rate
 
     def _build_model(
         self,
@@ -1457,6 +1553,10 @@ class CementPlant(DispatchPlant):
         """Build the ``add_to_model`` context that seeds a window from the last commit."""
 
         context: dict[str, Any] = {"dt_hours": dt_hours}
+        if technology in CCS_TECHNOLOGIES:
+            context["max_capture_rate_t_per_h"] = self._maximum_ccs_capture_rate_t_per_h(
+                technology
+            )
         stage_state = initial_state.stages.get(technology)
         if stage_state is not None:
             context.update(
