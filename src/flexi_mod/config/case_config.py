@@ -220,11 +220,14 @@ class CaseConfig:
             "steel_cost_minimization",
             "electrified_steel",
             "electrified_steel_rule_based",
+            "electrified_cement",
+            "hybrid_strategy_cement",
+            "electrified_cement_rule_based",
         }:
             horizon_hours = float(dispatch.get("dispatch_horizon_hours", 48))
             step_hours = float(dispatch.get("rolling_step_hours", 24))
             if horizon_hours <= 0 or step_hours <= 0:
-                raise ConfigError("Steel rolling horizon and step hours must be positive")
+                raise ConfigError("Rolling horizon and step hours must be positive")
             if step_hours > horizon_hours:
                 raise ConfigError(
                     "strategy.dispatch.rolling_step_hours must not exceed dispatch_horizon_hours"
@@ -240,7 +243,13 @@ class CaseConfig:
                         f"strategy.dispatch.{field} must align with case.timestep_minutes"
                     )
 
-        if strategy_name in {"electrified_steel", "electrified_steel_rule_based"}:
+        if strategy_name in {
+            "electrified_steel",
+            "electrified_steel_rule_based",
+            "electrified_cement",
+            "hybrid_strategy_cement",
+            "electrified_cement_rule_based",
+        }:
             if str(self.case["country"]).upper() != "DE":
                 raise ConfigError(f"{strategy_name} currently requires country='DE'")
             expected_sequence = ["afrr_capacity", "day_ahead", "afrr_energy"]

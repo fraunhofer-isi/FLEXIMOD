@@ -13,6 +13,8 @@ from scripts.generate_cement_cases import (
     demand_workbook_for_scenario,
     scenario_year,
     size_route_for_plant,
+    strategy_for_route,
+    write_config,
     write_forecasts,
     write_plants_csv,
 )
@@ -58,6 +60,29 @@ def test_cement_scenario_family_selects_demand_workbook() -> None:
     assert demand_workbook_for_scenario("fokusH2").name == (
         "FokusH2_FokusStrom_Technologiemix_load_profile_15min_timestep_demand.xlsx"
     )
+
+
+def test_strategy_mapping_uses_hybrid_strategy_only_for_r6() -> None:
+    assert strategy_for_route("R6") == "hybrid_strategy_cement"
+    assert strategy_for_route("R1") == "electrified_cement"
+    assert strategy_for_route("R16") == "electrified_cement"
+
+
+def test_r6_config_uses_hybrid_strategy(tmp_path: Path) -> None:
+    output_path = tmp_path / "config.yaml"
+    template = (
+        "cases:\n"
+        "  cement_plant_DE:\n"
+        "    name: cement_plant_DE\n"
+        "    strategy:\n"
+        "      name: electrified_cement\n"
+    )
+
+    write_config(output_path, "aktuellepolitiken_2030_R6", "2030", template, route="R6")
+
+    generated = output_path.read_text(encoding="utf-8")
+    assert "name: aktuellepolitiken_2030_R6" in generated
+    assert "name: hybrid_strategy_cement" in generated
 
 
 def test_route_sizing_uses_peak_clinker_rate_for_heat_and_flexibility() -> None:

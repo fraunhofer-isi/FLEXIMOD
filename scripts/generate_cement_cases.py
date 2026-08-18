@@ -71,6 +71,9 @@ TEMPLATE_CASE_NAME = "cement_plant_DE"
 TEMPLATE_YEAR = "2030"
 DEMAND_SUFFIX = "_clinker_demand"
 ROUTE_METADATA_COLUMNS = ("route_id", "route_description")
+HYBRID_STRATEGY_CEMENT_ROUTES = frozenset({"R6"})
+ELECTRIFIED_CEMENT_STRATEGY = "electrified_cement"
+HYBRID_CEMENT_STRATEGY = "hybrid_strategy_cement"
 LICENSE_TEXT = (
     "SPDX-FileCopyrightText: FLEXIMOD Developers\n\nSPDX-License-Identifier: AGPL-3.0-or-later\n"
 )
@@ -117,6 +120,18 @@ def load_route_template(path: Path = ROUTE_TEMPLATE) -> pd.DataFrame:
 def route_ids(rows: pd.DataFrame) -> list[str]:
     """Route IDs in the worksheet's modeler-defined order."""
     return list(dict.fromkeys(rows["route_id"].tolist()))
+
+
+def strategy_for_route(route: str) -> str:
+    """Return the cross-market strategy selected by a cement technology route.
+
+    R6 continuously substitutes electric heat for its fossil fuel blend, so it uses the
+    strike-price-based hybrid strategy. All remaining routes use the exact joint
+    DA/aFRR capacity/aFRR energy optimisation.
+    """
+    if route in HYBRID_STRATEGY_CEMENT_ROUTES:
+        return HYBRID_CEMENT_STRATEGY
+    return ELECTRIFIED_CEMENT_STRATEGY
 
 
 def load_design_clinker_rates(workbook: Path) -> dict[str, float]:
@@ -338,8 +353,13 @@ def write_forecasts(
     output.to_csv(path, index=False)
 
 
-def write_config(path: Path, case_name: str, year: str, template_text: str) -> None:
+def write_config(path: Path, case_name: str, year: str, template_text: str, *, route: str) -> None:
     text = template_text.replace(TEMPLATE_CASE_NAME, case_name).replace(TEMPLATE_YEAR, year)
+    strategy_name = strategy_for_route(route)
+    template_strategy = "      name: electrified_cement\n"
+    if template_strategy not in text:
+        raise ValueError(f"Cement config strategy target not found: {template_strategy!r}")
+    text = text.replace(template_strategy, f"      name: {strategy_name}\n", 1)
     path.write_text(text, encoding="utf-8")
 
 
@@ -478,7 +498,7 @@ def main() -> None:
                 ],
                 ignore_index=True,
             )
-            write_config(case_dir / "config.yaml", case_name, year, config_text)
+            write_config(case_dir / "config.yaml", case_name, year, config_text, route=route)
             write_plants_csv(case_dir / "plants.csv", all_rows)
             write_additional_charges(case_dir / "additional_charges.csv", plant_names, charge_specs)
             write_forecasts(case_dir / "forecasts_df.csv", forecasts, plant_names_by_id)
