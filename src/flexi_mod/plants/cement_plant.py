@@ -847,14 +847,10 @@ class CementPlant(DispatchPlant):
                 component.specific_heat_demand_mwh_per_t
             )
 
-        combustion_rate_mwh_per_h = generated_heat_mw / max(
-            float(component.eta_fossil), 1e-9
-        )
+        combustion_rate_mwh_per_h = generated_heat_mw / max(float(component.eta_fossil), 1e-9)
         fossil_factor = float(component.fossil_ng_share) * float(
             component.natural_gas_co2_factor_t_per_mwh
-        ) + (1.0 - float(component.fossil_ng_share)) * float(
-            component.coal_co2_factor_t_per_mwh
-        )
+        ) + (1.0 - float(component.fossil_ng_share)) * float(component.coal_co2_factor_t_per_mwh)
         biomass_share = float(component.biomass_share)
         rdf_share = float(component.rdf_share)
         physical_factor = (
@@ -1554,9 +1550,7 @@ class CementPlant(DispatchPlant):
 
         context: dict[str, Any] = {"dt_hours": dt_hours}
         if technology in CCS_TECHNOLOGIES:
-            context["max_capture_rate_t_per_h"] = self._maximum_ccs_capture_rate_t_per_h(
-                technology
-            )
+            context["max_capture_rate_t_per_h"] = self._maximum_ccs_capture_rate_t_per_h(technology)
         stage_state = initial_state.stages.get(technology)
         if stage_state is not None:
             context.update(

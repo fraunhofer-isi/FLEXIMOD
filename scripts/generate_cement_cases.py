@@ -72,8 +72,7 @@ TEMPLATE_YEAR = "2030"
 DEMAND_SUFFIX = "_clinker_demand"
 ROUTE_METADATA_COLUMNS = ("route_id", "route_description")
 LICENSE_TEXT = (
-    "SPDX-FileCopyrightText: FLEXIMOD Developers\n\n"
-    "SPDX-License-Identifier: AGPL-3.0-or-later\n"
+    "SPDX-FileCopyrightText: FLEXIMOD Developers\n\nSPDX-License-Identifier: AGPL-3.0-or-later\n"
 )
 
 _BASE_CASE_SUFFIX_RE = re.compile(r"_base_case_\d+$")
@@ -386,10 +385,7 @@ def _parse_args() -> argparse.Namespace:
         "--rdf-price",
         type=float,
         default=0.0,
-        help=(
-            "Constant EUR/MWh_th RDF price written to the R2 forecast column "
-            "(default: 0.0)."
-        ),
+        help=("Constant EUR/MWh_th RDF price written to the R2 forecast column (default: 0.0)."),
     )
     parser.add_argument(
         "--node", default="south", help="Network node assigned to generated plants."
@@ -419,9 +415,7 @@ def main() -> None:
     folders = sorted(path for path in args.assume_output_dir.iterdir() if path.is_dir())
     if args.scenario:
         folders = [
-            folder
-            for folder in folders
-            if "_".join(scenario_year(folder.name)) == args.scenario
+            folder for folder in folders if "_".join(scenario_year(folder.name)) == args.scenario
         ]
     written = 0
     skipped: list[str] = []
@@ -469,8 +463,7 @@ def main() -> None:
             case_name = f"{scenario}_{year}_{route}"
             case_dir = args.output_dir / case_name
             print(
-                f"{case_name} ({len(plant_names)} plants, "
-                f"{len(route_rows)} technology rows each)"
+                f"{case_name} ({len(plant_names)} plants, {len(route_rows)} technology rows each)"
             )
             case_dir.mkdir(parents=True, exist_ok=True)
             all_rows = pd.concat(

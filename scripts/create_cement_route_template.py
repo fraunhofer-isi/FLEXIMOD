@@ -130,25 +130,167 @@ SPECIFIC_OXYGEN_ELECTRICITY_CONSUMPTION = 0.22
 ELECTROLYSER_EFFICIENCY = 0.709
 
 ROUTES = (
-    ("R1", "Conventional reference", (("preheater", "fossil"), ("simple_calciner", "fossil"), ("simple_kiln", "fossil"))),
-    ("R2", "Alternative fuel / waste-derived fuel", (("preheater", "fossil"), ("simple_calciner", "fossil"), ("simple_kiln", "fossil"))),
-    ("R3", "Conventional + amine CCS", (("preheater", "fossil"), ("simple_calciner", "fossil"), ("simple_kiln", "fossil"), ("amine_ccs", ""))),
-    ("R4", "Conventional + cryogenic CCS", (("preheater", "fossil"), ("simple_calciner", "fossil"), ("simple_kiln", "fossil"), ("cryogenic_ccs", ""))),
-    ("R5", "Electrified calciner", (("preheater", "fossil"), ("simple_calciner", "electricity"), ("simple_kiln", "fossil"))),
-    ("R6", "Hybrid-electric calciner", (("preheater", "fossil"), ("simple_calciner", "hybrid_electricity_fossil"), ("simple_kiln", "fossil"))),
-    ("R7", "Electrified calciner + PCC", (("preheater", "fossil"), ("simple_calciner", "electricity"), ("simple_kiln", "fossil"), ("amine_ccs", ""))),
-    ("R8", "Fully electrified clinker route + cryogenic CCS", (("preheater", "electricity"), ("simple_calciner", "electricity"), ("simple_kiln", "electricity"), ("cryogenic_ccs", ""))),
-    ("R9", "Full oxyfuel", (("preheater", "fossil"), ("oxyfuel_calciner", "fossil"), ("oxyfuel_kiln", "fossil"), ("oxyfuel_ccs", ""))),
-    ("R10", "Partial oxyfuel", (("preheater", "fossil"), ("oxyfuel_calciner", "fossil"), ("simple_kiln", "fossil"), ("oxyfuel_ccs", ""))),
-    ("R11a", "Hydrogen-fired line, purchased hydrogen", (("preheater", "fossil"), ("simple_calciner", "hydrogen"), ("simple_kiln", "hydrogen"), ("amine_ccs", ""))),
-    ("R11b", "Hydrogen-fired line, on-site hydrogen", (("preheater", "fossil"), ("simple_calciner", "hydrogen"), ("simple_kiln", "hydrogen"), ("amine_ccs", ""), ("electrolyser", ""))),
-    ("R12a", "Oxy-hydrogen line, purchased hydrogen", (("preheater", "fossil"), ("oxyfuel_calciner", "hydrogen"), ("oxyfuel_kiln", "hydrogen"), ("oxyfuel_ccs", ""))),
-    ("R12b", "Oxy-hydrogen line, on-site hydrogen", (("preheater", "fossil"), ("oxyfuel_calciner", "hydrogen"), ("oxyfuel_kiln", "hydrogen"), ("oxyfuel_ccs", ""), ("electrolyser", ""))),
-    ("R13", "LEILAC + fossil heat", (("preheater", "fossil"), ("leilac_calciner", "fossil"), ("simple_kiln", "fossil"))),
-    ("R14", "Electrified LEILAC", (("preheater", "fossil"), ("leilac_calciner", "electricity"), ("simple_kiln", "fossil"))),
-    ("R15a", "Hydrogen LEILAC, purchased hydrogen", (("preheater", "fossil"), ("leilac_calciner", "hydrogen"), ("simple_kiln", "hydrogen"))),
-    ("R15b", "Hydrogen LEILAC, on-site hydrogen", (("preheater", "fossil"), ("leilac_calciner", "hydrogen"), ("simple_kiln", "hydrogen"), ("electrolyser", ""))),
-    ("R16", "LEILAC + post-combustion CCS", (("preheater", "fossil"), ("leilac_calciner", "fossil"), ("simple_kiln", "fossil"), ("amine_ccs", ""))),
+    (
+        "R1",
+        "Conventional reference",
+        (("preheater", "fossil"), ("simple_calciner", "fossil"), ("simple_kiln", "fossil")),
+    ),
+    (
+        "R2",
+        "Alternative fuel / waste-derived fuel",
+        (("preheater", "fossil"), ("simple_calciner", "fossil"), ("simple_kiln", "fossil")),
+    ),
+    (
+        "R3",
+        "Conventional + amine CCS",
+        (
+            ("preheater", "fossil"),
+            ("simple_calciner", "fossil"),
+            ("simple_kiln", "fossil"),
+            ("amine_ccs", ""),
+        ),
+    ),
+    (
+        "R4",
+        "Conventional + cryogenic CCS",
+        (
+            ("preheater", "fossil"),
+            ("simple_calciner", "fossil"),
+            ("simple_kiln", "fossil"),
+            ("cryogenic_ccs", ""),
+        ),
+    ),
+    (
+        "R5",
+        "Electrified calciner",
+        (("preheater", "fossil"), ("simple_calciner", "electricity"), ("simple_kiln", "fossil")),
+    ),
+    (
+        "R6",
+        "Hybrid-electric calciner",
+        (
+            ("preheater", "fossil"),
+            ("simple_calciner", "hybrid_electricity_fossil"),
+            ("simple_kiln", "fossil"),
+        ),
+    ),
+    (
+        "R7",
+        "Electrified calciner + PCC",
+        (
+            ("preheater", "fossil"),
+            ("simple_calciner", "electricity"),
+            ("simple_kiln", "fossil"),
+            ("amine_ccs", ""),
+        ),
+    ),
+    (
+        "R8",
+        "Fully electrified clinker route + cryogenic CCS",
+        (
+            ("preheater", "electricity"),
+            ("simple_calciner", "electricity"),
+            ("simple_kiln", "electricity"),
+            ("cryogenic_ccs", ""),
+        ),
+    ),
+    (
+        "R9",
+        "Full oxyfuel",
+        (
+            ("preheater", "fossil"),
+            ("oxyfuel_calciner", "fossil"),
+            ("oxyfuel_kiln", "fossil"),
+            ("oxyfuel_ccs", ""),
+        ),
+    ),
+    (
+        "R10",
+        "Partial oxyfuel",
+        (
+            ("preheater", "fossil"),
+            ("oxyfuel_calciner", "fossil"),
+            ("simple_kiln", "fossil"),
+            ("oxyfuel_ccs", ""),
+        ),
+    ),
+    (
+        "R11a",
+        "Hydrogen-fired line, purchased hydrogen",
+        (
+            ("preheater", "fossil"),
+            ("simple_calciner", "hydrogen"),
+            ("simple_kiln", "hydrogen"),
+            ("amine_ccs", ""),
+        ),
+    ),
+    (
+        "R11b",
+        "Hydrogen-fired line, on-site hydrogen",
+        (
+            ("preheater", "fossil"),
+            ("simple_calciner", "hydrogen"),
+            ("simple_kiln", "hydrogen"),
+            ("amine_ccs", ""),
+            ("electrolyser", ""),
+        ),
+    ),
+    (
+        "R12a",
+        "Oxy-hydrogen line, purchased hydrogen",
+        (
+            ("preheater", "fossil"),
+            ("oxyfuel_calciner", "hydrogen"),
+            ("oxyfuel_kiln", "hydrogen"),
+            ("oxyfuel_ccs", ""),
+        ),
+    ),
+    (
+        "R12b",
+        "Oxy-hydrogen line, on-site hydrogen",
+        (
+            ("preheater", "fossil"),
+            ("oxyfuel_calciner", "hydrogen"),
+            ("oxyfuel_kiln", "hydrogen"),
+            ("oxyfuel_ccs", ""),
+            ("electrolyser", ""),
+        ),
+    ),
+    (
+        "R13",
+        "LEILAC + fossil heat",
+        (("preheater", "fossil"), ("leilac_calciner", "fossil"), ("simple_kiln", "fossil")),
+    ),
+    (
+        "R14",
+        "Electrified LEILAC",
+        (("preheater", "fossil"), ("leilac_calciner", "electricity"), ("simple_kiln", "fossil")),
+    ),
+    (
+        "R15a",
+        "Hydrogen LEILAC, purchased hydrogen",
+        (("preheater", "fossil"), ("leilac_calciner", "hydrogen"), ("simple_kiln", "hydrogen")),
+    ),
+    (
+        "R15b",
+        "Hydrogen LEILAC, on-site hydrogen",
+        (
+            ("preheater", "fossil"),
+            ("leilac_calciner", "hydrogen"),
+            ("simple_kiln", "hydrogen"),
+            ("electrolyser", ""),
+        ),
+    ),
+    (
+        "R16",
+        "LEILAC + post-combustion CCS",
+        (
+            ("preheater", "fossil"),
+            ("leilac_calciner", "fossil"),
+            ("simple_kiln", "fossil"),
+            ("amine_ccs", ""),
+        ),
+    ),
 )
 
 GREEN = PatternFill("solid", fgColor="E2F0D9")
@@ -252,9 +394,7 @@ def stage_row(
             },
         }[fuel_type]
         row.update(used_fuels)
-        row["specific_oxygen_electricity_consumption"] = (
-            SPECIFIC_OXYGEN_ELECTRICITY_CONSUMPTION
-        )
+        row["specific_oxygen_electricity_consumption"] = SPECIFIC_OXYGEN_ELECTRICITY_CONSUMPTION
 
     return row
 
@@ -306,9 +446,7 @@ def ccs_row(route_id: str, description: str, technology: str) -> dict[str, objec
             }
         )
     if technology == "amine_ccs":
-        row["review_required"] = (
-            "heat_cost = 0 assumes internally supplied low-temperature heat."
-        )
+        row["review_required"] = "heat_cost = 0 assumes internally supplied low-temperature heat."
     return row
 
 
@@ -350,7 +488,9 @@ def build_rows(reference_rows: dict[str, dict[str, str]]) -> list[dict[str, obje
 
 
 def optional_component_rows(reference_rows: dict[str, dict[str, str]]) -> list[dict[str, object]]:
-    thermal = stage_row("OPTIONAL", "Optional calciner thermal storage", "thermal_storage", "", reference_rows)
+    thermal = stage_row(
+        "OPTIONAL", "Optional calciner thermal storage", "thermal_storage", "", reference_rows
+    )
     thermal.update(
         {
             "name": "<plant_name>",
@@ -383,31 +523,156 @@ def optional_component_rows(reference_rows: dict[str, dict[str, str]]) -> list[d
 
 def parameter_guide() -> list[tuple[str, str, str, str]]:
     return [
-        ("route_id", "R2 selects alternative-fuel defaults; other routes use conventional defaults.", "Optional", "R2 or 2"),
-        ("raw_meal_to_clinker_ratio", "Raw meal required per tonne of clinker.", "Plant-level sizing and flow balance", "1.55"),
-        ("waste_heat_per_t_clinker", "Kiln waste heat available for the preheater.", "Plant-level sizing and flow balance", "0.22 MWh_th/t clinker"),
-        ("waste_heat_utilization_efficiency", "Usable fraction of available kiln waste heat.", "Plant-level sizing and flow balance", "0.90"),
-        ("max_heat_out", "Maximum stage heat output.", "Required for kiln-line stage", "No safe default"),
-        ("max_power", "Maximum stage electrical power.", "Required for kiln-line stage", "No safe default"),
-        ("min_heat_out", "Minimum stage heat output when operating.", "Required for kiln-line stage", "No safe default"),
-        ("min_power", "Minimum stage electrical power when operating.", "Required for kiln-line stage", "No safe default"),
-        ("ramp_up", "Maximum stage output increase per model step.", "Required for kiln-line stage", "No safe default"),
-        ("ramp_down", "Maximum stage output decrease per model step.", "Required for kiln-line stage", "No safe default"),
-        ("specific_heat_demand", "Heat required per tonne of stage output.", "Required for kiln-line stage", "Copied from reference where available"),
-        ("fuel_type", "electricity, fossil, hydrogen or hybrid_electricity_fossil.", "Required for kiln-line stage", "Set by route template"),
-        ("fossil_ng_share", "Natural-gas share inside the fossil remainder.", "Fossil/hybrid", "0.034 conventional; 0.0338345865 R2"),
-        ("biomass_share", "Separately procured biomass share of total combustion energy.", "Fossil/hybrid", "0.0 conventional; 0.245 R2"),
-        ("rdf_share", "Total mixed RDF share of total combustion energy.", "Fossil/hybrid", "0.0 conventional; 0.489 R2"),
-        ("biomass_co2_factor", "Physical biomass stack CO2 factor.", "Required when biomass_share > 0", "0.403 tCO2/MWh_th"),
-        ("rdf_mixed_fossil_co2_factor", "Fossil CO2 per MWh of total mixed RDF energy.", "RDF", "0.243 tCO2/MWh_th"),
-        ("rdf_mixed_biogenic_co2_factor", "Physical biogenic CO2 per MWh of total mixed RDF energy.", "Required when rdf_share > 0", "0.135 tCO2/MWh_th"),
-        ("*_co2_accounting_share", "Share of physical biogenic CO2 charged under the selected accounting case.", "Biomass/RDF", "0.0"),
-        ("direct_separation_efficiency", "LEILAC fraction of calcination CO2 directly separated.", "LEILAC", "1.0; confirm for study"),
-        ("*_oxygen_demand", "Oxygen need by fuel, per MWh_th fuel input.", "Oxyfuel", "NG 0.147; coal 0.248; hydrogen 0.24 tO2/MWh_th"),
-        ("specific_oxygen_electricity_consumption", "Electricity per tonne of oxygen generated internally.", "Oxyfuel", "0.22 MWh_el/tO2"),
-        ("capture_efficiency / recovery_efficiency", "Maximum physical capture/recovery fraction.", "CCS", "Amine/cryo 0.90; oxyfuel 0.95"),
-        ("specific_*_consumption", "CCS energy SEC.", "CCS", "Amine: 0.12 MWh_el/tCO2 and 0.95 MWh_th/tCO2; cryo: 0.11; oxyfuel: 0.10 MWh_el/tCO2"),
-        ("max_power, efficiency", "Electrolyser electrical rating and H2 conversion efficiency.", "On-site hydrogen", "Efficiency 0.709 MWh_H2/MWh_el; max_power has no safe default"),
+        (
+            "route_id",
+            "R2 selects alternative-fuel defaults; other routes use conventional defaults.",
+            "Optional",
+            "R2 or 2",
+        ),
+        (
+            "raw_meal_to_clinker_ratio",
+            "Raw meal required per tonne of clinker.",
+            "Plant-level sizing and flow balance",
+            "1.55",
+        ),
+        (
+            "waste_heat_per_t_clinker",
+            "Kiln waste heat available for the preheater.",
+            "Plant-level sizing and flow balance",
+            "0.22 MWh_th/t clinker",
+        ),
+        (
+            "waste_heat_utilization_efficiency",
+            "Usable fraction of available kiln waste heat.",
+            "Plant-level sizing and flow balance",
+            "0.90",
+        ),
+        (
+            "max_heat_out",
+            "Maximum stage heat output.",
+            "Required for kiln-line stage",
+            "No safe default",
+        ),
+        (
+            "max_power",
+            "Maximum stage electrical power.",
+            "Required for kiln-line stage",
+            "No safe default",
+        ),
+        (
+            "min_heat_out",
+            "Minimum stage heat output when operating.",
+            "Required for kiln-line stage",
+            "No safe default",
+        ),
+        (
+            "min_power",
+            "Minimum stage electrical power when operating.",
+            "Required for kiln-line stage",
+            "No safe default",
+        ),
+        (
+            "ramp_up",
+            "Maximum stage output increase per model step.",
+            "Required for kiln-line stage",
+            "No safe default",
+        ),
+        (
+            "ramp_down",
+            "Maximum stage output decrease per model step.",
+            "Required for kiln-line stage",
+            "No safe default",
+        ),
+        (
+            "specific_heat_demand",
+            "Heat required per tonne of stage output.",
+            "Required for kiln-line stage",
+            "Copied from reference where available",
+        ),
+        (
+            "fuel_type",
+            "electricity, fossil, hydrogen or hybrid_electricity_fossil.",
+            "Required for kiln-line stage",
+            "Set by route template",
+        ),
+        (
+            "fossil_ng_share",
+            "Natural-gas share inside the fossil remainder.",
+            "Fossil/hybrid",
+            "0.034 conventional; 0.0338345865 R2",
+        ),
+        (
+            "biomass_share",
+            "Separately procured biomass share of total combustion energy.",
+            "Fossil/hybrid",
+            "0.0 conventional; 0.245 R2",
+        ),
+        (
+            "rdf_share",
+            "Total mixed RDF share of total combustion energy.",
+            "Fossil/hybrid",
+            "0.0 conventional; 0.489 R2",
+        ),
+        (
+            "biomass_co2_factor",
+            "Physical biomass stack CO2 factor.",
+            "Required when biomass_share > 0",
+            "0.403 tCO2/MWh_th",
+        ),
+        (
+            "rdf_mixed_fossil_co2_factor",
+            "Fossil CO2 per MWh of total mixed RDF energy.",
+            "RDF",
+            "0.243 tCO2/MWh_th",
+        ),
+        (
+            "rdf_mixed_biogenic_co2_factor",
+            "Physical biogenic CO2 per MWh of total mixed RDF energy.",
+            "Required when rdf_share > 0",
+            "0.135 tCO2/MWh_th",
+        ),
+        (
+            "*_co2_accounting_share",
+            "Share of physical biogenic CO2 charged under the selected accounting case.",
+            "Biomass/RDF",
+            "0.0",
+        ),
+        (
+            "direct_separation_efficiency",
+            "LEILAC fraction of calcination CO2 directly separated.",
+            "LEILAC",
+            "1.0; confirm for study",
+        ),
+        (
+            "*_oxygen_demand",
+            "Oxygen need by fuel, per MWh_th fuel input.",
+            "Oxyfuel",
+            "NG 0.147; coal 0.248; hydrogen 0.24 tO2/MWh_th",
+        ),
+        (
+            "specific_oxygen_electricity_consumption",
+            "Electricity per tonne of oxygen generated internally.",
+            "Oxyfuel",
+            "0.22 MWh_el/tO2",
+        ),
+        (
+            "capture_efficiency / recovery_efficiency",
+            "Maximum physical capture/recovery fraction.",
+            "CCS",
+            "Amine/cryo 0.90; oxyfuel 0.95",
+        ),
+        (
+            "specific_*_consumption",
+            "CCS energy SEC.",
+            "CCS",
+            "Amine: 0.12 MWh_el/tCO2 and 0.95 MWh_th/tCO2; cryo: 0.11; oxyfuel: 0.10 MWh_el/tCO2",
+        ),
+        (
+            "max_power, efficiency",
+            "Electrolyser electrical rating and H2 conversion efficiency.",
+            "On-site hydrogen",
+            "Efficiency 0.709 MWh_H2/MWh_el; max_power has no safe default",
+        ),
     ]
 
 
@@ -433,18 +698,45 @@ def style_sheet(sheet, *, freeze: str = "A2") -> None:
     sheet.row_dimensions[1].height = 32
 
 
-def write_workbook(output: Path, reference_columns: list[str], reference_rows: dict[str, dict[str, str]]) -> None:
+def write_workbook(
+    output: Path, reference_columns: list[str], reference_rows: dict[str, dict[str, str]]
+) -> None:
     workbook = Workbook()
     readme = workbook.active
     readme.title = "Read me"
     readme.append(["Cement route parameter template"])
-    readme.append(["Purpose", "Create one plants.csv per route by filtering plants_template on route_id and replacing yellow placeholders."])
+    readme.append(
+        [
+            "Purpose",
+            "Create one plants.csv per route by filtering plants_template on route_id and replacing yellow placeholders.",
+        ]
+    )
     readme.append(["Green", "Model default or value copied from cement_plant_DE/plants.csv."])
-    readme.append(["Yellow", "A required route-, technology- or fuel-specification value. Replace before solving."])
+    readme.append(
+        [
+            "Yellow",
+            "A required route-, technology- or fuel-specification value. Replace before solving.",
+        ]
+    )
     readme.append(["Blue", "Route structure or identifier supplied by this template."])
-    readme.append(["Important", "RDF means total mixed RDF energy. Use rdf_share, never rdf_excl_biomass_share."])
-    readme.append(["Important", "RDF fossil factor is 0.243 tCO2/MWh_th of total mixed RDF. Do not multiply it by a fossil fraction again."])
-    readme.append(["Important", "The template's preheater fuel choices are modelling assumptions inherited from the current reference case; review them for your source data."])
+    readme.append(
+        [
+            "Important",
+            "RDF means total mixed RDF energy. Use rdf_share, never rdf_excl_biomass_share.",
+        ]
+    )
+    readme.append(
+        [
+            "Important",
+            "RDF fossil factor is 0.243 tCO2/MWh_th of total mixed RDF. Do not multiply it by a fossil fraction again.",
+        ]
+    )
+    readme.append(
+        [
+            "Important",
+            "The template's preheater fuel choices are modelling assumptions inherited from the current reference case; review them for your source data.",
+        ]
+    )
     for row in readme.iter_rows(min_row=1, max_row=1):
         for cell in row:
             cell.fill = HEADER
@@ -458,13 +750,31 @@ def write_workbook(output: Path, reference_columns: list[str], reference_rows: d
         readme.row_dimensions[index].height = 34
 
     matrix = workbook.create_sheet("Route matrix")
-    matrix.append(["route_id", "description", "technologies", "external hydrogen", "electrolyser", "CCS boundary note"])
+    matrix.append(
+        [
+            "route_id",
+            "description",
+            "technologies",
+            "external hydrogen",
+            "electrolyser",
+            "CCS boundary note",
+        ]
+    )
     for route_id, description, equipment in ROUTES:
         technologies = " -> ".join(technology for technology, _ in equipment)
         has_electrolyser = any(technology == "electrolyser" for technology, _ in equipment)
         has_hydrogen = any(fuel_type == "hydrogen" for _, fuel_type in equipment)
         note = "Oxyfuel CCS receives only oxyfuel-stage CO2." if route_id == "R10" else ""
-        matrix.append([route_id, description, technologies, "yes" if has_hydrogen and not has_electrolyser else "no", "yes" if has_electrolyser else "no", note])
+        matrix.append(
+            [
+                route_id,
+                description,
+                technologies,
+                "yes" if has_hydrogen and not has_electrolyser else "no",
+                "yes" if has_electrolyser else "no",
+                note,
+            ]
+        )
     style_sheet(matrix)
     add_table(matrix, "CementRouteMatrix")
 
