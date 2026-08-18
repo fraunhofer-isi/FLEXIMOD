@@ -13,7 +13,16 @@ dist/
 playground/
 *.egg-info/
 
-data/input/
+#Temperory
+# data/input/
+tests/golden
+src/flexi_mod/strategies/electrified_afrr_down_strategy.py
+tests/test_electrified_afrr_down_strategy.py
+tests/test_cement_afrr_down.py
+tests/test_cement_golden.py
+tests/test_afrr_down_golden.py
+
+
 data/input/archive/
 data/output/archive/
 data/output/reports/
