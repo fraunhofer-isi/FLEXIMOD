@@ -35,6 +35,3 @@ data/processed/
 # Generated steel-scenario cases (scripts/generate_steel_cases.py). Their
 # forecasts_df.csv embed proprietary market data — do not commit.
 data/output/
-data/input/fokusH2_*/
-data/input/fokusstrom_*/
-data/input/technologiemix_*/

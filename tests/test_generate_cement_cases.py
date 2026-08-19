@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from scripts.generate_cement_cases import (
+    TEMPLATE_CASE,
     demand_workbook_for_scenario,
     scenario_year,
     size_route_for_plant,
@@ -62,10 +63,16 @@ def test_cement_scenario_family_selects_demand_workbook() -> None:
     )
 
 
+def test_generated_cement_template_starts_on_first_of_january() -> None:
+    template = (TEMPLATE_CASE / "config.yaml").read_text(encoding="utf-8")
+
+    assert 'simulation_start: "2030-01-01 00:00"' in template
+
+
 def test_strategy_mapping_uses_hybrid_strategy_only_for_r6() -> None:
     assert strategy_for_route("R6") == "hybrid_strategy_cement"
-    assert strategy_for_route("R1") == "electrified_cement"
-    assert strategy_for_route("R16") == "electrified_cement"
+    assert strategy_for_route("R1") == "electrified_cement_rule_based"
+    assert strategy_for_route("R16") == "electrified_cement_rule_based"
 
 
 def test_r6_config_uses_hybrid_strategy(tmp_path: Path) -> None:
@@ -83,6 +90,23 @@ def test_r6_config_uses_hybrid_strategy(tmp_path: Path) -> None:
     generated = output_path.read_text(encoding="utf-8")
     assert "name: aktuellepolitiken_2030_R6" in generated
     assert "name: hybrid_strategy_cement" in generated
+
+
+def test_non_hybrid_config_uses_neutral_rule_based_strategy(tmp_path: Path) -> None:
+    output_path = tmp_path / "config.yaml"
+    template = (
+        "cases:\n"
+        "  cement_plant_DE:\n"
+        "    name: cement_plant_DE\n"
+        "    strategy:\n"
+        "      name: electrified_cement\n"
+    )
+
+    write_config(output_path, "aktuellepolitiken_2030_R1", "2030", template, route="R1")
+
+    generated = output_path.read_text(encoding="utf-8")
+    assert "name: aktuellepolitiken_2030_R1" in generated
+    assert "name: electrified_cement_rule_based" in generated
 
 
 def test_route_sizing_uses_peak_clinker_rate_for_heat_and_flexibility() -> None:

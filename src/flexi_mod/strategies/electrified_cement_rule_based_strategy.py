@@ -38,16 +38,18 @@ from flexi_mod.strategies.electrified_steel_rule_based_strategy import (
 COAL_PRICE_SIGNAL = "coal_price"
 
 
-class HybridStrategyCement(
+class ElectrifiedCementRuleBasedStrategy(
     ElectrifiedCementStrategy, ElectrifiedSteelRuleBasedStrategy
 ):
-    """DA/aFRR strategy for hybrid electricity/fuel switching in a clinker line.
+    """Rule-based DA/aFRR strategy for a cement clinker line.
 
     Takes its market configuration and commodity columns from
     :class:`ElectrifiedCementStrategy`, and its ``dispatch`` from the rule-based steel
-    variant. The method resolution order matters: cement must come first so that
-    ``commodity_forecast_columns`` and ``_build_signals`` are cement's, while ``dispatch``
-    falls through to the rule-based implementation.
+    variant. When a route exposes electricity-for-fuel substitution, the inherited
+    heuristic uses the plant's fuel-price benchmark. Otherwise it applies the
+    non-hybrid aFRR bidding rules. The method resolution order matters: cement must come
+    first so that ``commodity_forecast_columns`` and ``_build_signals`` are cement's,
+    while ``dispatch`` falls through to the rule-based implementation.
     """
 
     def _build_dispatch_signals(
@@ -70,6 +72,5 @@ class HybridStrategyCement(
         )
 
 
-# Backward-compatible import alias for existing user code. New case configurations
-# should use the clearer ``hybrid_strategy_cement`` strategy identifier.
-ElectrifiedCementRuleBasedStrategy = HybridStrategyCement
+class HybridStrategyCement(ElectrifiedCementRuleBasedStrategy):
+    """Rule-based cement strategy named for explicitly hybrid technology routes."""

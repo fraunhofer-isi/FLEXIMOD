@@ -72,7 +72,7 @@ TEMPLATE_YEAR = "2030"
 DEMAND_SUFFIX = "_clinker_demand"
 ROUTE_METADATA_COLUMNS = ("route_id", "route_description")
 HYBRID_STRATEGY_CEMENT_ROUTES = frozenset({"R6"})
-ELECTRIFIED_CEMENT_STRATEGY = "electrified_cement"
+RULE_BASED_CEMENT_STRATEGY = "electrified_cement_rule_based"
 HYBRID_CEMENT_STRATEGY = "hybrid_strategy_cement"
 LICENSE_TEXT = (
     "SPDX-FileCopyrightText: FLEXIMOD Developers\n\nSPDX-License-Identifier: AGPL-3.0-or-later\n"
@@ -126,12 +126,12 @@ def strategy_for_route(route: str) -> str:
     """Return the cross-market strategy selected by a cement technology route.
 
     R6 continuously substitutes electric heat for its fossil fuel blend, so it uses the
-    strike-price-based hybrid strategy. All remaining routes use the exact joint
-    DA/aFRR capacity/aFRR energy optimisation.
+    explicitly named hybrid strategy. All remaining routes use the neutral rule-based
+    DA/aFRR capacity/aFRR energy heuristic.
     """
     if route in HYBRID_STRATEGY_CEMENT_ROUTES:
         return HYBRID_CEMENT_STRATEGY
-    return ELECTRIFIED_CEMENT_STRATEGY
+    return RULE_BASED_CEMENT_STRATEGY
 
 
 def load_design_clinker_rates(workbook: Path) -> dict[str, float]:

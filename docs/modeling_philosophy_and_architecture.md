@@ -598,17 +598,18 @@ forecast columns `natural_gas_price`, `hydrogen_price`, `coal_price` when needed
 and `co2_price`. It writes physical `dispatch_results.csv` and
 `summary_indicators.csv`.
 
-And two market bidders, `electrified_cement` and
-`hybrid_strategy_cement`. Both need all three markets enabled in the
+And three market bidders, `electrified_cement`, `electrified_cement_rule_based`, and
+`hybrid_strategy_cement`. All need all three markets enabled in the
 sequence `afrr_capacity, day_ahead, afrr_energy`, the German gate calendar, and a
 `dispatch_horizon_hours` covering `rolling_step_hours` plus one whole aFRR
 capacity product. See *Cement market bidding* above.
 
 `electrified_cement` co-optimises the day-ahead position against both aFRR
-products in one MILP. `hybrid_strategy_cement` decides production timing
+products in one MILP. `electrified_cement_rule_based` decides production timing
 first and sizes capacity from whatever that fixed schedule leaves spare, which is
 several times faster but understates the opportunity — measured at roughly 4%
-higher net cost on a four-day A360 slice.
+higher net cost on a four-day A360 slice. `hybrid_strategy_cement` is the same
+heuristic under an explicit name for hybrid electricity/fuel-switching routes.
 
 **Do not compare `afrr_capacity_net_value_EUR` across the two.** The rule-based
 variant never solves a capacity-disabled baseline, so it cannot price what

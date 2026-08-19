@@ -33,8 +33,8 @@ STRATEGY_REGISTRY = {
     "electrified_steel_rule_based": ElectrifiedSteelRuleBasedStrategy,
     "cement_cost_minimization": CementCostMinimizationStrategy,
     "electrified_cement": ElectrifiedCementStrategy,
-    "hybrid_strategy_cement": HybridStrategyCement,
     "electrified_cement_rule_based": ElectrifiedCementRuleBasedStrategy,
+    "hybrid_strategy_cement": HybridStrategyCement,
 }
 
 
