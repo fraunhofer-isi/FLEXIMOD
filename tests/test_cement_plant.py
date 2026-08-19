@@ -738,6 +738,25 @@ def test_rolling_serves_out_minimum_downtime_inherited_from_the_previous_window(
     assert result["clinker_output_t"].to_numpy() == pytest.approx([1.0, 1.0, 1.0, 1.0])
 
 
+def test_cement_stage_commitment_is_added_only_when_required(case_dir: Path) -> None:
+    config = CaseConfig.from_case_dir(case_dir)
+    forecasts = _cement_forecasts(include_coal=False)
+    continuous = CementPlant.from_rows("cement_1", _cement_rows())
+    continuous_model = continuous._build_model(config, forecasts, _signals())
+
+    for technology in ("preheater", "simple_calciner", "simple_kiln"):
+        assert not hasattr(continuous_model.technology_blocks[technology], "operational_status")
+
+    committed_rows = _cement_rows()
+    committed_rows.loc[committed_rows["technology"] == "simple_kiln", "min_down_time"] = 2
+    committed = CementPlant.from_rows("cement_1", committed_rows)
+    committed_model = committed._build_model(config, forecasts, _signals())
+
+    assert hasattr(committed_model.technology_blocks["simple_kiln"], "operational_status")
+    assert hasattr(committed_model.technology_blocks["simple_kiln"], "start_up")
+    assert hasattr(committed_model.technology_blocks["simple_kiln"], "shut_down")
+
+
 def test_thermal_storage_charging_is_priced_into_the_objective(case_dir: Path) -> None:
     """Regression guard: the storage block must expose ``operating_cost``.
 

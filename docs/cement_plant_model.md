@@ -135,9 +135,11 @@ min_heat_out × operational_status <= heat_out
 heat_out <= max_heat_out × operational_status
 ```
 
-It also has heat ramp-up/down constraints, optional minimum operating and down times,
-and start-up/shut-down variables. The rolling horizon carries the committed final
-status, consecutive status duration and heat output into the next window.
+It also has heat ramp-up/down constraints. When a stage has a non-zero turndown floor
+or a minimum operating/down time, it receives start-up/shut-down variables and the
+rolling horizon carries its committed final status, consecutive status duration and heat
+output into the next window. Otherwise the stage is continuously available between zero
+and its heat rating, without unnecessary commitment binaries.
 
 Auxiliary electricity is proportional to stage throughput:
 

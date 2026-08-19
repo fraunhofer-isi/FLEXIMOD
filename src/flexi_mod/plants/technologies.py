@@ -1209,9 +1209,24 @@ class CementKilnLineStage:
         block.co2_priced = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.co2_emission = pyo.Var(time_steps, within=pyo.NonNegativeReals)
         block.operating_cost = pyo.Var(time_steps, within=pyo.Reals)
-        block.operational_status = pyo.Var(time_steps, within=pyo.Binary)
-        block.start_up = pyo.Var(time_steps, within=pyo.Binary)
-        block.shut_down = pyo.Var(time_steps, within=pyo.Binary)
+        if self._requires_commitment():
+            block.operational_status = pyo.Var(time_steps, within=pyo.Binary)
+            block.start_up = pyo.Var(time_steps, within=pyo.Binary)
+            block.shut_down = pyo.Var(time_steps, within=pyo.Binary)
+
+    def _requires_commitment(self) -> bool:
+        """Whether this stage needs an on/off commitment formulation.
+
+        With no turndown floor and no minimum up/down time, a stage is continuously
+        available between zero and its heat rating. Adding binary status variables in
+        that case cannot change the feasible physical operation.
+        """
+        return (
+            self.min_heat_out_mw > 0.0
+            or self.min_electric_power_mw > 0.0
+            or self.min_operating_steps > 1
+            or self.min_down_steps > 1
+        )
 
     def _add_stage_parameters(self, block: pyo.Block) -> None:
         """Hook: Params beyond the common set, e.g. the calciner's own calcination
@@ -1346,30 +1361,16 @@ class CementKilnLineStage:
     ) -> None:
         """Pyomo Components:
 
-        - **Constraints**: auxiliary power drawn from throughput, the heat/commitment
-          coupling (``max_heat_if_on``/``min_heat_if_on`` - the stage may run anywhere
-          between its turndown floor and its rating while on, and must be at 0 while
-          off), heat ramp limits, and the full unit-commitment sub-model (state
-          transition, minimum up/down time, and any residual time inherited from the
-          previous rolling window).
+        - **Constraints**: auxiliary power drawn from throughput and heat ramp limits.
+          A stage with a turndown floor or minimum up/down time additionally receives
+          the unit-commitment sub-model; otherwise it stays continuously available
+          between zero and its heat rating.
         """
         ordered_steps = list(time_steps)
 
         @block.Constraint(time_steps)
         def auxiliary_power_definition(b: pyo.Block, t: int) -> pyo.Constraint:
             return b.aux_power_in[t] == output[t] * b.specific_electricity_aux
-
-        @block.Constraint(time_steps)
-        def max_heat_if_on(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.heat_out[t] <= b.max_heat_out * b.operational_status[t]
-
-        @block.Constraint(time_steps)
-        def min_heat_if_on(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.heat_out[t] >= b.min_heat_out * b.operational_status[t]
-
-        @block.Constraint(time_steps)
-        def min_power_if_on(b: pyo.Block, t: int) -> pyo.Constraint:
-            return b.power_in[t] >= b.min_power * b.operational_status[t]
 
         @block.Constraint(time_steps)
         def heat_ramp_up(b: pyo.Block, t: int) -> pyo.Constraint:
@@ -1386,6 +1387,21 @@ class CementKilnLineStage:
                 return b.initial_heat_out - b.heat_out[t] <= b.ramp_down
             previous = b.heat_out[ordered_steps[position - 1]]
             return previous - b.heat_out[t] <= b.ramp_down
+
+        if not self._requires_commitment():
+            return
+
+        @block.Constraint(time_steps)
+        def max_heat_if_on(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.heat_out[t] <= b.max_heat_out * b.operational_status[t]
+
+        @block.Constraint(time_steps)
+        def min_heat_if_on(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.heat_out[t] >= b.min_heat_out * b.operational_status[t]
+
+        @block.Constraint(time_steps)
+        def min_power_if_on(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.power_in[t] >= b.min_power * b.operational_status[t]
 
         @block.Constraint(time_steps)
         def state_transition_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
