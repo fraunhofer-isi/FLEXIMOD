@@ -7,12 +7,14 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataLoader
+from flexi_mod.simulation.provenance import ProvenanceCollector
 from flexi_mod.ledgers.market_ledger import MarketLedger
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.markets import BaseMarket, build_markets
@@ -82,6 +84,7 @@ class SimulationRunner:
         )
 
     def run(self) -> dict[str, Path | list[Path]]:
+        started_at = datetime.now(timezone.utc)
         self._progress("Loading input data")
         plants_df = self.loader.load_plants()
         plants = SteamGenerationPlant.from_plants_dataframe(plants_df)
@@ -219,7 +222,30 @@ class SimulationRunner:
 
         self._progress("Outputs saved")
 
+        provenance_path = self._write_provenance(plants_df, forecasts, started_at)
+        output_paths["provenance"] = provenance_path
+
         return output_paths
+
+    def _write_provenance(
+        self,
+        plants_df: pd.DataFrame,
+        forecasts: pd.DataFrame,
+        started_at: datetime,
+    ) -> Path:
+        """Assemble and persist run provenance to provenance.json in the output dir."""
+        duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+        collector = ProvenanceCollector(self.config, self.loader, self.config.project_root)
+        metadata = collector.build(
+            plants_df,
+            forecasts,
+            started_at=started_at,
+            duration_seconds=duration_seconds,
+        )
+        path = self.output_dir / "provenance.json"
+        path.write_text(ProvenanceCollector.to_json(metadata), encoding="utf-8")
+        self._progress(f"Provenance written to {path}")
+        return path
 
     def _settle_grid_fees(
         self,
