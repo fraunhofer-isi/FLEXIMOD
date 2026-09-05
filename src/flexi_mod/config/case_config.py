@@ -222,6 +222,8 @@ class CaseConfig:
                 signals = market["signals"]
                 if "price" not in signals:
                     raise ConfigError("Enabled afrr_capacity market must define signals.price")
+                if "quantity" not in signals:
+                    raise ConfigError("Enabled afrr_capacity market must define signals.quantity")
                 supported_capacity_price_units = {
                     "EUR_per_MW_per_h",
                     "EUR_per_MW_per_product",

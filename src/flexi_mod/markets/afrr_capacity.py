@@ -38,7 +38,7 @@ class AFRRCapacityMarket(BaseMarket):
     does not decide whether the industrial operator should reserve capacity.
     """
 
-    REQUIRED_SIGNALS = ("price",)
+    REQUIRED_SIGNALS = ("price", "quantity")
 
     @property
     def price_unit(self) -> str:
@@ -83,6 +83,7 @@ class AFRRCapacityMarket(BaseMarket):
         return prepare_afrr_capacity_blocks(
             forecasts=forecasts,
             price_col=self.signal_column("price"),
+            quantity_col=self.signal_column("quantity"),
             product_length_minutes=product_length_minutes,
             timestep_hours=timestep_hours,
             price_unit=self.price_unit,
@@ -92,6 +93,7 @@ class AFRRCapacityMarket(BaseMarket):
 def prepare_afrr_capacity_blocks(
     forecasts: pd.DataFrame,
     price_col: str,
+    quantity_col: str,
     product_length_minutes: int,
     timestep_hours: float,
     price_unit: str = "EUR_per_MW_per_h",
@@ -108,6 +110,9 @@ def prepare_afrr_capacity_blocks(
         )
 
     price = pd.to_numeric(forecasts[price_col].replace("", pd.NA), errors="coerce")
+    raw_quantity = pd.to_numeric(forecasts[quantity_col].replace("", pd.NA), errors="coerce")
+    negative_quantity = raw_quantity.lt(0.0)
+    quantity_mw = raw_quantity.abs()
     block_ids = []
     block_starts = []
     block_ends = []
@@ -124,6 +129,8 @@ def prepare_afrr_capacity_blocks(
             "afrr_capacity_block_start": block_starts,
             "afrr_capacity_block_end": block_ends,
             "afrr_capacity_price_raw": price,
+            "afrr_capacity_quantity_raw": raw_quantity,
+            "afrr_capacity_quantity_MW": quantity_mw,
             "afrr_capacity_price_input_unit": price_unit,
         },
         index=forecasts.index,
@@ -154,6 +161,30 @@ def prepare_afrr_capacity_blocks(
                 else raw_block_price / product_duration_h
             )
 
+        block_quantities = block_frame["afrr_capacity_quantity_MW"]
+        missing_quantity = bool(block_quantities.isna().any())
+        non_missing_quantities = block_quantities.dropna()
+        quantity_inconsistent = bool(
+            not non_missing_quantities.empty
+            and (non_missing_quantities - float(non_missing_quantities.iloc[0]))
+            .abs()
+            .gt(PRICE_CONSISTENCY_TOLERANCE)
+            .any()
+        )
+        if quantity_inconsistent:
+            warnings.warn(
+                f"aFRR capacity quantities differ inside block {block_id}. "
+                "Using the minimum quantity so the block bid never exceeds market demand.",
+                stacklevel=2,
+            )
+        # A capacity bid applies to the complete product block. A missing interval therefore
+        # makes its available market volume unknown and conservatively blocks the bid.
+        block_quantity_mw = (
+            0.0
+            if missing_quantity or non_missing_quantities.empty
+            else float(non_missing_quantities.min())
+        )
+
         block_start = pd.Timestamp(block_frame["afrr_capacity_block_start"].iloc[0])
         block_end = pd.Timestamp(block_frame["afrr_capacity_block_end"].iloc[0])
         block_duration_h = len(block_frame) * timestep_hours
@@ -168,6 +199,12 @@ def prepare_afrr_capacity_blocks(
                 "capacity_price_EUR_per_MW_h": block_price,
                 "missing_capacity_price_flag": bool(missing_price),
                 "price_inconsistency_flag": bool(inconsistent),
+                "capacity_quantity_MW": block_quantity_mw,
+                "missing_capacity_quantity_flag": missing_quantity,
+                "negative_capacity_quantity_flag": bool(
+                    negative_quantity.loc[block_frame.index].fillna(False).any()
+                ),
+                "quantity_inconsistency_flag": quantity_inconsistent,
                 "number_of_timesteps": int(len(block_frame)),
             }
         )
@@ -180,6 +217,10 @@ def prepare_afrr_capacity_blocks(
                 "capacity_price_EUR_per_MW_h",
                 "missing_capacity_price_flag",
                 "price_inconsistency_flag",
+                "capacity_quantity_MW",
+                "missing_capacity_quantity_flag",
+                "negative_capacity_quantity_flag",
+                "quantity_inconsistency_flag",
             ]
         ],
         on="afrr_capacity_block_id",

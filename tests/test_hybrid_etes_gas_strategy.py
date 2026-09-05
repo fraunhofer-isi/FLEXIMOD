@@ -1274,6 +1274,30 @@ def test_afrr_capacity_bid_is_capped_by_activation_volume(
     assert block["reserved_capacity_MW"] == pytest.approx(block["compliant_capacity_MW"])
 
 
+def test_afrr_capacity_bid_is_capped_by_capacity_market_quantity(
+    afrr_capacity_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        afrr_capacity_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[2.7] * 8,
+        afrr_capacity_prices=[100.0] * 8,
+        afrr_capacity_quantities=[1.7] * 8,
+        heat_demand=[2.0] * 8,
+    )
+
+    results = _run_case(afrr_capacity_case, tmp_path)
+    block = results["afrr_capacity_blocks"].iloc[0]
+
+    assert block["market_capacity_MW"] == pytest.approx(1.7)
+    assert block["compliant_capacity_MW"] == pytest.approx(1.0)
+    assert block["reserved_capacity_MW"] == pytest.approx(1.0)
+    assert bool(block["capacity_quantity_binding"])
+
+
 def test_afrr_capacity_bid_increment_rounds_down_to_half_mw(
     tmp_path: Path,
 ) -> None:
@@ -1508,6 +1532,7 @@ markets:
       divisible: true
     signals:
       price: "aFRR_capacity_down_price"
+      quantity: "aFRR_capacity_down_quantity"
 """.strip()
         ),
         encoding="utf-8",
@@ -1570,6 +1595,7 @@ def _write_forecasts(
     afrr_prices: list[float | None] | None = None,
     afrr_quantities: list[float | None] | None = None,
     afrr_capacity_prices: list[float | None] | None = None,
+    afrr_capacity_quantities: list[float | None] | None = None,
     heat_demand: list[float] | None = None,
 ) -> None:
     datetimes = pd.date_range("2025-01-01 00:00", periods=8, freq="15min")
@@ -1590,6 +1616,11 @@ def _write_forecasts(
         forecasts["aFRR_energy_down_quantity"] = afrr_quantities
     if afrr_capacity_prices is not None:
         forecasts["aFRR_capacity_down_price"] = afrr_capacity_prices
+        forecasts["aFRR_capacity_down_quantity"] = (
+            afrr_capacity_quantities
+            if afrr_capacity_quantities is not None
+            else [100.0] * len(datetimes)
+        )
     forecasts.to_csv(path, index=False)
 
 

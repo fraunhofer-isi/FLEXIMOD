@@ -490,11 +490,26 @@ is the single value selected from such a series inside the timestep loop.
 
 ### aFRR Capacity Pricing Quantities
 
+An enabled capacity market requires separate price and available-volume signals:
+
+```yaml
+signals:
+  price: aFRR_capacity_down_price
+  quantity: aFRR_capacity_down_quantity
+```
+
+`aFRR_capacity_down_quantity` is the exogenous capacity-market volume in MW.
+It is distinct from `aFRR_energy_down_quantity`, which remains the activation
+request. The submitted capacity bid cannot exceed either quantity-derived cap
+or the plant's physical capability. If capacity quantities differ within a
+product block, the minimum is used. A missing block value prevents bidding.
+
 | Code/output name | Kind | Unit | Definition and use |
 |---|---|---:|---|
 | `capacity_price_input_unit` | Market configuration/output | — | Unit of the source capacity-price series: `EUR_per_MW_per_h` or `EUR_per_MW_per_product`. |
 | `capacity_price_raw` | Block input | Configured input unit | Unmodified capacity price read from the forecast column. |
 | `capacity_price_EUR_per_MW_h` | Normalised block price | EUR/MW/h | Internal hourly price. A per-product input is divided by the configured product duration in hours. |
+| `capacity_quantity_MW` / `market_capacity_MW` | Market input/strategy diagnostic | MW | Capacity volume available to this price-taking plant. It caps the capacity bid independently of the aFRR-energy activation request. |
 | `capacity_pricing_rule` | Strategy/output | — | `pay_as_bid` for `hybrid_etes_gas`, or `pay_as_cleared` for the new strategy variant. |
 | `opportunity_cost_block` / `opportunity_cost_EUR_per_MW_h` | Derived block value | EUR/MW/h | Estimated value forgone by reserving one MW of charging capability rather than using it in the energy market. |
 | `AFRR_CAPACITY_MARGIN_EUR_PER_MW_H` | Strategy constant | EUR/MW/h | Additional required margin above opportunity cost. It is currently zero. |
@@ -503,7 +518,8 @@ is the single value selected from such a series inside the timestep loop.
 | `clearing_price` / `capacity_clearing_price_EUR_per_MW_h` | Exogenous market input/output | EUR/MW/h | Market reference price. In the pay-as-cleared strategy this is the marginal clearing price used for award and settlement. FLEXIMOD does not calculate it from a system supply curve. |
 | `capacity_profitable` | Boolean block diagnostic | — | True when price data exist and the market reference price covers both the minimum acceptable price and submitted bid. |
 | `technical_capacity_MW` | Derived block value | MW | Smaller of ETES charging-power capability and storage-capacity capability. |
-| `compliant_capacity_MW` | Derived block value | MW | Technical capacity rounded down according to `min_bid_mw` and `bid_increment_mw`. |
+| `compliant_capacity_MW` | Derived block value | MW | Minimum of physical capability, the activation-derived cap, and capacity-market quantity, rounded down according to `min_bid_mw` and `bid_increment_mw`. |
+| `capacity_quantity_binding` | Boolean block diagnostic | — | True when the capacity-market quantity is the binding bid-volume limitation. |
 | `reserved_capacity_MW` / `afrr_capacity_reserved_MW` | Awarded capacity | MW | Compliant capacity treated as awarded when all eligibility conditions pass; otherwise zero. |
 | `capacity_settlement_price_EUR_per_MW_h` | Strategy output | EUR/MW/h | Payment rate: submitted bid price under pay-as-bid, marginal clearing price under pay-as-cleared. |
 | `capacity_revenue_EUR` / `afrr_capacity_revenue_EUR` | Settlement output | EUR | `awarded MW * settlement price * product duration`. |

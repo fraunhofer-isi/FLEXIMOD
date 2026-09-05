@@ -894,14 +894,17 @@ class HybridETESGasStrategy(BaseStrategy):
             max_activation_need_mw = (
                 max_activation_need_mwh / timestep_hours if timestep_hours > 0 else 0.0
             )
-            # Reserve the volume the market will actually activate (the block's peak
-            # 15-min activation), floored at the minimum bid for market compliance, and
-            # never beyond what the plant can physically deliver. Reserving the full
-            # deliverable capacity (ignoring the activation volume) over-reserves — and
-            # is paid for — capacity that will never be called.
+            # Limit the reservation by three independent ceilings: physical delivery,
+            # expected peak activation, and capacity-market demand. The result is then
+            # rounded down to the market increment. This prevents the representative
+            # plant from claiming either unused physical headroom or more capacity than
+            # the exogenous market quantity.
             technical_capacity = deliverable_capacity_mw
+            market_capacity_mw = float(block["capacity_quantity_MW"])
             target_capacity_mw = min(
-                deliverable_capacity_mw, max(max_activation_need_mw, min_bid_mw)
+                deliverable_capacity_mw,
+                max(max_activation_need_mw, min_bid_mw),
+                market_capacity_mw,
             )
             compliant_capacity = _round_bid_down_to_increment(
                 target_capacity_mw,
@@ -920,12 +923,17 @@ class HybridETESGasStrategy(BaseStrategy):
                 and clearing_price >= capacity_bid_price
             )
             technically_feasible = compliant_capacity > 1e-12 and compliant_capacity >= min_bid_mw
+            capacity_quantity_available = (
+                not bool(block["missing_capacity_quantity_flag"])
+                and market_capacity_mw >= min_bid_mw
+            )
             block_overlaps_high_load_window = bool(grid_block.loc[mask].any())
             bid_eligible = (
                 activation_expected
                 and capacity_profitable
                 and activation_profitable
                 and technically_feasible
+                and capacity_quantity_available
                 and not block_overlaps_high_load_window
             )
             if not bid_eligible:
@@ -975,7 +983,15 @@ class HybridETESGasStrategy(BaseStrategy):
                     "min_price_margin_EUR_per_MWh": min_activation_price_margin,
                     "peak_activation_MW": max_activation_need_mw,
                     "technical_capacity_MW": technical_capacity,
+                    "market_capacity_MW": market_capacity_mw,
                     "compliant_capacity_MW": compliant_capacity,
+                    "capacity_quantity_binding": bool(
+                        market_capacity_mw
+                        <= min(
+                            deliverable_capacity_mw,
+                            max(max_activation_need_mw, min_bid_mw),
+                        )
+                    ),
                     "bid_increment_MW": bid_increment_mw,
                     "reserved_capacity_MW": reserved_mw,
                     "capacity_revenue_EUR": revenue,

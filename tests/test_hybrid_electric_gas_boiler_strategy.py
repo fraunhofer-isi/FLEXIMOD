@@ -556,6 +556,7 @@ markets:
     price_unit: "EUR_per_MW_per_h"
     signals:
       price: aFRR_capacity_down_price
+      quantity: aFRR_capacity_down_quantity
   day_ahead:
     enabled: {str(day_ahead_enabled).lower()}
     signals:

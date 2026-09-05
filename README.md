@@ -89,6 +89,8 @@ DE_ID3_price
 natural_gas_price
 aFRR_energy_down_price
 aFRR_energy_down_quantity
+aFRR_capacity_down_price
+aFRR_capacity_down_quantity
 ```
 
 CO2 cost is currently disabled in the active MVP objective and benchmark, so
