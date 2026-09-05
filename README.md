@@ -6,17 +6,30 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # FLEXIMOD
 
-FlexIMOD stands for **Flexible Industrial Market-Oriented Dispatch Model**.
+FLEXIMOD stands for **FLEXibility Integration of Demand-side Technologies for
+Market Opportunities and Dispatch**.
 
-It is a modelling framework for industrial energy systems that participate in electricity and flexibility markets. The goal is to represent industrial plants, their connected technologies, and their market-oriented dispatch decisions in a modular and extensible way.
+It is a multi-sector modelling framework for assessing the flexibility,
+physically feasible dispatch, and electricity-market opportunities of
+demand-side technologies. Its scope includes industrial energy systems,
+buildings, electric-vehicle fleets, charging depots, storage-backed demand,
+and future flexible energy assets. The framework represents connected
+technologies and their market-oriented dispatch decisions in a modular and
+extensible way.
 
-The current MVP uses a hybrid ETES + gas boiler steam plant as the first case study. This first case implements Germany-oriented day-ahead, intraday continuous, and proxy aFRR down energy stages with a rule-based market strategy and a Pyomo rolling-horizon plant dispatch model. Future cases can extend the same structure to other industrial processes, technologies, countries, and market designs.
+The current market-simulation MVP uses a hybrid ETES + gas boiler steam plant
+as its first case study. It implements Germany-oriented day-ahead, intraday
+continuous, and proxy aFRR down energy stages with a rule-based market strategy
+and a Pyomo rolling-horizon plant dispatch model. FLEXIMOD also includes an
+electric-bus-depot building model with charging stations and V2G capability.
+Future cases can extend the same structure to other sectors, technologies,
+countries, and market designs.
 
 The architecture is intentionally modular:
 
 - `config.yaml` contains one or more study cases under a top-level `cases:` mapping.
 - `flexi_mod.simulation.run_case` contains example selection, input paths, output paths and output switches.
-- `plants.csv` defines one plant by grouping connected technology rows.
+- `plants.csv` defines one energy asset by grouping connected technology rows.
 - `forecasts_df.csv` contains all time series.
 
 ## Quick Start For Beginners
@@ -74,7 +87,10 @@ data/input/hybrid_ETES_ID_buy/
 `-- additional_charges.csv  # optional, only used when the selected case enables it
 ```
 
-`plants.csv` groups technologies by plant name. For example, two rows with `name=plant_1` define the ETES storage and gas boiler attached to the same industrial plant.
+`plants.csv` groups technologies by asset name. For example, two rows with
+`name=plant_1` define the ETES storage and gas boiler attached to the same
+industrial plant; a bus depot groups its electric-vehicle and charging-station
+rows in the same way.
 
 Inside each study case, `strategy`, `market_sequence`, and `markets` define the
 operator strategy and market configuration for that case.
@@ -336,6 +352,7 @@ The plant model follows a component/plant split similar to the reference ASSUME-
 
 - `plants/technologies.py` defines technology attributes, variables, parameters, and component constraints.
 - `plants/steam_generation_plant.py` connects technologies on the plant heat/electricity buses and owns the rolling-horizon solve.
+- `plants/building.py` connects a building, electric vehicles, and charging stations for timetable-aware charging and bidirectional V2G dispatch. See [the building model guide](docs/building.md).
 
 ## Market Data Warning
 

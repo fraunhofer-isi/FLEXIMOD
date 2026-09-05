@@ -25,6 +25,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 available_examples: dict[str, dict[str, str]] = {
+    "building_v2g_example": {
+        "scenario": "building_v2g_example",
+        "study_case": "building_v2g_example",
+    },
     "hybrid_ETES_DA": {
         "scenario": "hybrid_ETES_DA",
         "study_case": "hybrid_ETES_DA",

@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: FLEXIMOD Developers
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+cases:
+  building_v2g_example:
+    name: building_v2g_example
+    country: generic
+    description: Synthetic one-day building example with electric vehicles and V2G
+    timestep_minutes: 60
+    simulation_start: 2025-01-01 00:00
+    simulation_end: 2025-01-01 23:00
+    timezone: UTC
+    additional_charges: false
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 12
+        rolling_step_hours: 6
+    solver:
+      name: highs
+      fallback_solvers: []
+      tee: false
+    market_sequence:
+    - day_ahead
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 60min
+        signals:
+          price: electricity_import_price
+          export_price: electricity_export_price

@@ -174,8 +174,16 @@ class DataLoader:
             required.update(str(column) for column in signals.values())
 
         for plant_name, plant_rows in plants.groupby("name"):
-            demand_column = _demand_column_for_plant(str(plant_name), plant_rows)
-            required.add(demand_column)
+            unit_types = {
+                str(value).strip().lower() for value in plant_rows["unit_type"].dropna().tolist()
+            }
+            if unit_types & {"building", "bus_depot", "electric_bus_depot"}:
+                from flexi_mod.plants.building import building_profile_columns
+
+                required.update(building_profile_columns(str(plant_name), plant_rows))
+            else:
+                demand_column = _demand_column_for_plant(str(plant_name), plant_rows)
+                required.add(demand_column)
 
         return required
 

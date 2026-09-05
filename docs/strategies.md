@@ -56,6 +56,23 @@ the first aFRR down energy implementation are available. aFRR down capacity is
 evaluated before day-ahead and reserves charging headroom that later market
 stages must respect.
 
+## Building V2G Strategy
+
+`BuildingStrategy` is registered under the config name `building_v2g`. It
+reads the day-ahead import and export price columns, then asks `Building` for
+the least-cost feasible charging and V2G schedule.
+
+The responsibility split is:
+
+```text
+BuildingStrategy: select the configured import and export price signals
+Building: enforce demand, charger, trip, availability, and battery constraints
+SimulationRunner: create rolling windows, commit each step, and carry bus SOC
+```
+
+The current strategy supports the day-ahead market only. The complete example
+is in `data/input/building_v2g_example` and is documented in `building.md`.
+
 ## First Implemented Strategy
 
 The first implemented strategy is:

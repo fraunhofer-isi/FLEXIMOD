@@ -2,12 +2,14 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+from flexi_mod.strategies.building_strategy import BuildingStrategy
 from flexi_mod.strategies.hybrid_electric_gas_boiler_strategy import (
     HybridElectricGasBoilerStrategy,
 )
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 
 STRATEGY_REGISTRY = {
+    "building_v2g": BuildingStrategy,
     "hybrid_electric_gas_boiler": HybridElectricGasBoilerStrategy,
     "hybrid_etes_gas": HybridETESGasStrategy,
     # Pay-as-cleared is a config-selected capacity-pricing rule inside
@@ -29,6 +31,7 @@ def build_strategy(name: str, config):
 
 
 __all__ = [
+    "BuildingStrategy",
     "HybridElectricGasBoilerStrategy",
     "HybridETESGasStrategy",
     "STRATEGY_REGISTRY",
