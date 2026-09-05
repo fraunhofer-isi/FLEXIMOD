@@ -11,6 +11,7 @@ __pycache__/
 build/
 dist/
 playground/
+tmp/
 *.egg-info/
 
 data/input/archive
