@@ -57,6 +57,24 @@ def test_analytics_calculates_da_only_summary() -> None:
     assert "total_excess_heat_MWh" not in summary.columns
 
 
+def test_analytics_counts_direct_electric_boiler_heat() -> None:
+    datetimes = pd.date_range("2025-01-01", periods=2, freq="15min")
+    dispatch = pd.DataFrame(
+        {
+            "datetime": datetimes,
+            "plant_name": ["plant_1", "plant_1"],
+            "heat_demand_MWh": [1.0, 1.0],
+            "gas_heat_MWh": [0.6, 0.4],
+            "electric_boiler_heat_MWh": [0.4, 0.6],
+        }
+    )
+
+    summary = calculate_summary_indicators(dispatch)
+
+    assert summary["total_electric_heat_MWh"].iloc[0] == pytest.approx(1.0)
+    assert summary["total_storage_discharge_heat_MWh"].iloc[0] == pytest.approx(0.0)
+
+
 def test_storage_cost_ledger_tracks_procurement_market_inventory() -> None:
     ledger = StorageCostLedger()
     ledger.record_charge(

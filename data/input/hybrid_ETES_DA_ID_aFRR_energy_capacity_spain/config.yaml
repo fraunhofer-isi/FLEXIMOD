@@ -48,6 +48,7 @@ cases:
           divisible: true
         signals:
           price: ES_aFRR_capacity_down_marginal_price
+          quantity: ES_aFRR_capacity_down_quantity
       day_ahead:
         enabled: true
         product_resolution: 15min
