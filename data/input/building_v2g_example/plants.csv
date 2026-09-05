@@ -1,0 +1,3 @@
+name,unit_type,technology,node,demand,battery_capacity_mwh,fleet_size,charger_count,max_power_charge,max_power_discharge,min_soc,max_soc,initial_soc,terminal_soc,efficiency_charge,efficiency_discharge,power_flow_directionality,availability_column,trip_energy_column,degradation_cost_eur_per_mwh
+building_1,building,electric_vehicle,grid_node,building_1_electricity_demand,0.3,10,,0.15,0.15,0.2,1.0,0.8,0.8,0.95,0.95,bidirectional,building_1_vehicle_availability,building_1_vehicle_trip_energy,10
+building_1,building,charging_station,grid_node,building_1_electricity_demand,,,5,0.15,0.15,,,,,,,bidirectional,,,

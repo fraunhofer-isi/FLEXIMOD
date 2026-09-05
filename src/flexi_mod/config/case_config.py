@@ -175,6 +175,7 @@ class CaseConfig:
             raise ConfigError("cases.<case_name>.additional_charges must be true or false")
 
         supported_strategies = {
+            "building_v2g",
             "hybrid_electric_gas_boiler",
             "hybrid_etes_gas",
             "hybrid_etes_gas_pay_as_cleared_capacity",
@@ -235,6 +236,8 @@ class CaseConfig:
         self._validate_market_order()
         if strategy_name == "hybrid_electric_gas_boiler":
             self._validate_direct_boiler_markets()
+        if strategy_name == "building_v2g":
+            self._validate_building_markets()
 
     @staticmethod
     def _finite_number(value: Any, setting: str) -> float:
@@ -311,6 +314,13 @@ class CaseConfig:
             raise ConfigError(
                 "Strategy 'hybrid_electric_gas_boiler' requires enabled markets "
                 f"in this order: {rendered}"
+            )
+
+    def _validate_building_markets(self) -> None:
+        enabled = self.enabled_markets
+        if enabled != ["day_ahead"]:
+            raise ConfigError(
+                "Strategy 'building_v2g' currently requires only the day_ahead market"
             )
 
     def _validate_market_order(self) -> None:

@@ -17,9 +17,12 @@ from flexi_mod.ledgers.market_ledger import MarketLedger
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.markets import BaseMarket, build_markets
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
+from flexi_mod.plants.building import Building
+from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.steam_generation_plant import DispatchSignals, SteamGenerationPlant
 from flexi_mod.regulations import GridFeeResult, build_grid_fee_regulation
 from flexi_mod.strategies import build_strategy
+from flexi_mod.strategies.building_strategy import BuildingStrategy
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.visualisation.analytics import calculate_summary_indicators
 from flexi_mod.visualisation.plots import create_case_plots
@@ -84,7 +87,30 @@ class SimulationRunner:
     def run(self) -> dict[str, Path | list[Path]]:
         self._progress("Loading input data")
         plants_df = self.loader.load_plants()
-        plants = SteamGenerationPlant.from_plants_dataframe(plants_df)
+        plants = build_plants(plants_df)
+        building_plants = [plant for plant in plants if isinstance(plant, Building)]
+        steam_plants = [plant for plant in plants if isinstance(plant, SteamGenerationPlant)]
+        if building_plants and steam_plants:
+            raise ValueError("One simulation case cannot mix building and steam plant types")
+
+        strategy = build_strategy(self.config.strategy_name, self.config)
+        extra_required_columns = set(strategy.required_forecast_columns())
+
+        if building_plants:
+            if not isinstance(strategy, BuildingStrategy):
+                raise ValueError("A building case requires strategy.name='building_v2g'")
+            required_columns = self.loader.required_forecast_columns(
+                plants_df,
+                extra_required_columns=extra_required_columns,
+            )
+            forecasts = self.loader.load_forecasts(required_columns=required_columns)
+            self._progress("Input data loaded")
+            return self._run_building_case(building_plants, forecasts, strategy)
+
+        if isinstance(strategy, BuildingStrategy):
+            raise ValueError("Strategy 'building_v2g' requires unit_type='building'")
+
+        plants = steam_plants
         additional_charges = self.loader.load_additional_charges(plants_df)
         for plant in plants:
             regulation = build_grid_fee_regulation(
@@ -96,8 +122,6 @@ class SimulationRunner:
             plant.additional_electricity_charge_eur_per_mwh = (
                 regulation.marginal_charge_eur_per_mwh()
             )
-        strategy = build_strategy(self.config.strategy_name, self.config)
-        extra_required_columns = set(strategy.required_forecast_columns())
         # A regulation that declares a dynamic charge column (ES peajes, FR
         # TURPE+accise) requires that column in the forecasts; add it so a
         # missing/misspelled column fails fast at load instead of silently
@@ -232,6 +256,92 @@ class SimulationRunner:
         self._progress("Outputs saved")
 
         return output_paths
+
+    def _run_building_case(
+        self,
+        buildings: list[Building],
+        forecasts: pd.DataFrame,
+        strategy: BuildingStrategy,
+    ) -> dict[str, Path | list[Path]]:
+        """Run building rolling windows and save building-compatible outputs."""
+
+        dispatch_results = self._run_building_windows(buildings, forecasts, strategy)
+        output_dir = self.output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_paths: dict[str, Path | list[Path]] = {}
+
+        if self.output_options.save_dispatch_results:
+            path = output_dir / "dispatch_results.csv"
+            dispatch_results.reset_index().to_csv(path, index=False)
+            output_paths["dispatch_results"] = path
+
+        if self.output_options.save_market_ledger:
+            path = output_dir / "market_ledger.csv"
+            _building_market_ledger(dispatch_results).to_csv(path, index=False)
+            output_paths["market_ledger"] = path
+
+        if self.output_options.save_storage_cost_ledger:
+            path = output_dir / "storage_cost_ledger.csv"
+            _building_storage_ledger(dispatch_results).to_csv(path, index=False)
+            output_paths["storage_cost_ledger"] = path
+
+        if self.output_options.save_summary_indicators:
+            path = output_dir / "summary_indicators.csv"
+            _building_summary(dispatch_results).to_csv(path, index=False)
+            output_paths["summary_indicators"] = path
+
+        if self.output_options.create_plots:
+            self._progress("Building plots are not implemented; plot creation skipped")
+        self._progress("Outputs saved")
+        return output_paths
+
+    def _run_building_windows(
+        self,
+        buildings: list[Building],
+        forecasts: pd.DataFrame,
+        strategy: BuildingStrategy,
+    ) -> pd.DataFrame:
+        """Optimize each look-ahead horizon and carry implemented vehicle SOC."""
+
+        windows = _decision_windows(self.config, forecasts)
+        self._report_market_calendar_notices()
+        dispatch_parts: list[pd.DataFrame] = []
+        completed_windows = 0
+        total_windows = len(buildings) * len(windows)
+
+        for building in buildings:
+            current_soc = building.electric_vehicle.initial_soc_mwh
+            for window in windows:
+                self._progress(
+                    _window_progress_message(
+                        current=completed_windows + 1,
+                        total=total_windows,
+                        plant_name=building.name,
+                        window_start=pd.Timestamp(window.commit_index[0]),
+                        window_end=pd.Timestamp(window.commit_index[-1]),
+                    )
+                )
+                optimized = strategy.decide_day_ahead(
+                    building,
+                    window.forecasts,
+                    initial_soc_mwh=current_soc,
+                )
+                committed = optimized.reindex(window.commit_index).copy()
+                committed["rolling_window"] = window.number
+                dispatch_parts.append(committed)
+                current_soc = float(committed["bus_soc_MWh"].iloc[-1])
+                completed_windows += 1
+                self._progress(
+                    f"Window {window.number} completed for {building.name}; "
+                    f"bus SOC = {current_soc:.3f} MWh"
+                )
+
+        return (
+            pd.concat(dispatch_parts)
+            .reset_index()
+            .sort_values(["plant_name", "datetime"])
+            .set_index("datetime")
+        )
 
     def _settle_grid_fees(
         self,
@@ -462,6 +572,60 @@ class SimulationRunner:
                 }
             )
         return pd.DataFrame(records)
+
+
+def _building_summary(dispatch_results: pd.DataFrame) -> pd.DataFrame:
+    """Create the compact operational and economic summary for buildings."""
+
+    rows: list[dict[str, object]] = []
+    for plant_name, group in dispatch_results.groupby("plant_name"):
+        rows.append(
+            {
+                "plant_name": plant_name,
+                "total_building_demand_MWh": group["building_demand_MWh"].sum(),
+                "total_bus_trip_energy_MWh": group["bus_trip_energy_MWh"].sum(),
+                "total_bus_charge_MWh": group["bus_charge_MWh"].sum(),
+                "total_bus_discharge_MWh": group["bus_discharge_MWh"].sum(),
+                "total_grid_import_MWh": group["grid_import_MWh"].sum(),
+                "total_grid_export_MWh": group["grid_export_MWh"].sum(),
+                "total_variable_cost_EUR": group["variable_cost_EUR"].sum(),
+                "final_bus_soc_MWh": group["bus_soc_MWh"].iloc[-1],
+                "final_bus_soc_fraction": group["bus_soc_fraction"].iloc[-1],
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _building_market_ledger(dispatch_results: pd.DataFrame) -> pd.DataFrame:
+    """Select the building's grid-market positions and settlement values."""
+
+    columns = [
+        "plant_name",
+        "rolling_window",
+        "grid_import_MWh",
+        "grid_export_MWh",
+        "net_grid_import_MWh",
+        "electricity_import_price_EUR_per_MWh",
+        "electricity_export_price_EUR_per_MWh",
+        "variable_cost_EUR",
+    ]
+    return dispatch_results.reset_index()[["datetime", *columns]]
+
+
+def _building_storage_ledger(dispatch_results: pd.DataFrame) -> pd.DataFrame:
+    """Select bus-battery operation and state for the storage ledger."""
+
+    columns = [
+        "plant_name",
+        "rolling_window",
+        "bus_availability_fraction",
+        "bus_trip_energy_MWh",
+        "bus_charge_MWh",
+        "bus_discharge_MWh",
+        "bus_soc_MWh",
+        "bus_soc_fraction",
+    ]
+    return dispatch_results.reset_index()[["datetime", *columns]]
 
 
 def _grid_fee_summary_frame(grid_fee_results: dict[str, GridFeeResult]) -> pd.DataFrame:
