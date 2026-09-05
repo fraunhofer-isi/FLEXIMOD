@@ -295,6 +295,8 @@ def _operational_indicators(dispatch: pd.DataFrame) -> dict[str, float]:
     full_threshold = max_soc * 0.999 if max_soc > 0 else float("inf")
     empty_threshold = max(max_soc * 0.001, 1e-9) if max_soc > 0 else 1e-9
     total_storage_discharge = _sum(dispatch, "etes_discharge_MWh")
+    total_direct_electric_heat = _sum(dispatch, "electric_boiler_heat_MWh")
+    total_electric_heat = total_storage_discharge + total_direct_electric_heat
     total_etes_charge = _sum(dispatch, "etes_charge_MWh")
     return {
         "total_heat_demand_MWh": _sum(dispatch, "heat_demand_MWh"),
@@ -302,7 +304,7 @@ def _operational_indicators(dispatch: pd.DataFrame) -> dict[str, float]:
         "total_storage_discharge_heat_MWh": total_storage_discharge,
         "total_etes_charging_electricity_MWh": total_etes_charge,
         "total_etes_discharging_heat_MWh": total_storage_discharge,
-        "total_electric_heat_MWh": total_storage_discharge,
+        "total_electric_heat_MWh": total_electric_heat,
         "total_etes_charged_MWh": total_etes_charge,
         "total_etes_discharged_MWh": total_storage_discharge,
         "final_etes_soc_MWh": float(soc.iloc[-1]) if not soc.empty else 0.0,

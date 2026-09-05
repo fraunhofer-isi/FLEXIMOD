@@ -13,8 +13,8 @@ dist/
 playground/
 *.egg-info/
 
-data/input/Archive/
-data/output/Archive/
+data/input/archive
+data/output/
 data/output/reports/
 data/processed/
 *.xlsx

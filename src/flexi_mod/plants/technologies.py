@@ -4,11 +4,35 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
 import pyomo.environ as pyo
+
+
+class Boiler(ABC):
+    """Common interface for technologies that convert energy into useful heat."""
+
+    efficiency: float
+    ramp_up_mw_per_step: float | None
+    ramp_down_mw_per_step: float | None
+
+    @classmethod
+    @abstractmethod
+    def from_row(cls, row: pd.Series) -> Boiler:
+        """Construct a concrete boiler from one ``plants.csv`` row."""
+
+    @abstractmethod
+    def add_to_model(
+        self,
+        model: pyo.ConcreteModel,
+        block: pyo.Block,
+        time_steps: pyo.Set,
+        context: dict[str, Any],
+    ) -> pyo.Block:
+        """Add the boiler's variables, parameters, and constraints to Pyomo."""
 
 
 @dataclass
@@ -118,7 +142,7 @@ class ThermalStorage:
 
 
 @dataclass
-class GasBoiler:
+class GasBoiler(Boiler):
     """Natural-gas boiler component for industrial steam or heat supply."""
 
     max_heat_output_mw: float
@@ -185,9 +209,80 @@ class GasBoiler:
         return block
 
 
+@dataclass
+class ElectricBoiler(Boiler):
+    """Direct electric boiler for industrial steam or heat supply.
+
+    ``max_power`` and ``min_power`` in ``plants.csv`` are interpreted as
+    electrical input power in MW_el. ``efficiency`` converts consumed
+    electricity into useful heat in MWh_th/MWh_el.
+    """
+
+    max_electricity_input_mw: float
+    min_electricity_input_mw: float
+    efficiency: float
+    ramp_up_mw_per_step: float | None = None
+    ramp_down_mw_per_step: float | None = None
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> ElectricBoiler:
+        return cls(
+            max_electricity_input_mw=_as_float(row.get("max_power"), "max_power"),
+            min_electricity_input_mw=_as_float(row.get("min_power"), "min_power", default=0.0),
+            efficiency=_as_float(row.get("efficiency"), "efficiency", default=1.0),
+            ramp_up_mw_per_step=_as_optional_float(row.get("ramp_up")),
+            ramp_down_mw_per_step=_as_optional_float(row.get("ramp_down")),
+        )
+
+    def add_to_model(
+        self,
+        model: pyo.ConcreteModel,
+        block: pyo.Block,
+        time_steps: pyo.Set,
+        context: dict[str, Any],
+    ) -> pyo.Block:
+        dt_hours = float(context["dt_hours"])
+        max_electricity_mwh = self.max_electricity_input_mw * dt_hours
+        max_heat_mwh = max_electricity_mwh * self.efficiency
+
+        block.max_electricity_input_mw = pyo.Param(initialize=self.max_electricity_input_mw)
+        block.min_electricity_input_mw = pyo.Param(initialize=self.min_electricity_input_mw)
+        block.efficiency = pyo.Param(initialize=self.efficiency)
+        block.electricity_consumption = pyo.Var(
+            time_steps,
+            within=pyo.NonNegativeReals,
+            bounds=(0.0, max_electricity_mwh),
+        )
+        block.heat_out = pyo.Var(
+            time_steps,
+            within=pyo.NonNegativeReals,
+            bounds=(0.0, max_heat_mwh),
+        )
+        block.electricity_cost = pyo.Var(time_steps, within=pyo.Reals)
+
+        @block.Constraint(time_steps)
+        def efficiency_constraint(b: pyo.Block, t: int) -> pyo.Constraint:
+            return b.heat_out[t] == b.electricity_consumption[t] * b.efficiency
+
+        @block.Constraint(time_steps)
+        def electricity_cost_definition(b: pyo.Block, t: int) -> pyo.Constraint:
+            return (
+                b.electricity_cost[t] == b.electricity_consumption[t] * model.electricity_price[t]
+            )
+
+        if hasattr(model, "charge_allowed"):
+
+            @block.Constraint(time_steps)
+            def charge_allowed_limit(b: pyo.Block, t: int) -> pyo.Constraint:
+                return b.electricity_consumption[t] <= max_electricity_mwh * model.charge_allowed[t]
+
+        return block
+
+
 TECHNOLOGY_REGISTRY = {
     "thermal_storage": ThermalStorage,
     "boiler": GasBoiler,
+    "electric_boiler": ElectricBoiler,
 }
 
 

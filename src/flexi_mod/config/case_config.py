@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -174,6 +175,7 @@ class CaseConfig:
             raise ConfigError("cases.<case_name>.additional_charges must be true or false")
 
         supported_strategies = {
+            "hybrid_electric_gas_boiler",
             "hybrid_etes_gas",
             "hybrid_etes_gas_pay_as_cleared_capacity",
         }
@@ -185,6 +187,7 @@ class CaseConfig:
         dispatch = self.case["strategy"].get("dispatch", {})
         if dispatch.get("dispatch_method") != "pyomo":
             raise ConfigError("Only strategy.dispatch.dispatch_method='pyomo' is implemented")
+        self._validate_afrr_energy_margin(dispatch)
 
         markets = self.case["markets"]
         for market_name in self.market_sequence:
@@ -214,10 +217,13 @@ class CaseConfig:
                         "afrr_energy.product_rules.validity_period_minutes must match "
                         "case.timestep_minutes"
                     )
+                self._validate_afrr_energy_bid_rules(rules)
             if market_name == "afrr_capacity":
                 signals = market["signals"]
                 if "price" not in signals:
                     raise ConfigError("Enabled afrr_capacity market must define signals.price")
+                if "quantity" not in signals:
+                    raise ConfigError("Enabled afrr_capacity market must define signals.quantity")
                 supported_capacity_price_units = {
                     "EUR_per_MW_per_h",
                     "EUR_per_MW_per_product",
@@ -227,6 +233,85 @@ class CaseConfig:
                     options = ", ".join(sorted(supported_capacity_price_units))
                     raise ConfigError(f"afrr_capacity.price_unit must be one of: {options}")
         self._validate_market_order()
+        if strategy_name == "hybrid_electric_gas_boiler":
+            self._validate_direct_boiler_markets()
+
+    @staticmethod
+    def _finite_number(value: Any, setting: str) -> float:
+        if isinstance(value, bool):
+            raise ConfigError(f"{setting} must be a finite number")
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"{setting} must be a finite number") from exc
+        if not math.isfinite(number):
+            raise ConfigError(f"{setting} must be a finite number")
+        return number
+
+    def _validate_afrr_energy_margin(self, dispatch: dict[str, Any]) -> None:
+        setting = "strategy.dispatch.afrr_energy_bid_margin_eur_per_mwh"
+        try:
+            margin = self._finite_number(
+                dispatch.get("afrr_energy_bid_margin_eur_per_mwh", 0.0),
+                setting,
+            )
+        except ConfigError as exc:
+            raise ConfigError(f"{setting} must be a finite non-negative number") from exc
+        if margin < 0.0:
+            raise ConfigError(f"{setting} must be a finite non-negative number")
+
+    def _validate_afrr_energy_bid_rules(self, rules: dict[str, Any]) -> None:
+        min_setting = "afrr_energy.product_rules.min_bid_mw"
+        increment_setting = "afrr_energy.product_rules.bid_increment_mw"
+        min_bid_mw = self._finite_number(rules.get("min_bid_mw", 0.0), min_setting)
+        bid_increment_mw = self._finite_number(
+            rules.get("bid_increment_mw", 1.0),
+            increment_setting,
+        )
+        if min_bid_mw < 0.0:
+            raise ConfigError(f"{min_setting} cannot be negative")
+        if bid_increment_mw <= 0.0:
+            raise ConfigError(f"{increment_setting} must be positive")
+
+    def _validate_direct_boiler_markets(self) -> None:
+        markets = self.case["markets"]
+        if bool(markets.get("afrr_capacity", {}).get("enabled", False)):
+            raise ConfigError(
+                "Strategy 'hybrid_electric_gas_boiler' does not support enabled aFRR capacity"
+            )
+        if not bool(markets.get("day_ahead", {}).get("enabled", False)):
+            raise ConfigError("Strategy 'hybrid_electric_gas_boiler' requires enabled day_ahead")
+
+        afrr_energy = markets.get("afrr_energy", {})
+        afrr_enabled = bool(afrr_energy.get("enabled", False))
+        if afrr_enabled and not bool(markets.get("intraday_continuous", {}).get("enabled", False)):
+            raise ConfigError(
+                "Strategy 'hybrid_electric_gas_boiler' requires enabled "
+                "intraday_continuous before aFRR energy"
+            )
+        direction = str(afrr_energy.get("direction", "down")).strip().lower()
+        if afrr_enabled and direction not in {"down", "negative"}:
+            raise ConfigError(
+                "Strategy 'hybrid_electric_gas_boiler' supports only down/negative "
+                "aFRR-energy direction"
+            )
+
+        expected_order = ["day_ahead"]
+        if bool(markets.get("intraday_continuous", {}).get("enabled", False)):
+            expected_order.append("intraday_continuous")
+        if afrr_enabled:
+            expected_order.append("afrr_energy")
+        enabled_sequence = [
+            market_name
+            for market_name in self.market_sequence
+            if bool(markets.get(market_name, {}).get("enabled", False))
+        ]
+        if enabled_sequence != expected_order:
+            rendered = " -> ".join(expected_order)
+            raise ConfigError(
+                "Strategy 'hybrid_electric_gas_boiler' requires enabled markets "
+                f"in this order: {rendered}"
+            )
 
     def _validate_market_order(self) -> None:
         markets = self.case["markets"]

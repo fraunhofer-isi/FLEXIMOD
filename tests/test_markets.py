@@ -153,7 +153,12 @@ def test_afrr_down_market_validates_product_period() -> None:
 
 
 def test_afrr_capacity_market_generates_blocks() -> None:
-    forecasts = _forecast_frame({"aFRR_capacity_down_price": [5.0] * 16})
+    forecasts = _forecast_frame(
+        {
+            "aFRR_capacity_down_price": [5.0] * 16,
+            "aFRR_capacity_down_quantity": [3.0] * 16,
+        }
+    )
     market = AFRRCapacityMarket(
         name="afrr_capacity",
         config={
@@ -161,7 +166,10 @@ def test_afrr_capacity_market_generates_blocks() -> None:
             "direction": "down",
             "product_length": "4h",
             "price_unit": "EUR_per_MW_per_h",
-            "signals": {"price": "aFRR_capacity_down_price"},
+            "signals": {
+                "price": "aFRR_capacity_down_price",
+                "quantity": "aFRR_capacity_down_quantity",
+            },
         },
     )
 
@@ -170,10 +178,31 @@ def test_afrr_capacity_market_generates_blocks() -> None:
     assert data.frame["afrr_capacity_block_id"].nunique() == 1
     assert data.block_summary["block_duration_h"].iloc[0] == pytest.approx(4.0)
     assert data.block_summary["capacity_price_EUR_per_MW_h"].iloc[0] == pytest.approx(5.0)
+    assert data.block_summary["capacity_quantity_MW"].iloc[0] == pytest.approx(3.0)
+
+
+def test_afrr_capacity_market_requires_quantity_signal() -> None:
+    market = AFRRCapacityMarket(
+        name="afrr_capacity",
+        config={
+            "enabled": True,
+            "direction": "down",
+            "product_length": "4h",
+            "signals": {"price": "aFRR_capacity_down_price"},
+        },
+    )
+
+    with pytest.raises(MarketConfigError, match="quantity"):
+        market.validate_config(timestep_minutes=15)
 
 
 def test_afrr_capacity_market_normalises_per_product_price() -> None:
-    forecasts = _forecast_frame({"aFRR_capacity_down_price": [25.0] * 4})
+    forecasts = _forecast_frame(
+        {
+            "aFRR_capacity_down_price": [25.0] * 4,
+            "aFRR_capacity_down_quantity": [3.0] * 4,
+        }
+    )
     market = AFRRCapacityMarket(
         name="afrr_capacity",
         config={
@@ -181,7 +210,10 @@ def test_afrr_capacity_market_normalises_per_product_price() -> None:
             "direction": "down",
             "product_length": "15min",
             "price_unit": "EUR_per_MW_per_product",
-            "signals": {"price": "aFRR_capacity_down_price"},
+            "signals": {
+                "price": "aFRR_capacity_down_price",
+                "quantity": "aFRR_capacity_down_quantity",
+            },
         },
     )
 
@@ -193,7 +225,12 @@ def test_afrr_capacity_market_normalises_per_product_price() -> None:
 
 
 def test_afrr_capacity_market_warns_on_inconsistent_block_prices() -> None:
-    forecasts = _forecast_frame({"aFRR_capacity_down_price": [5.0] * 15 + [6.0]})
+    forecasts = _forecast_frame(
+        {
+            "aFRR_capacity_down_price": [5.0] * 15 + [6.0],
+            "aFRR_capacity_down_quantity": [3.0] * 16,
+        }
+    )
     market = AFRRCapacityMarket(
         name="afrr_capacity",
         config={
@@ -201,7 +238,10 @@ def test_afrr_capacity_market_warns_on_inconsistent_block_prices() -> None:
             "direction": "down",
             "product_length": "4h",
             "price_unit": "EUR_per_MW_per_h",
-            "signals": {"price": "aFRR_capacity_down_price"},
+            "signals": {
+                "price": "aFRR_capacity_down_price",
+                "quantity": "aFRR_capacity_down_quantity",
+            },
         },
     )
 
@@ -212,7 +252,12 @@ def test_afrr_capacity_market_warns_on_inconsistent_block_prices() -> None:
 
 
 def test_afrr_capacity_market_missing_price_blocks_bid_data() -> None:
-    forecasts = _forecast_frame({"aFRR_capacity_down_price": [None] * 16})
+    forecasts = _forecast_frame(
+        {
+            "aFRR_capacity_down_price": [None] * 16,
+            "aFRR_capacity_down_quantity": [3.0] * 16,
+        }
+    )
     market = AFRRCapacityMarket(
         name="afrr_capacity",
         config={
@@ -220,7 +265,10 @@ def test_afrr_capacity_market_missing_price_blocks_bid_data() -> None:
             "direction": "down",
             "product_length": "4h",
             "price_unit": "EUR_per_MW_per_h",
-            "signals": {"price": "aFRR_capacity_down_price"},
+            "signals": {
+                "price": "aFRR_capacity_down_price",
+                "quantity": "aFRR_capacity_down_quantity",
+            },
         },
     )
 
@@ -228,6 +276,34 @@ def test_afrr_capacity_market_missing_price_blocks_bid_data() -> None:
 
     assert data.block_summary["missing_capacity_price_flag"].iloc[0]
     assert data.block_summary["capacity_price_EUR_per_MW_h"].iloc[0] == pytest.approx(0.0)
+
+
+def test_afrr_capacity_market_uses_conservative_block_quantity() -> None:
+    forecasts = _forecast_frame(
+        {
+            "aFRR_capacity_down_price": [5.0] * 4,
+            "aFRR_capacity_down_quantity": [3.0, 3.0, 2.0, 3.0],
+        }
+    )
+    market = AFRRCapacityMarket(
+        name="afrr_capacity",
+        config={
+            "enabled": True,
+            "direction": "down",
+            "product_length": "1h",
+            "price_unit": "EUR_per_MW_per_h",
+            "signals": {
+                "price": "aFRR_capacity_down_price",
+                "quantity": "aFRR_capacity_down_quantity",
+            },
+        },
+    )
+
+    with pytest.warns(UserWarning, match="quantities differ inside block"):
+        data = market.prepare_market_data(forecasts, timestep_hours=0.25)
+
+    assert data.block_summary["capacity_quantity_MW"].iloc[0] == pytest.approx(2.0)
+    assert data.block_summary["quantity_inconsistency_flag"].iloc[0]
 
 
 def test_afrr_up_energy_placeholder_is_non_operational() -> None:
