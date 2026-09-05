@@ -97,11 +97,7 @@ def test_bidirectional_depot_uses_low_price_energy_for_v2g() -> None:
     )
     assert result["bus_soc_MWh"].iloc[-1] == pytest.approx(0.42)
     balance = result["grid_import_MWh"] + result["bus_discharge_MWh"]
-    uses = (
-        result["building_demand_MWh"]
-        + result["bus_charge_MWh"]
-        + result["grid_export_MWh"]
-    )
+    uses = result["building_demand_MWh"] + result["bus_charge_MWh"] + result["grid_export_MWh"]
     assert balance.to_numpy() == pytest.approx(uses.to_numpy())
 
 

@@ -19,9 +19,7 @@ def build_plants(plants: pd.DataFrame) -> list[Plant]:
 
     result: list[Plant] = []
     for plant_name, rows in plants.groupby("name", sort=False):
-        unit_types = {
-            str(value).strip().lower() for value in rows["unit_type"].dropna().tolist()
-        }
+        unit_types = {str(value).strip().lower() for value in rows["unit_type"].dropna().tolist()}
         if len(unit_types) != 1:
             raise ValueError(f"Plant '{plant_name}' must use exactly one unit_type")
         unit_type = unit_types.pop()

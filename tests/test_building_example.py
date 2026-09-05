@@ -15,9 +15,7 @@ from flexi_mod.simulation.simulation_runner import OutputOptions, SimulationRunn
 from flexi_mod.strategies import build_strategy
 from flexi_mod.strategies.building_strategy import BuildingStrategy
 
-EXAMPLE_DIR = (
-    Path(__file__).resolve().parents[1] / "data" / "input" / "building_v2g_example"
-)
+EXAMPLE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "building_v2g_example"
 
 
 def test_building_example_optimizes_with_rolling_horizon(

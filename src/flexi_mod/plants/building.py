@@ -88,10 +88,7 @@ class Building(BasePlant):
 
     @classmethod
     def from_plants_dataframe(cls, plants: pd.DataFrame) -> list[Building]:
-        return [
-            cls.from_rows(str(name), rows)
-            for name, rows in plants.groupby("name", sort=False)
-        ]
+        return [cls.from_rows(str(name), rows) for name, rows in plants.groupby("name", sort=False)]
 
     @property
     def electric_vehicle(self) -> ElectricVehicle:
@@ -221,17 +218,11 @@ class Building(BasePlant):
             {
                 "dt_hours": pyo.value(model.dt_hours),
                 "initial_soc_mwh": (
-                    vehicle.initial_soc_mwh
-                    if initial_soc_mwh is None
-                    else initial_soc_mwh
+                    vehicle.initial_soc_mwh if initial_soc_mwh is None else initial_soc_mwh
                 ),
                 "availability": forecasts[vehicle.availability_column].to_numpy(),
-                "trip_energy_mwh": _optional_profile(
-                    forecasts, vehicle.trip_energy_column
-                ),
-                "trip_distance_km": _optional_profile(
-                    forecasts, vehicle.trip_distance_column
-                ),
+                "trip_energy_mwh": _optional_profile(forecasts, vehicle.trip_energy_column),
+                "trip_distance_km": _optional_profile(forecasts, vehicle.trip_distance_column),
             },
         )
 
@@ -242,9 +233,7 @@ class Building(BasePlant):
             model.T,
             {
                 "dt_hours": pyo.value(model.dt_hours),
-                "availability": _optional_profile(
-                    forecasts, station.availability_column
-                ),
+                "availability": _optional_profile(forecasts, station.availability_column),
             },
         )
 
@@ -275,9 +264,7 @@ class Building(BasePlant):
             return m.electric_vehicle.charge_mwh[t] == m.charging_station.charge_mwh[t]
 
         @model.Constraint(model.T)
-        def vehicle_station_discharge_link(
-            m: pyo.ConcreteModel, t: int
-        ) -> pyo.Constraint:
+        def vehicle_station_discharge_link(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
             return m.electric_vehicle.discharge_mwh[t] == m.charging_station.discharge_mwh[t]
 
         @model.Constraint(model.T)
@@ -305,14 +292,10 @@ class Building(BasePlant):
         model.variable_cost = pyo.Expression(
             model.T,
             rule=lambda m, t: (
-                m.grid_import_mwh[t]
-                * (m.import_price[t] + m.additional_import_charge)
+                m.grid_import_mwh[t] * (m.import_price[t] + m.additional_import_charge)
                 - m.grid_export_mwh[t] * m.export_price[t]
                 + degradation_cost
-                * (
-                    m.electric_vehicle.charge_mwh[t]
-                    + m.electric_vehicle.discharge_mwh[t]
-                )
+                * (m.electric_vehicle.charge_mwh[t] + m.electric_vehicle.discharge_mwh[t])
             ),
         )
         model.objective = pyo.Objective(
@@ -329,8 +312,7 @@ def _check_technology_rows(building_name: str, rows: pd.DataFrame) -> None:
     unknown = set(technologies) - set(Building.required_technologies)
     if unknown:
         raise ValueError(
-            f"Building '{building_name}' uses unsupported technology: "
-            + ", ".join(sorted(unknown))
+            f"Building '{building_name}' uses unsupported technology: " + ", ".join(sorted(unknown))
         )
     for technology in Building.required_technologies:
         count = technologies.count(technology)
@@ -433,9 +415,7 @@ def _extract_results(
                 "datetime": timestamp,
                 "plant_name": building.name,
                 "building_demand_MWh": pyomo_value(model.building_demand_mwh[t]),
-                "bus_availability_fraction": pyomo_value(
-                    model.electric_vehicle.availability[t]
-                ),
+                "bus_availability_fraction": pyomo_value(model.electric_vehicle.availability[t]),
                 "bus_trip_energy_MWh": pyomo_value(model.electric_vehicle.trip_energy_mwh[t]),
                 "bus_charge_MWh": charge,
                 "bus_discharge_MWh": discharge,
