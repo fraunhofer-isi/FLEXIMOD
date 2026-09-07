@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -23,7 +23,7 @@ def test_build_emits_expected_top_level_sections(tmp_path: Path) -> None:
     metadata = collector.build(
         plants=_plants(),
         forecasts=_forecasts(),
-        started_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+        started_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
         duration_seconds=42,
     )
 
@@ -38,7 +38,7 @@ def test_run_section_uses_utc_iso_timestamp(tmp_path: Path) -> None:
     metadata = collector.build(
         plants=_plants(),
         forecasts=_forecasts(),
-        started_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+        started_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
         duration_seconds=90,
     )
 
@@ -236,4 +236,4 @@ def _forecasts() -> pd.DataFrame:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)

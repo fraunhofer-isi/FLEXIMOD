@@ -7,20 +7,20 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataLoader
-from flexi_mod.simulation.provenance import ProvenanceCollector
 from flexi_mod.ledgers.market_ledger import MarketLedger
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.markets import BaseMarket, build_markets
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
 from flexi_mod.plants.steam_generation_plant import DispatchSignals, SteamGenerationPlant
 from flexi_mod.regulations import GridFeeResult, build_grid_fee_regulation
+from flexi_mod.simulation.provenance import ProvenanceCollector
 from flexi_mod.strategies import build_strategy
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.visualisation.analytics import calculate_summary_indicators
@@ -84,7 +84,7 @@ class SimulationRunner:
         )
 
     def run(self) -> dict[str, Path | list[Path]]:
-        started_at = datetime.now(timezone.utc)
+        started_at = datetime.now(UTC)
         self._progress("Loading input data")
         plants_df = self.loader.load_plants()
         plants = SteamGenerationPlant.from_plants_dataframe(plants_df)
@@ -234,7 +234,7 @@ class SimulationRunner:
         started_at: datetime,
     ) -> Path:
         """Assemble and persist run provenance to provenance.json in the output dir."""
-        duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+        duration_seconds = (datetime.now(UTC) - started_at).total_seconds()
         collector = ProvenanceCollector(self.config, self.loader, self.config.project_root)
         metadata = collector.build(
             plants_df,

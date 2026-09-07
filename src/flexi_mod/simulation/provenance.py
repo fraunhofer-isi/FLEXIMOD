@@ -10,7 +10,7 @@ import json
 import platform
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -96,7 +96,9 @@ class ProvenanceCollector:
         if self.config.additional_charges_enabled:
             charges = self._load_charges_for_count(self.loader.additional_charges_path)
             inputs.append(
-                self._input_record("additional_charges", self.loader.additional_charges_path, charges)
+                self._input_record(
+                    "additional_charges", self.loader.additional_charges_path, charges
+                )
             )
         inputs.append(self._input_record("config", self.config.config_path))
         return inputs
@@ -223,7 +225,7 @@ def _repository_name(project_root: Path) -> str:
 
 
 def _iso_utc(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _numeric_column(frame: pd.DataFrame, column: str) -> float | None:
