@@ -5,7 +5,13 @@
 import pandas as pd
 import pyomo.environ as pyo
 
-from flexi_mod.plants.technologies import GasBoiler, ThermalStorage
+from flexi_mod.plants.technologies import (
+    TECHNOLOGY_REGISTRY,
+    Boiler,
+    ElectricBoiler,
+    GasBoiler,
+    ThermalStorage,
+)
 
 
 def test_thermal_storage_adds_expected_pyomo_block() -> None:
@@ -47,6 +53,7 @@ def test_gas_boiler_adds_expected_pyomo_block() -> None:
         min_heat_output_mw=0.0,
         efficiency=0.9,
     )
+    assert isinstance(boiler, Boiler)
     boiler.add_to_model(model, model.boiler, model.T, {"dt_hours": 0.25})
 
     assert hasattr(model.boiler, "heat_out")
@@ -54,6 +61,30 @@ def test_gas_boiler_adds_expected_pyomo_block() -> None:
     assert hasattr(model.boiler, "efficiency_constraint")
     assert hasattr(model.boiler, "operating_cost_definition")
     assert hasattr(model.boiler, "co2_cost_definition")
+
+
+def test_electric_boiler_adds_expected_pyomo_block() -> None:
+    model = pyo.ConcreteModel()
+    model.T = pyo.Set(initialize=[0, 1], ordered=True)
+    model.electricity_price = pyo.Param(model.T, initialize={0: 40.0, 1: 50.0})
+    model.charge_allowed = pyo.Param(model.T, within=pyo.Binary, initialize={0: 1, 1: 0})
+    model.electric_boiler = pyo.Block()
+
+    boiler = ElectricBoiler(
+        max_electricity_input_mw=5.0,
+        min_electricity_input_mw=0.0,
+        efficiency=0.98,
+    )
+    assert isinstance(boiler, Boiler)
+    boiler.add_to_model(model, model.electric_boiler, model.T, {"dt_hours": 0.25})
+
+    assert hasattr(model.electric_boiler, "electricity_consumption")
+    assert hasattr(model.electric_boiler, "heat_out")
+    assert hasattr(model.electric_boiler, "efficiency_constraint")
+    assert hasattr(model.electric_boiler, "electricity_cost_definition")
+    assert hasattr(model.electric_boiler, "charge_allowed_limit")
+    assert model.electric_boiler.electricity_consumption[0].ub == 1.25
+    assert model.electric_boiler.heat_out[0].ub == 1.225
 
 
 def test_technologies_can_be_built_from_csv_rows() -> None:
@@ -82,6 +113,21 @@ def test_technologies_can_be_built_from_csv_rows() -> None:
             }
         )
     )
+    electric_boiler = ElectricBoiler.from_row(
+        pd.Series(
+            {
+                "max_power": 6,
+                "min_power": 0,
+                "efficiency": 0.98,
+                "ramp_up": 2,
+                "ramp_down": 3,
+            }
+        )
+    )
 
     assert storage.max_capacity_mwh == 12
     assert boiler.fuel_type == "natural_gas"
+    assert electric_boiler.max_electricity_input_mw == 6
+    assert electric_boiler.efficiency == 0.98
+    assert electric_boiler.ramp_up_mw_per_step == 2
+    assert TECHNOLOGY_REGISTRY["electric_boiler"] is ElectricBoiler

@@ -891,6 +891,121 @@ def test_afrr_capacity_reserves_headroom_and_caps_activation(
     assert block["reserved_capacity_MW"] == pytest.approx(block["compliant_capacity_MW"])
 
 
+def test_reserved_capacity_survives_continuous_activation_with_full_storage(
+    afrr_capacity_case: Path,
+    tmp_path: Path,
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    """A capacity bid must stay deliverable under continuous activation.
+
+    Cheap-then-expensive prices push the schedule to fill the small ETES just
+    when the reservation needs the room. The delivery guarantee must hold the
+    schedule back so the full promise is delivered in every interval.
+    """
+    _write_plants(
+        afrr_capacity_case / "plants.csv",
+        storage_initial_soc=1.5,
+        storage_capacity=4.0,
+    )
+    _write_forecasts(
+        afrr_capacity_case / "forecasts_df.csv",
+        da_prices=[10.0] * 4 + [120.0] * 4,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[5.0] * 8,
+        afrr_capacity_prices=[500.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+
+    results = _run_case(afrr_capacity_case, tmp_path)
+    dispatch = results["dispatch"]
+    market = results["market"]
+    blocks = results["afrr_capacity_blocks"]
+
+    # First window: direct use 2.0/0.8464 = 2.36 MW plus the initial storage
+    # room -> 3 MW. Later windows re-size from the realized SOC but keep bidding.
+    assert market["afrr_capacity_reserved_MW"].iloc[:4].eq(3.0).all()
+    assert market["afrr_capacity_reserved_MW"].gt(0.0).all()
+    assert blocks.loc[blocks["bid_eligible"], "reserved_capacity_MW"].gt(0.0).all()
+
+    # The system calls more than the reservation, so the full promise is delivered.
+    assert market["afrr_energy_capacity_backed_activated_MWh_el"].to_numpy() == pytest.approx(
+        market["afrr_capacity_reserved_MWh"].to_numpy()
+    )
+
+    # Continuous activation never overflows the storage and nothing is curtailed.
+    assert (dispatch["etes_soc_MWh"] <= 4.0 + 1e-6).all()
+    assert dispatch["afrr_curtailment_MWh"].sum() == pytest.approx(0.0)
+
+    # Cheap-phase charging must leave the promised room free.
+    assert market["scheduled_electricity_procurement_MWh_el"].sum() < 2.0
+
+    # The delivery guarantee never had to be relaxed.
+    assert not [w for w in recwarn if "deliver under continuous activation" in str(w.message)]
+
+
+def test_consecutive_capacity_blocks_share_one_storage_buffer(
+    tmp_path: Path,
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    """Consecutive reserved blocks must chain the storage projection, not each
+    claim the full day-start buffer.
+
+    Eight back-to-back 15-min capacity products face continuous full activation
+    against a small ETES. Sizing every block off the same start-of-window SOC
+    would let each block promise the whole free buffer, so the store saturates a
+    few blocks in and the later promises are curtailed. Chaining the projected
+    SOC across blocks shrinks the later bids to what the process throughput can
+    still absorb, so every reserved MW stays deliverable.
+    """
+    case_dir = tmp_path / "consecutive_capacity_case"
+    case_dir.mkdir()
+    _write_config(
+        case_dir / "config.yaml",
+        idc_enabled=True,
+        afrr_enabled=True,
+        afrr_capacity_enabled=True,
+        afrr_capacity_product_length="15min",
+    )
+    # Small store relative to sustained charging: one 15-min block never fills it,
+    # but several consecutive fully-activated blocks do.
+    _write_plants(case_dir / "plants.csv", storage_initial_soc=0.0, storage_capacity=4.0)
+    _write_forecasts(
+        case_dir / "forecasts_df.csv",
+        da_prices=[120.0] * 8,  # expensive DA -> the only storage fill is aFRR activation
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[7.0] * 8,  # system calls the full charge power every step
+        afrr_capacity_prices=[100.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+
+    results = _run_case(case_dir, tmp_path)
+    dispatch = results["dispatch"]
+    market = results["market"]
+    blocks = results["afrr_capacity_blocks"]
+
+    reserved = blocks.loc[blocks["bid_eligible"]].reset_index(drop=True)
+    # More than one consecutive block is actually bid, so the chaining is exercised.
+    assert len(reserved) >= 3
+
+    # The chained projection downsizes later blocks once the buffer is claimed:
+    # a later reserved block must promise strictly less than the first.
+    assert reserved["reserved_capacity_MW"].iloc[-1] < reserved["reserved_capacity_MW"].iloc[0]
+
+    # Every reserved MW stays deliverable: continuous activation never overflows
+    # the store and nothing is curtailed.
+    assert (dispatch["etes_soc_MWh"] <= 4.0 + 1e-6).all()
+    assert dispatch["afrr_curtailment_MWh"].sum() == pytest.approx(0.0)
+    assert market["afrr_energy_capacity_backed_activated_MWh_el"].to_numpy() == pytest.approx(
+        market["afrr_capacity_reserved_MWh"].to_numpy()
+    )
+
+    # The bid sizing is now self-consistent with the plant, so the delivery
+    # guarantee never has to warn that it cannot honour the reservation.
+    assert not [w for w in recwarn if "deliver under continuous activation" in str(w.message)]
+
+
 def test_pay_as_cleared_capacity_strategy_uses_marginal_price(
     tmp_path: Path,
 ) -> None:
@@ -986,9 +1101,16 @@ def test_pay_as_cleared_capacity_strategy_supports_spanish_product_prices(
     )
 
 
-def test_afrr_capacity_allows_profitable_free_energy_bid_above_reserved_capacity(
+def test_afrr_capacity_free_bids_use_only_unreserved_capacity(
     tmp_path: Path,
 ) -> None:
+    """Reserved capacity is bid in full as energy; free bids only get the rest.
+
+    The mandatory energy bid equals the awarded capacity, optional free bids
+    come on top of it from the remaining unreserved charge power — the same
+    megawatt is never offered twice.
+    """
+
     case_dir = tmp_path / "afrr_capacity_with_free_energy_case"
     case_dir.mkdir()
     _write_config(
@@ -1011,17 +1133,25 @@ def test_afrr_capacity_allows_profitable_free_energy_bid_above_reserved_capacity
     results = _run_case(case_dir, tmp_path)
     market = results["market"]
 
-    assert market["afrr_capacity_reserved_MWh"].sum() > 0.0
-    assert market["afrr_energy_capacity_backed_bid_MWh_el"].sum() == pytest.approx(
-        market["afrr_capacity_reserved_MWh"].sum()
+    reserved = market["afrr_capacity_reserved_MWh"]
+    assert reserved.sum() > 0.0
+    # The awarded capacity is bid in full as the mandatory energy bid.
+    assert market["afrr_energy_capacity_backed_bid_MWh_el"].to_numpy() == pytest.approx(
+        reserved.to_numpy()
     )
+    # Free bids use the remaining unreserved capacity.
     assert market["afrr_energy_free_bid_MWh_el"].sum() > 0.0
-    assert market["afrr_energy_bid_MWh_el"].sum() == pytest.approx(
+    assert market["afrr_energy_bid_MWh_el"].to_numpy() == pytest.approx(
         (
             market["afrr_energy_capacity_backed_bid_MWh_el"] + market["afrr_energy_free_bid_MWh_el"]
-        ).sum()
+        ).to_numpy()
     )
-    assert market["afrr_energy_free_activated_MWh_el"].sum() > 0.0
+    # No megawatt is offered twice: schedule + all energy bids fit the charge power.
+    max_charge_mwh_per_step = 7.0 * 0.25
+    assert (
+        market["scheduled_electricity_procurement_MWh_el"] + market["afrr_energy_bid_MWh_el"]
+        <= max_charge_mwh_per_step + 1e-8
+    ).all()
 
 
 def test_afrr_capacity_low_capacity_price_blocks_reservation(
@@ -1142,6 +1272,30 @@ def test_afrr_capacity_bid_is_capped_by_activation_volume(
     assert block["compliant_capacity_MW"] == pytest.approx(2.0)
     assert block["compliant_capacity_MW"] <= block["peak_activation_MW"] + 1e-9
     assert block["reserved_capacity_MW"] == pytest.approx(block["compliant_capacity_MW"])
+
+
+def test_afrr_capacity_bid_is_capped_by_capacity_market_quantity(
+    afrr_capacity_case: Path,
+    tmp_path: Path,
+) -> None:
+    _write_forecasts(
+        afrr_capacity_case / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        idc_prices=[75.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[2.7] * 8,
+        afrr_capacity_prices=[100.0] * 8,
+        afrr_capacity_quantities=[1.7] * 8,
+        heat_demand=[2.0] * 8,
+    )
+
+    results = _run_case(afrr_capacity_case, tmp_path)
+    block = results["afrr_capacity_blocks"].iloc[0]
+
+    assert block["market_capacity_MW"] == pytest.approx(1.7)
+    assert block["compliant_capacity_MW"] == pytest.approx(1.0)
+    assert block["reserved_capacity_MW"] == pytest.approx(1.0)
+    assert bool(block["capacity_quantity_binding"])
 
 
 def test_afrr_capacity_bid_increment_rounds_down_to_half_mw(
@@ -1378,6 +1532,7 @@ markets:
       divisible: true
     signals:
       price: "aFRR_capacity_down_price"
+      quantity: "aFRR_capacity_down_quantity"
 """.strip()
         ),
         encoding="utf-8",
@@ -1440,6 +1595,7 @@ def _write_forecasts(
     afrr_prices: list[float | None] | None = None,
     afrr_quantities: list[float | None] | None = None,
     afrr_capacity_prices: list[float | None] | None = None,
+    afrr_capacity_quantities: list[float | None] | None = None,
     heat_demand: list[float] | None = None,
 ) -> None:
     datetimes = pd.date_range("2025-01-01 00:00", periods=8, freq="15min")
@@ -1460,6 +1616,11 @@ def _write_forecasts(
         forecasts["aFRR_energy_down_quantity"] = afrr_quantities
     if afrr_capacity_prices is not None:
         forecasts["aFRR_capacity_down_price"] = afrr_capacity_prices
+        forecasts["aFRR_capacity_down_quantity"] = (
+            afrr_capacity_quantities
+            if afrr_capacity_quantities is not None
+            else [100.0] * len(datetimes)
+        )
     forecasts.to_csv(path, index=False)
 
 

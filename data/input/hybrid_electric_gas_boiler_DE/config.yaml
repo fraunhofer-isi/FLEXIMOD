@@ -3,22 +3,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 cases:
-  hybrid_ETES_DA_ID_aFRR_energy_capacity:
-    name: hybrid_ETES_DA_ID_aFRR_energy_capacity
+  hybrid_electric_gas_boiler_DE:
+    name: hybrid_electric_gas_boiler_DE
     country: DE
-    description: Hybrid ETES + gas boiler case for Germany
+    description: Direct electric boiler plus gas boiler using the ETES comparison data
     timestep_minutes: 15
     simulation_start: 2025-01-01 00:00
     simulation_end: 2025-12-31 23:45
     timezone: Europe/Berlin
     additional_charges: true
     strategy:
-      name: hybrid_etes_gas
+      name: hybrid_electric_gas_boiler
       dispatch:
         dispatch_method: pyomo
         rolling_horizon_enabled: true
         dispatch_horizon_hours: 48
         rolling_step_hours: 24
+        afrr_energy_bid_margin_eur_per_mwh: 0.0
     solver:
       name: highs
       fallback_solvers:
@@ -31,7 +32,7 @@ cases:
     - afrr_energy
     markets:
       afrr_capacity:
-        enabled: true
+        enabled: false
         direction: down
         product_length: 4h
         price_unit: EUR_per_MW_per_h
@@ -47,7 +48,6 @@ cases:
           divisible: true
         signals:
           price: aFRR_capacity_down_price
-          quantity: aFRR_capacity_down_quantity
       day_ahead:
         enabled: true
         product_resolution: 15min
@@ -70,6 +70,7 @@ cases:
       afrr_energy:
         enabled: true
         direction: down
+        clearing_mechanism: pay_as_cleared
         product_resolution: 15min
         gate_close:
           relative_to_delivery_start_minutes: -25

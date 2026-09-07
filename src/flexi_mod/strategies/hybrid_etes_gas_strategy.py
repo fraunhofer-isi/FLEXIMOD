@@ -30,6 +30,7 @@ ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH = 0.0
 IDC_MARGIN_EUR_PER_MWH = 0.0
 AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH = 0.0
 AFRR_CAPACITY_MARGIN_EUR_PER_MW_H = 0.0
+AFRR_ENERGY_BID_MARGIN_SETTING = "afrr_energy_bid_margin_eur_per_mwh"
 
 # aFRR clearing mechanisms. ``pay_as_bid`` pays each awarded bid its own
 # submitted price; ``pay_as_cleared`` pays every awarded bid the marginal
@@ -56,6 +57,7 @@ class HybridETESGasStrategy(BaseStrategy):
         self.config = config
         self._capacity_clearing_mechanism = self._resolve_capacity_clearing_mechanism(config)
         self._energy_clearing_mechanism = self._resolve_energy_clearing_mechanism(config)
+        self.afrr_energy_bid_margin_eur_per_mwh = configured_afrr_energy_bid_margin(config)
         self.afrr_energy_data_quality_summary = pd.DataFrame()
         self.afrr_capacity_block_summary = pd.DataFrame()
         self._afrr_down_energy_data_cache = {}
@@ -473,7 +475,14 @@ class HybridETESGasStrategy(BaseStrategy):
         ) / plant.etes.efficiency_charge
 
         valid_price = clean_afrr["afrr_price_available"]
-        afrr_energy_bid_price = electricity_benchmark + AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH
+        afrr_energy_delivered_bid_price = (
+            electricity_benchmark - self.afrr_energy_bid_margin_eur_per_mwh
+        )
+        afrr_energy_bid_price = raw_electricity_bid_price(
+            afrr_energy_delivered_bid_price,
+            tax_rate,
+            additional_charges_t,
+        )
         delivered_afrr_price = self._delivered_electricity_price(
             clean_afrr["afrr_energy_down_price_EUR_per_MWh"],
             tax_rate,
@@ -483,7 +492,7 @@ class HybridETESGasStrategy(BaseStrategy):
         # the market clearing price plus industrial electricity charges must stay
         # below the benchmark bid price derived from gas-based heat value.
         price_allowed = (
-            (delivered_afrr_price <= afrr_energy_bid_price)
+            (delivered_afrr_price <= afrr_energy_delivered_bid_price)
             & valid_price
             & ~self._grid_charging_block(plant, forecasts)
         )
@@ -562,6 +571,7 @@ class HybridETESGasStrategy(BaseStrategy):
             afrr_energy_bid_mwh=bid_upper_bound,
             afrr_energy_activated_mwh=activated,
             afrr_energy_bid_price=afrr_energy_bid_price,
+            afrr_energy_delivered_bid_price=afrr_energy_delivered_bid_price,
             afrr_energy_capacity_backed_bid_mwh=split["afrr_energy_capacity_backed_bid_MWh"],
             afrr_energy_free_bid_mwh=split["afrr_energy_free_bid_MWh"],
             afrr_energy_capacity_backed_activated_mwh=split[
@@ -641,6 +651,18 @@ class HybridETESGasStrategy(BaseStrategy):
             baseline_soc=baseline_soc_values,
             replaceable_gas_heat=replaceable_gas_heat,
         )
+        # Free bids only get room the standing capacity promise does not claim.
+        claimed_soc, remaining_gas_heat = _project_reserved_capacity_claim(
+            plant=plant,
+            capacity_backed_bid=capacity_backed_bid,
+            baseline_soc=baseline_soc_values,
+            replaceable_gas_heat=replaceable_gas_heat,
+        )
+        unclaimed_future_headroom = _future_storage_input_headroom_mwh(
+            plant=plant,
+            baseline_soc=claimed_soc,
+            replaceable_gas_heat=remaining_gas_heat,
+        )
         additional_soc_mwh = 0.0
 
         for position, timestamp in enumerate(forecasts.index):
@@ -673,7 +695,12 @@ class HybridETESGasStrategy(BaseStrategy):
             capacity_bid = max(0.0, float(capacity_backed_bid.loc[timestamp]))
             free_bid = max(0.0, float(free_bid_upper_bound.loc[timestamp]))
             free_room_after_capacity = max(0.0, horizon_activation_cap - capacity_bid)
-            feasible_free_bid_mwh = min(free_bid, free_room_after_capacity)
+            unclaimed_future_cap = max(
+                0.0,
+                (float(unclaimed_future_headroom.iloc[position]) - additional_soc_mwh)
+                / plant.etes.efficiency_charge,
+            )
+            feasible_free_bid_mwh = min(free_bid, free_room_after_capacity, unclaimed_future_cap)
             free_bid = (
                 _round_bid_down_to_increment(
                     feasible_free_bid_mwh / timestep_hours,
@@ -782,7 +809,9 @@ class HybridETESGasStrategy(BaseStrategy):
             additional_charges_t,
         )
         opportunity_cost = (electricity_benchmark - reference_price).clip(lower=0.0)
-        afrr_energy_bid_price = electricity_benchmark + AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH
+        afrr_energy_delivered_bid_price = (
+            electricity_benchmark - self.afrr_energy_bid_margin_eur_per_mwh
+        )
         delivered_afrr_energy_price = self._delivered_electricity_price(
             afrr_energy["afrr_energy_down_price_EUR_per_MWh"],
             tax_rate,
@@ -792,7 +821,7 @@ class HybridETESGasStrategy(BaseStrategy):
             "afrr_activation_without_price"
         ].astype(bool)
         activation_price_allowed = afrr_energy["afrr_price_available"].astype(bool) & (
-            delivered_afrr_energy_price <= afrr_energy_bid_price
+            delivered_afrr_energy_price <= afrr_energy_delivered_bid_price
         )
 
         max_charge_power_mw = plant.etes.max_power_charge_mw
@@ -801,6 +830,13 @@ class HybridETESGasStrategy(BaseStrategy):
         _validate_bid_rules("afrr_capacity", min_bid_mw, bid_increment_mw)
         heat_demand_mwh = forecasts[plant.heat_demand_column].astype(float) * timestep_hours
         expected_soc = plant.etes.initial_soc_mwh if initial_soc_mwh is None else initial_soc_mwh
+        # Chain the projected storage level across blocks. A block's charge headroom is what
+        # remains after the earlier reserved blocks are (worst-case) fully activated and the
+        # process has drained the store. Sizing every block against the same day-start
+        # snapshot instead lets consecutive reserved blocks each claim the one shared buffer
+        # in full, over-committing capacity the plant cannot sustain under continuous
+        # activation (the store saturates and the surplus is curtailed).
+        projected_soc = expected_soc
         # Under atypical grid use, do not commit aFRR-down capacity in blocks that overlap a
         # high-load window: a mandatory capacity-backed activation there would raise the billed
         # window peak and forfeit the §19(2) capacity-charge saving.
@@ -824,7 +860,8 @@ class HybridETESGasStrategy(BaseStrategy):
             relevant_with_price = block_relevant & afrr_energy["afrr_price_available"].loc[mask]
             if relevant_with_price.any():
                 activation_price_margin = (
-                    afrr_energy_bid_price.loc[mask] - delivered_afrr_energy_price.loc[mask]
+                    afrr_energy_delivered_bid_price.loc[mask]
+                    - delivered_afrr_energy_price.loc[mask]
                 )
                 min_activation_price_margin = float(
                     activation_price_margin.loc[relevant_with_price].min()
@@ -833,18 +870,21 @@ class HybridETESGasStrategy(BaseStrategy):
                 min_activation_price_margin = float("nan")
             storage_capacity_mw = max(
                 0.0,
-                (plant.etes.max_capacity_mwh - expected_soc)
+                (plant.etes.max_capacity_mwh - projected_soc)
                 / (plant.etes.efficiency_charge * block_duration_h),
             )
-            # Energy that can be absorbed by charging *directly into the heat demand*
-            # (charge and discharge in the same step) — deliverable even when the ETES
-            # is full. Together with the free storage room this is the physical ceiling
-            # on how much extra aFRR-down charging the plant can actually take.
+            # Direct use: charging straight into the heat demand is deliverable even
+            # when the ETES is full. The bid must survive continuous activation, so
+            # the block's weakest step (min of heat demand and discharge power) sets
+            # this ceiling, not the block average.
             round_trip = plant.etes.efficiency_charge * plant.etes.efficiency_discharge
-            block_heat_demand_mwh = float(heat_demand_mwh.loc[mask].sum())
+            max_discharge_mwh_step = plant.etes.max_power_discharge_mw * timestep_hours
+            block_min_heat_outlet_mwh = float(
+                heat_demand_mwh.loc[mask].clip(upper=max_discharge_mwh_step).min()
+            )
             direct_use_mw = (
-                block_heat_demand_mwh / (round_trip * block_duration_h)
-                if round_trip > 0 and block_duration_h > 0
+                block_min_heat_outlet_mwh / (round_trip * timestep_hours)
+                if round_trip > 0 and timestep_hours > 0
                 else 0.0
             )
             deliverable_capacity_mw = min(max_charge_power_mw, storage_capacity_mw + direct_use_mw)
@@ -854,14 +894,17 @@ class HybridETESGasStrategy(BaseStrategy):
             max_activation_need_mw = (
                 max_activation_need_mwh / timestep_hours if timestep_hours > 0 else 0.0
             )
-            # Reserve the volume the market will actually activate (the block's peak
-            # 15-min activation), floored at the minimum bid for market compliance, and
-            # never beyond what the plant can physically deliver. Reserving the full
-            # deliverable capacity (ignoring the activation volume) over-reserves — and
-            # is paid for — capacity that will never be called.
+            # Limit the reservation by three independent ceilings: physical delivery,
+            # expected peak activation, and capacity-market demand. The result is then
+            # rounded down to the market increment. This prevents the representative
+            # plant from claiming either unused physical headroom or more capacity than
+            # the exogenous market quantity.
             technical_capacity = deliverable_capacity_mw
+            market_capacity_mw = float(block["capacity_quantity_MW"])
             target_capacity_mw = min(
-                deliverable_capacity_mw, max(max_activation_need_mw, min_bid_mw)
+                deliverable_capacity_mw,
+                max(max_activation_need_mw, min_bid_mw),
+                market_capacity_mw,
             )
             compliant_capacity = _round_bid_down_to_increment(
                 target_capacity_mw,
@@ -880,18 +923,37 @@ class HybridETESGasStrategy(BaseStrategy):
                 and clearing_price >= capacity_bid_price
             )
             technically_feasible = compliant_capacity > 1e-12 and compliant_capacity >= min_bid_mw
+            capacity_quantity_available = (
+                not bool(block["missing_capacity_quantity_flag"])
+                and market_capacity_mw >= min_bid_mw
+            )
             block_overlaps_high_load_window = bool(grid_block.loc[mask].any())
             bid_eligible = (
                 activation_expected
                 and capacity_profitable
                 and activation_profitable
                 and technically_feasible
+                and capacity_quantity_available
                 and not block_overlaps_high_load_window
             )
             if not bid_eligible:
                 reserved_mw = 0.0
             else:
                 reserved_mw = compliant_capacity
+            # Advance the projected storage level for the next block, assuming this block's
+            # reserved capacity is fully activated (the worst case a delivery guarantee must
+            # survive) while the process keeps draining the store. Mirrors the dispatch-side
+            # projection in _project_reserved_capacity_claim so sizing and delivery agree.
+            block_heat_thermal_mwh = float(heat_demand_mwh.loc[mask].sum())
+            soc_in_mwh = reserved_mw * block_duration_h * plant.etes.efficiency_charge
+            soc_out_mwh = min(
+                block_heat_thermal_mwh / plant.etes.efficiency_discharge,
+                plant.etes.max_power_discharge_mw * block_duration_h,
+            )
+            projected_soc = min(
+                plant.etes.max_capacity_mwh,
+                max(0.0, projected_soc + soc_in_mwh - soc_out_mwh),
+            )
             settlement_price = self.capacity_settlement_price(
                 capacity_bid_price,
                 clearing_price,
@@ -921,7 +983,15 @@ class HybridETESGasStrategy(BaseStrategy):
                     "min_price_margin_EUR_per_MWh": min_activation_price_margin,
                     "peak_activation_MW": max_activation_need_mw,
                     "technical_capacity_MW": technical_capacity,
+                    "market_capacity_MW": market_capacity_mw,
                     "compliant_capacity_MW": compliant_capacity,
+                    "capacity_quantity_binding": bool(
+                        market_capacity_mw
+                        <= min(
+                            deliverable_capacity_mw,
+                            max(max_activation_need_mw, min_bid_mw),
+                        )
+                    ),
                     "bid_increment_MW": bid_increment_mw,
                     "reserved_capacity_MW": reserved_mw,
                     "capacity_revenue_EUR": revenue,
@@ -987,17 +1057,20 @@ class HybridETESGasStrategy(BaseStrategy):
         forecasts: pd.DataFrame,
         timestep_hours: float,
     ):
-        cache_key = (id(forecasts), timestep_hours)
-        if cache_key not in self._afrr_down_energy_data_cache:
-            afrr_energy_market = AFRRDownEnergyMarket(
-                "afrr_energy",
-                self.config.market("afrr_energy"),
-            )
-            self._afrr_down_energy_data_cache[cache_key] = afrr_energy_market.prepare_market_data(
-                forecasts,
-                timestep_hours=timestep_hours,
-            )
-        cleaned = self._afrr_down_energy_data_cache[cache_key]
+        # NOTE: do not memoize by id(forecasts). CPython reuses object ids after
+        # garbage collection, so a transient per-window forecasts copy (the direct
+        # boiler strategy always copies) can collide with a stale cache entry from an
+        # earlier window — returning aFRR data for the wrong index/length (e.g. across
+        # a DST-shortened window) and silently corrupting results or raising an
+        # index-mismatch. prepare_market_data is a cheap, pure function of forecasts.
+        afrr_energy_market = AFRRDownEnergyMarket(
+            "afrr_energy",
+            self.config.market("afrr_energy"),
+        )
+        cleaned = afrr_energy_market.prepare_market_data(
+            forecasts,
+            timestep_hours=timestep_hours,
+        )
         self.afrr_energy_data_quality_summary = cleaned.quality_summary
         return cleaned
 
@@ -1122,6 +1195,54 @@ class HybridETESGasStrategy(BaseStrategy):
         return series
 
 
+def configured_afrr_energy_bid_margin(config: CaseConfig) -> float:
+    """Return the required aFRR-energy saving margin in EUR/MWh_el.
+
+    The margin is a positive deduction from the plant's delivered-electricity
+    strike price. A zero default preserves the historical break-even bid.
+    """
+
+    raw_value = config.dispatch_setting(
+        AFRR_ENERGY_BID_MARGIN_SETTING,
+        AFRR_ENERGY_BID_MARGIN_EUR_PER_MWH,
+    )
+    if isinstance(raw_value, bool):
+        raise ValueError(
+            f"strategy.dispatch.{AFRR_ENERGY_BID_MARGIN_SETTING} must be a finite "
+            "non-negative number"
+        )
+    try:
+        margin = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"strategy.dispatch.{AFRR_ENERGY_BID_MARGIN_SETTING} must be a finite "
+            "non-negative number"
+        ) from exc
+    if not math.isfinite(margin) or margin < 0.0:
+        raise ValueError(
+            f"strategy.dispatch.{AFRR_ENERGY_BID_MARGIN_SETTING} must be a finite "
+            "non-negative number"
+        )
+    return margin
+
+
+def raw_electricity_bid_price(
+    delivered_strike_price: pd.Series,
+    tax_rate: float,
+    additional_charges: pd.Series,
+) -> pd.Series:
+    """Convert a delivered-price ceiling into the submitted market bid price."""
+
+    tax_multiplier = 1.0 + float(tax_rate)
+    if not math.isfinite(tax_multiplier) or tax_multiplier <= 0.0:
+        raise ValueError("Electricity tax rate must be finite and greater than -1")
+    raw_bid = delivered_strike_price.astype(float) / tax_multiplier - additional_charges.astype(
+        float
+    )
+    raw_bid.name = "afrr_energy_bid_price_EUR_per_MWh"
+    return raw_bid
+
+
 def _capacity_signal_kwargs(
     capacity_reservation: pd.DataFrame | None,
     index: pd.DatetimeIndex,
@@ -1181,6 +1302,10 @@ def _capacity_signal_kwargs(
 
 
 def _validate_bid_rules(market_name: str, min_bid_mw: float, bid_increment_mw: float) -> None:
+    if not math.isfinite(min_bid_mw):
+        raise ValueError(f"{market_name}.product_rules.min_bid_mw must be finite")
+    if not math.isfinite(bid_increment_mw):
+        raise ValueError(f"{market_name}.product_rules.bid_increment_mw must be finite")
     if min_bid_mw < 0:
         raise ValueError(f"{market_name}.product_rules.min_bid_mw cannot be negative")
     if bid_increment_mw <= 0:
@@ -1235,6 +1360,39 @@ def _future_storage_input_headroom_mwh(
         next_allowed_before = allowed_before[position]
 
     return pd.Series(allowed_before, index=baseline_soc.index)
+
+
+def _project_reserved_capacity_claim(
+    plant: SteamGenerationPlant,
+    capacity_backed_bid: pd.Series,
+    baseline_soc: pd.Series,
+    replaceable_gas_heat: pd.Series,
+) -> tuple[pd.Series, pd.Series]:
+    """Project the baseline SOC as if every reserved interval were fully activated.
+
+    Returns the claimed SOC trajectory and the replaceable gas heat left over
+    for free bids. Sizing free bids against these keeps them out of the storage
+    room a later capacity-backed activation is entitled to.
+    """
+
+    retention = 1.0 - plant.etes.storage_loss_rate
+    charge_efficiency = plant.etes.efficiency_charge
+    discharge_efficiency = plant.etes.efficiency_discharge
+    max_capacity = plant.etes.max_capacity_mwh
+    claim = 0.0
+    claimed_soc = []
+    remaining_gas_heat = []
+
+    for position in range(len(baseline_soc)):
+        claim *= retention
+        claim += max(0.0, float(capacity_backed_bid.iloc[position])) * charge_efficiency
+        outlet = min(float(replaceable_gas_heat.iloc[position]), claim * discharge_efficiency)
+        claim -= outlet / discharge_efficiency
+        claimed_soc.append(min(max_capacity, float(baseline_soc.iloc[position]) + claim))
+        remaining_gas_heat.append(float(replaceable_gas_heat.iloc[position]) - outlet)
+
+    index = baseline_soc.index
+    return pd.Series(claimed_soc, index=index), pd.Series(remaining_gas_heat, index=index)
 
 
 def _capacity_column(

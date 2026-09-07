@@ -138,10 +138,15 @@ class StorageCostLedger:
         plant_by_name = {plant.name: plant for plant in plants}
         for timestamp, row in dispatch_results.sort_index().iterrows():
             plant_name = str(row["plant_name"])
+            plant = plant_by_name[plant_name]
+            # Storage-less routes (e.g. the direct electric + gas boiler) have no
+            # thermal inventory to cost, so they contribute no ledger rows.
+            if not plant.has_thermal_storage:
+                continue
             self.record_storage_step(
                 datetime=timestamp,
                 plant_name=plant_name,
-                charges=_charges_from_dispatch_row(row, plant_by_name[plant_name]),
+                charges=_charges_from_dispatch_row(row, plant),
                 thermal_inventory_mwh_th=float(row["etes_soc_MWh"]),
             )
 

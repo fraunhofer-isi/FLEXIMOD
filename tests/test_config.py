@@ -226,6 +226,7 @@ markets:
     price_unit: "EUR_per_MW_per_h"
     signals:
       price: aFRR_capacity_down_price
+      quantity: aFRR_capacity_down_quantity
 """.strip()
         ),
         encoding="utf-8",
@@ -267,6 +268,7 @@ markets:
     price_unit: "EUR_per_MW_per_h"
     signals:
       price: aFRR_capacity_down_price
+      quantity: aFRR_capacity_down_quantity
   day_ahead:
     enabled: true
     signals:
