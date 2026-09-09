@@ -14,7 +14,7 @@ playground/
 *.egg-info/
 
 #Temperory
-# data/input/
+data/input/
 tests/golden
 # src/flexi_mod/strategies/electrified_afrr_down_strategy.py
 tests/test_electrified_afrr_down_strategy.py

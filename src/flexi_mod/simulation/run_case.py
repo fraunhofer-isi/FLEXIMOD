@@ -7,7 +7,14 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
+import os
+import re
 import sys
+import time
+import warnings
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -24,15 +31,22 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+#: One small file per live worker, overwritten (not appended) on every progress
+#: update, so a separate dashboard process can render an in-place live table
+#: instead of everyone tailing an ever-scrolling shared log.
+WORKER_STATUS_DIR = PROJECT_ROOT / "data" / "output" / ".worker_status"
+
 # Explicit catalogue of the generated input folders. These names are expanded into
 # ``available_examples`` below rather than discovered from the file system, so the
 # runner registry remains visible and reproducible in version control.
 _GENERATED_STUDY_FAMILIES = (
+    "aktuellepolitiken",
+    "fokusH2",
     "fokusstrom",
     "hohenachfrage",
+    "niedrigenachfrage",
+    "technologiemix",
 )
-# Other generated families available for later selection:
-# "fokusH2", "fokusstrom", "technologiemix"
 _GENERATED_YEARS = (
     "2030",
     "2035",
@@ -47,14 +61,14 @@ _GENERATED_ROUTE_VARIANTS = (
     "bf_bof_hydrogen_electrolyser",
     "bf_bof_hydrogen_external",
     "bf_bof_natural_gas_external",
-    "dri_bof_coal_external", 
+    "dri_bof_coal_external",
     "dri_bof_hybrid_hydrogen_natural_gas_electrolyser",
     "dri_bof_hybrid_hydrogen_natural_gas_external",
-    "dri_bof_hydrogen_electrolyser", 
+    "dri_bof_hydrogen_electrolyser",
     "dri_bof_hydrogen_external",
     "dri_bof_natural_gas_external",
     "dri_eaf_coal_external",
-    "dri_eaf_hybrid_hydrogen_natural_gas_electrolyser", 
+    "dri_eaf_hybrid_hydrogen_natural_gas_electrolyser",
     "dri_eaf_hybrid_hydrogen_natural_gas_external",
     "dri_eaf_hydrogen_electrolyser",
     "dri_eaf_hydrogen_external",
@@ -67,6 +81,46 @@ GENERATED_EXAMPLE_NAMES = tuple(
     for variant in _GENERATED_ROUTE_VARIANTS
 )
 
+# Cement plant cases: same family/year axes as steel, but each route is an
+# anonymised code (R1..R16, with a/b sub-variants) rather than a descriptive
+# technology name, and every case uses the single "electrified_cement"
+# strategy regardless of route.
+_GENERATED_CEMENT_STUDY_FAMILIES = (
+    "aktuellepolitiken",
+    "fokusH2",
+    "fokusstrom",
+    "hohenachfrage",
+    "niedrigenachfrage",
+    "technologiemix",
+)
+_GENERATED_CEMENT_ROUTE_VARIANTS = (
+    "R1",
+    "R2",
+    "R3",
+    "R4",
+    "R5",
+    "R6",
+    "R7",
+    "R8",
+    "R9",
+    "R10",
+    "R11a",
+    "R11b",
+    "R12a",
+    "R12b",
+    "R13",
+    "R14",
+    "R15a",
+    "R15b",
+    "R16",
+)
+GENERATED_CEMENT_EXAMPLE_NAMES = tuple(
+    f"{family}_{year}_{variant}"
+    for family in _GENERATED_CEMENT_STUDY_FAMILIES
+    for year in _GENERATED_YEARS
+    for variant in _GENERATED_CEMENT_ROUTE_VARIANTS
+)
+
 
 available_examples: dict[str, dict[str, str]] = {
     **{
@@ -75,6 +129,13 @@ available_examples: dict[str, dict[str, str]] = {
             "study_case": name,
         }
         for name in GENERATED_EXAMPLE_NAMES
+    },
+    **{
+        name: {
+            "scenario": name,
+            "study_case": name,
+        }
+        for name in GENERATED_CEMENT_EXAMPLE_NAMES
     },
 }
 
@@ -86,7 +147,9 @@ example = "aktuellepolitiken_2030_dri_eaf_hybrid_hydrogen_natural_gas_external"
 # Add names here if another case should be skipped temporarily.
 excluded_examples_from_run: set[str] = set()
 examples_to_run: list[str] = [
-    name for name in GENERATED_EXAMPLE_NAMES if name not in excluded_examples_from_run
+    name
+    for name in (*GENERATED_EXAMPLE_NAMES, *GENERATED_CEMENT_EXAMPLE_NAMES)
+    if name not in excluded_examples_from_run
 ]
 
 
@@ -111,6 +174,10 @@ def resolve_example_paths(example: str) -> dict[str, Path | str]:
     study_case = settings["study_case"]
 
     input_dir = PROJECT_ROOT / "data" / "input" / scenario
+    if not input_dir.exists():
+        input_dir = PROJECT_ROOT / "data" / "input" / "cement_inputs" / scenario
+    if not input_dir.exists():
+        input_dir = PROJECT_ROOT / "data" / "input" / "steel_inputs" / scenario
 
     if not input_dir.exists():
         raise FileNotFoundError(
@@ -221,6 +288,25 @@ def main() -> None:
     parser.add_argument("--skip-storage-cost-ledger", action="store_true")
     parser.add_argument("--skip-summary-indicators", action="store_true")
     parser.add_argument(
+        "--plant",
+        choices=["all", "steel", "cement"],
+        default="all",
+        help=(
+            "Restrict a batch run (examples_to_run) to one generated catalogue. "
+            "Defaults to 'all' (steel + cement)."
+        ),
+    )
+    parser.add_argument(
+        "--workers",
+        type=_positive_int,
+        default=os.cpu_count() or 1,
+        help=(
+            "Number of selected examples to run concurrently in separate processes. "
+            "Defaults to the machine's CPU count; use --workers 1 for the original "
+            "sequential, single-process execution."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print detailed created file paths.",
@@ -237,12 +323,76 @@ def main() -> None:
 
 
 def _run_selected_examples(args: argparse.Namespace, logger: Any) -> None:
-    """Run the explicitly selected examples in order and report failures at the end."""
+    """Run the selected examples, filtered by --plant, and report failures at the end."""
     selected = selected_examples()
     if args.case or args.study_case or args.output_dir:
         raise ValueError(
             "examples_to_run cannot be combined with --case, --study-case, or --output-dir."
         )
+
+    if args.plant == "steel":
+        selected = tuple(name for name in selected if name in set(GENERATED_EXAMPLE_NAMES))
+    elif args.plant == "cement":
+        selected = tuple(
+            name for name in selected if name in set(GENERATED_CEMENT_EXAMPLE_NAMES)
+        )
+    if not selected:
+        logger.info(f"No selected examples match --plant {args.plant}.")
+        return
+
+    worker_count = min(args.workers, len(selected))
+    if worker_count == 1:
+        _run_selected_examples_sequential(args, logger, selected)
+        return
+
+    logger.info(
+        f"Parallel run started: {len(selected)} selected example(s), "
+        f"{worker_count} worker processes."
+    )
+    failures: list[tuple[str, Exception]] = []
+    completed = 0
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=worker_count, mp_context=context) as executor:
+        futures = {
+            executor.submit(_run_example_worker, args, selected_example): selected_example
+            for selected_example in selected
+        }
+        try:
+            for future in as_completed(futures):
+                selected_example = futures[future]
+                completed += 1
+                try:
+                    elapsed_seconds = future.result()
+                except Exception as exc:
+                    failures.append((selected_example, exc))
+                    logger.error(
+                        f"[{completed}/{len(selected)}] Example '{selected_example}' "
+                        f"failed: {exc}"
+                    )
+                else:
+                    logger.success(
+                        f"[{completed}/{len(selected)}] Case completed: {selected_example} "
+                        f"({_format_duration(elapsed_seconds)})"
+                    )
+        except KeyboardInterrupt:
+            for future in futures:
+                future.cancel()
+            raise
+
+    if failures:
+        failed_names = ", ".join(name for name, _ in failures)
+        raise RuntimeError(
+            f"Parallel run completed with {len(failures)} failed example(s): {failed_names}"
+        )
+    logger.success(f"Parallel run completed: {len(selected)} examples succeeded.")
+
+
+def _run_selected_examples_sequential(
+    args: argparse.Namespace,
+    logger: Any,
+    selected: tuple[str, ...],
+) -> None:
+    """Keep the original in-process execution available for debugging."""
 
     logger.info(f"Sequential run started: {len(selected)} selected example(s).")
     failures: list[tuple[str, Exception]] = []
@@ -262,6 +412,111 @@ def _run_selected_examples(args: argparse.Namespace, logger: Any) -> None:
             f"Sequential run completed with {len(failures)} failed example(s): {failed_names}"
         )
     logger.success(f"Sequential run completed: {len(selected)} examples succeeded.")
+
+
+def _run_example_worker(args: argparse.Namespace, selected_example: str) -> float:
+    """Run one example in an isolated process and return elapsed wall-clock seconds."""
+
+    # Each process owns one solver. Prevent numerical libraries and HiGHS from
+    # creating their own large thread pools on top of the case-level process pool.
+    for variable in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ[variable] = "1"
+    os.environ["FLEXIMOD_HIGHS_THREADS"] = "1"
+
+    from flexi_mod.simulation.cli_logging import CliLogger
+
+    # "Simulating 2030-03-14 for P100..._R3 (140/11648 windows, 11508 remaining)"
+    progress_pattern = re.compile(r"Simulating (\S+(?: to \S+)?) for (\S+) \((\d+)/(\d+) windows")
+
+    class QuietWorkerLogger(CliLogger):
+        """Suppress per-window log spam; report progress to a per-worker status file.
+
+        With 25+ workers each processing thousands of windows (32 plants x ~365
+        windows per case), printing every window would flood the shared log, and
+        printing nothing (the original design) left the run invisible between
+        "Started" and completion. Instead, each update overwrites this worker's own
+        small status file, which `scripts/cement_dashboard.py` polls to render a
+        live, in-place table -- no log scrolling required.
+        """
+
+        def __init__(self, verbose: bool = False, *, case_name: str = "", pid: int = 0) -> None:
+            super().__init__(verbose=verbose)
+            self._progress_count = 0
+            self._case_name = case_name
+            self._status_path = WORKER_STATUS_DIR / f"{pid}.status"
+
+        def info(self, message: str) -> None:
+            del message
+
+        def detail(self, message: str) -> None:
+            del message
+
+        def notice(self, message: str) -> None:
+            del message
+
+        def success(self, message: str) -> None:
+            del message
+
+        def error(self, message: str) -> None:
+            del message
+
+        def progress(self, message: str) -> None:
+            self._progress_count += 1
+            match = progress_pattern.search(message)
+            if match is not None:
+                date_label, plant_name, current, total = match.groups()
+                self._write_status(plant_name, current, total, date_label)
+            if self._progress_count % 20 == 1:
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] (pid {os.getpid()}) {message}",
+                    flush=True,
+                )
+
+        def _write_status(self, plant_name: str, current: str, total: str, date_label: str) -> None:
+            payload = (
+                f"{self._case_name}\t{plant_name}\t{current}\t{total}\t"
+                f"{date_label}\t{time.strftime('%H:%M:%S')}\n"
+            )
+            tmp_path = self._status_path.with_suffix(".tmp")
+            tmp_path.write_text(payload)
+            tmp_path.replace(self._status_path)
+
+        @contextmanager
+        def capture_warnings(self):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                yield
+
+    WORKER_STATUS_DIR.mkdir(parents=True, exist_ok=True)
+    pid = os.getpid()
+    logger = QuietWorkerLogger(verbose=False, case_name=selected_example, pid=pid)
+    logger._write_status("-", "0", "?", "-")
+
+    started = time.monotonic()
+    print(f"[{time.strftime('%H:%M:%S')}] Started (pid {pid}): {selected_example}", flush=True)
+    try:
+        _run_one_case(args, logger, selected_example=selected_example)
+    except SystemExit as exc:
+        raise RuntimeError(f"worker exited with status {exc.code}") from exc
+    return time.monotonic() - started
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
 
 
 def _run_one_case(

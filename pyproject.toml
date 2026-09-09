@@ -22,6 +22,7 @@ dependencies = [
     "plotly>=5.24",
     "nbconvert>=7.16",
     "highspy>=1.7",
+    "pyarrow>=17.0",
 ]
 
 [project.scripts]
