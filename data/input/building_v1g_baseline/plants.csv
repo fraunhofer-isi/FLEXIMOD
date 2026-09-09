@@ -1,0 +1,7 @@
+﻿name,unit_type,technology,component_name,node,demand,battery_capacity_mwh,mileage_mwh_per_km,max_power_charge,max_power_discharge,min_soc,max_soc,initial_soc,terminal_soc,efficiency_charge,efficiency_discharge,power_flow_directionality,availability_column,trip_distance_column,max_power,generation_column
+building_1,building,electric_vehicle,bus_route_7k,grid_node,building_1_electricity_demand,0.3,0.00125,0.15,0,0.0,1.0,0.8,0.8,0.95,0.95,unidirectional,bus_route_7k_availability,bus_route_7k_trip_distance_km,,
+building_1,building,electric_vehicle,bus_route_79,grid_node,building_1_electricity_demand,0.3,0.00125,0.15,0,0.0,1.0,0.8,0.8,0.95,0.95,unidirectional,bus_route_79_availability,bus_route_79_trip_distance_km,,
+building_1,building,electric_vehicle,bus_route_101,grid_node,building_1_electricity_demand,0.3,0.00125,0.15,0,0.0,1.0,0.8,0.8,0.95,0.95,unidirectional,bus_route_101_availability,bus_route_101_trip_distance_km,,
+building_1,building,charging_station,charger_1,grid_node,building_1_electricity_demand,,,0.15,0,,,,,,,unidirectional,,,,
+building_1,building,charging_station,charger_2,grid_node,building_1_electricity_demand,,,0.15,0,,,,,,,unidirectional,,,,
+building_1,building,charging_station,charger_3,grid_node,building_1_electricity_demand,,,0.15,0,,,,,,,unidirectional,,,,

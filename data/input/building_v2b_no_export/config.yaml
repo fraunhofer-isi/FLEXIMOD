@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: FLEXIMOD Developers
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+cases:
+  building_v2b_no_export:
+    name: building_v2b_no_export
+    country: XX
+    description: Bidirectional bus-to-building operation with no grid export
+    timestep_minutes: 15
+    simulation_start: 2026-09-07 00:00
+    simulation_end: 2026-09-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 24
+        rolling_step_hours: 6
+        currency: THB
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0
+        demand_charge_per_kw_month: 210
+    solver:
+      name: highs
+      fallback_solvers: []
+      tee: false
+    market_sequence:
+    - day_ahead
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_current_thb_per_mwh

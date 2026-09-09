@@ -66,12 +66,12 @@ The responsibility split is:
 
 ```text
 BuildingStrategy: select the configured import and export price signals
-Building: enforce demand, charger, trip, availability, and battery constraints
-SimulationRunner: create rolling windows, commit each step, and carry bus SOC
+Building: enforce demand, monthly peak, charger, trip, availability, and battery constraints
+SimulationRunner: create rolling windows and carry bus SOC and the observed monthly peak
 ```
 
-The current strategy supports the day-ahead market only. The complete example
-is in `data/input/building_v2g_example` and is documented in `building.md`.
+The current strategy supports the day-ahead market only. Separate V1G, V2B,
+and V2G examples are in `data/input` and are documented in `building.md`.
 
 ## First Implemented Strategy
 

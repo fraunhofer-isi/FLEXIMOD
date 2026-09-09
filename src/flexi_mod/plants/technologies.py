@@ -281,15 +281,9 @@ class ElectricBoiler(Boiler):
 
 @dataclass
 class ElectricVehicle:
-    """Battery-electric vehicle or aggregated fleet.
-
-    Battery capacity and charging power are specified per vehicle and scaled
-    by ``fleet_size``. Availability and trip energy are time series supplied
-    by the Building model.
-    """
+    """One battery-electric vehicle connected to a Building."""
 
     battery_capacity_mwh: float
-    fleet_size: int
     max_power_charge_mw: float
     max_power_discharge_mw: float
     min_soc_fraction: float
@@ -297,14 +291,13 @@ class ElectricVehicle:
     initial_soc_fraction: float
     efficiency_charge: float
     efficiency_discharge: float
+    mileage_mwh_per_km: float
     storage_loss_rate_per_hour: float = 0.0
-    mileage_mwh_per_km: float | None = None
     power_flow_directionality: str = "unidirectional"
     availability_column: str = ""
-    trip_energy_column: str = ""
     trip_distance_column: str = ""
     terminal_soc_fraction: float | None = None
-    degradation_cost_eur_per_mwh: float = 0.0
+    component_name: str = ""
 
     @classmethod
     def from_row(cls, row: pd.Series) -> ElectricVehicle:
@@ -317,7 +310,6 @@ class ElectricVehicle:
                 _first_value(row, "battery_capacity_mwh", "capacity", "max_capacity"),
                 "battery_capacity_mwh",
             ),
-            fleet_size=_as_positive_int(_first_value(row, "fleet_size", default=1), "fleet_size"),
             max_power_charge_mw=max_charge,
             max_power_discharge_mw=_as_float(
                 row.get("max_power_discharge"),
@@ -336,30 +328,24 @@ class ElectricVehicle:
             storage_loss_rate_per_hour=_as_float(
                 row.get("storage_loss_rate"), "storage_loss_rate", default=0.0
             ),
-            mileage_mwh_per_km=_as_optional_float(
-                _first_value(row, "mileage_mwh_per_km", "mileage")
+            mileage_mwh_per_km=_as_float(
+                _first_value(row, "mileage_mwh_per_km", "mileage"),
+                "mileage_mwh_per_km",
             ),
             power_flow_directionality=directionality,
             availability_column=_clean(
                 _first_value(row, "availability_column", "availability_profile")
             ),
-            trip_energy_column=_clean(
-                _first_value(row, "trip_energy_column", "trip_energy_consumption")
-            ),
             trip_distance_column=_clean(_first_value(row, "trip_distance_column", "trip_distance")),
             terminal_soc_fraction=_as_optional_float(row.get("terminal_soc")),
-            degradation_cost_eur_per_mwh=_as_float(
-                row.get("degradation_cost_eur_per_mwh"),
-                "degradation_cost_eur_per_mwh",
-                default=0.0,
-            ),
+            component_name=_clean(_first_value(row, "component_name", "component")),
         )
         _validate_vehicle(vehicle)
         return vehicle
 
     @property
     def total_capacity_mwh(self) -> float:
-        return self.battery_capacity_mwh * self.fleet_size
+        return self.battery_capacity_mwh
 
     @property
     def initial_soc_mwh(self) -> float:
@@ -381,17 +367,25 @@ class ElectricVehicle:
         _validate_vehicle(self)
         dt_hours = float(context["dt_hours"])
         steps = list(time_steps)
-        availability, trip_energy = _vehicle_profiles(self, context, steps)
+        availability, trip_distance, trip_energy = _vehicle_profiles(self, context, steps)
 
-        # Fleet energy and power limits
+        # Vehicle energy and power limits
         initial_soc = float(context.get("initial_soc_mwh", self.initial_soc_mwh))
         min_soc = self.min_soc_fraction * self.total_capacity_mwh
         max_soc = self.max_soc_fraction * self.total_capacity_mwh
-        if not min_soc <= initial_soc <= max_soc:
-            raise ValueError("initial fleet SOC must be within the configured SOC bounds")
+        # A solved SOC handed to the next rolling window can differ from an
+        # active bound by a few floating-point digits. Accept only that tiny
+        # numerical error, then put the value exactly on the physical bound.
+        soc_tolerance_mwh = max(1e-7, self.total_capacity_mwh * 1e-7)
+        if initial_soc < min_soc - soc_tolerance_mwh or initial_soc > max_soc + soc_tolerance_mwh:
+            raise ValueError(
+                "initial vehicle SOC must be within the configured SOC bounds "
+                f"({min_soc:g} <= {initial_soc:g} <= {max_soc:g} MWh)"
+            )
+        initial_soc = min(max(initial_soc, min_soc), max_soc)
 
-        max_charge_mwh = self.max_power_charge_mw * self.fleet_size * dt_hours
-        max_discharge_mwh = self.max_power_discharge_mw * self.fleet_size * dt_hours
+        max_charge_mwh = self.max_power_charge_mw * dt_hours
+        max_discharge_mwh = self.max_power_discharge_mw * dt_hours
         retention = (1.0 - self.storage_loss_rate_per_hour) ** dt_hours
 
         # Parameters
@@ -404,6 +398,9 @@ class ElectricVehicle:
         )
         block.trip_energy_mwh = pyo.Param(
             time_steps, initialize={t: trip_energy[i] for i, t in enumerate(steps)}
+        )
+        block.trip_distance_km = pyo.Param(
+            time_steps, initialize={t: trip_distance[i] for i, t in enumerate(steps)}
         )
 
         # Variables: all energy flows are MWh per interval
@@ -453,13 +450,13 @@ class ElectricVehicle:
 
 @dataclass
 class ChargingStation:
-    """One charging station or a group of identical charging points."""
+    """One charging station connected to a Building."""
 
-    charger_count: int
     max_power_charge_mw: float
     max_power_discharge_mw: float
     power_flow_directionality: str = "unidirectional"
     availability_column: str = ""
+    component_name: str = ""
 
     @classmethod
     def from_row(cls, row: pd.Series) -> ChargingStation:
@@ -468,10 +465,6 @@ class ChargingStation:
             _first_value(row, "max_power_charge", "max_power"), "max_power_charge"
         )
         station = cls(
-            charger_count=_as_positive_int(
-                _first_value(row, "charger_count", "number_of_chargers", default=1),
-                "charger_count",
-            ),
             max_power_charge_mw=max_charge,
             max_power_discharge_mw=_as_float(
                 row.get("max_power_discharge"),
@@ -482,6 +475,7 @@ class ChargingStation:
             availability_column=_clean(
                 _first_value(row, "availability_column", "availability_profile")
             ),
+            component_name=_clean(_first_value(row, "component_name", "component")),
         )
         _validate_charging_station(station)
         return station
@@ -492,11 +486,11 @@ class ChargingStation:
 
     @property
     def total_max_power_charge_mw(self) -> float:
-        return self.charger_count * self.max_power_charge_mw
+        return self.max_power_charge_mw
 
     @property
     def total_max_power_discharge_mw(self) -> float:
-        return self.charger_count * self.max_power_discharge_mw
+        return self.max_power_discharge_mw
 
     def add_to_model(
         self,
@@ -518,7 +512,6 @@ class ChargingStation:
         max_discharge = self.total_max_power_discharge_mw * dt_hours
 
         # Parameters
-        block.charger_count = pyo.Param(initialize=self.charger_count)
         block.availability = pyo.Param(
             time_steps, initialize={t: availability[i] for i, t in enumerate(steps)}
         )
@@ -551,12 +544,68 @@ class ChargingStation:
         return block
 
 
+@dataclass
+class PVPlant:
+    """One photovoltaic system connected behind the building meter."""
+
+    max_power_mw: float
+    generation_column: str = ""
+    component_name: str = ""
+
+    @classmethod
+    def from_row(cls, row: pd.Series) -> PVPlant:
+        plant = cls(
+            max_power_mw=_as_float(
+                _first_value(row, "max_power", "max_power_mw"),
+                "max_power",
+            ),
+            generation_column=_clean(_first_value(row, "generation_column", "power_profile")),
+            component_name=_clean(_first_value(row, "component_name", "component")),
+        )
+        _validate_positive(plant.max_power_mw, "max_power")
+        return plant
+
+    def add_to_model(
+        self,
+        model: pyo.ConcreteModel,
+        block: pyo.Block,
+        time_steps: pyo.Set,
+        context: dict[str, Any],
+    ) -> pyo.Block:
+        """Add available, used, and curtailed PV energy."""
+
+        dt_hours = float(context["dt_hours"])
+        steps = list(time_steps)
+        generation_mw = _profile_values(
+            context.get("generation_mw"), steps, "PV generation", default=0.0
+        )
+        _validate_profile_range(generation_mw, "PV generation", 0.0, self.max_power_mw)
+        available_mwh = [power * dt_hours for power in generation_mw]
+
+        block.available_generation_mwh = pyo.Param(
+            time_steps,
+            initialize={t: available_mwh[i] for i, t in enumerate(steps)},
+        )
+        block.generation_mwh = pyo.Var(time_steps, within=pyo.NonNegativeReals)
+
+        @block.Constraint(time_steps)
+        def available_generation_limit(b: pyo.Block, t: Any) -> pyo.Constraint:
+            return b.generation_mwh[t] <= b.available_generation_mwh[t]
+
+        block.curtailment_mwh = pyo.Expression(
+            time_steps,
+            rule=lambda b, t: b.available_generation_mwh[t] - b.generation_mwh[t],
+        )
+        return block
+
+
 TECHNOLOGY_REGISTRY = {
     "thermal_storage": ThermalStorage,
     "boiler": GasBoiler,
     "electric_boiler": ElectricBoiler,
     "electric_vehicle": ElectricVehicle,
     "charging_station": ChargingStation,
+    "pv_plant": PVPlant,
 }
 
 
@@ -667,7 +716,7 @@ def _vehicle_profiles(
     vehicle: ElectricVehicle,
     context: dict[str, Any],
     steps: list[Any],
-) -> tuple[list[float], list[float]]:
+) -> tuple[list[float], list[float], list[float]]:
     """Prepare the two time series used by the vehicle equations."""
 
     _validate_positive(float(context["dt_hours"]), "dt_hours")
@@ -677,28 +726,29 @@ def _vehicle_profiles(
     availability = _profile_values(
         context.get("availability"), steps, "vehicle availability", default=1.0
     )
-    trip_energy = _profile_values(context.get("trip_energy_mwh"), steps, "trip energy", default=0.0)
     trip_distance = _profile_values(
         context.get("trip_distance_km"), steps, "trip distance", default=0.0
     )
 
-    if any(trip_energy) and any(trip_distance):
-        raise ValueError("Provide trip energy or trip distance, not both")
-    if any(trip_distance):
-        if vehicle.mileage_mwh_per_km is None:
-            raise ValueError("mileage_mwh_per_km is required with a trip-distance profile")
-        trip_energy = [distance * vehicle.mileage_mwh_per_km for distance in trip_distance]
-
-    _validate_profile_range(availability, "vehicle availability", 0.0, 1.0)
+    _validate_binary_profile(availability, "vehicle availability")
+    _validate_profile_range(trip_distance, "trip distance", 0.0, None)
+    for connected, distance in zip(availability, trip_distance, strict=True):
+        if connected == 1.0 and distance > 0.0:
+            raise ValueError("A bus cannot travel while availability is 1")
+    trip_energy = [distance * vehicle.mileage_mwh_per_km for distance in trip_distance]
     _validate_profile_range(trip_energy, "trip energy", 0.0, None)
-    return availability, trip_energy
+    return availability, trip_distance, trip_energy
+
+
+def _validate_binary_profile(values: list[float], label: str) -> None:
+    _validate_profile_range(values, label, 0.0, 1.0)
+    if any(value not in {0.0, 1.0} for value in values):
+        raise ValueError(f"{label} must contain only 0 or 1")
 
 
 def _validate_vehicle(vehicle: ElectricVehicle) -> None:
     """Validate configuration separately from the physical equations."""
 
-    if not isinstance(vehicle.fleet_size, int) or vehicle.fleet_size <= 0:
-        raise ValueError("fleet_size must be a positive integer")
     _directionality(vehicle.power_flow_directionality)
     _validate_positive(vehicle.battery_capacity_mwh, "battery_capacity_mwh")
     _validate_positive(vehicle.max_power_charge_mw, "max_power_charge")
@@ -720,20 +770,17 @@ def _validate_vehicle(vehicle: ElectricVehicle) -> None:
     _validate_efficiency(vehicle.efficiency_discharge, "efficiency_discharge")
     _validate_profile_range([vehicle.storage_loss_rate_per_hour], "storage_loss_rate", 0.0, 1.0)
     _validate_profile_range(
-        [vehicle.max_power_discharge_mw, vehicle.degradation_cost_eur_per_mwh],
-        "vehicle non-negative parameters",
+        [vehicle.max_power_discharge_mw],
+        "max_power_discharge",
         0.0,
         None,
     )
-    if vehicle.mileage_mwh_per_km is not None and vehicle.mileage_mwh_per_km <= 0.0:
-        raise ValueError("mileage_mwh_per_km must be positive when configured")
+    _validate_positive(vehicle.mileage_mwh_per_km, "mileage_mwh_per_km")
 
 
 def _validate_charging_station(station: ChargingStation) -> None:
     """Validate configuration separately from the charger equations."""
 
-    if not isinstance(station.charger_count, int) or station.charger_count <= 0:
-        raise ValueError("charger_count must be a positive integer")
     _directionality(station.power_flow_directionality)
     _validate_positive(station.max_power_charge_mw, "max_power_charge")
     _validate_profile_range([station.max_power_discharge_mw], "max_power_discharge", 0.0, None)

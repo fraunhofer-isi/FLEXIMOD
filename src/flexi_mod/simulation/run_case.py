@@ -25,6 +25,42 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 available_examples: dict[str, dict[str, str]] = {
+    "building_v1g_annual": {
+        "scenario": "building_v1g_annual",
+        "study_case": "building_v1g_annual",
+    },
+    "building_v2b_cost_annual": {
+        "scenario": "building_v2b_cost_annual",
+        "study_case": "building_v2b_cost_annual",
+    },
+    "building_v2b_grid_support_annual": {
+        "scenario": "building_v2b_grid_support_annual",
+        "study_case": "building_v2b_grid_support_max_no_export",
+    },
+    "building_v2b_pv_self_consumption_annual": {
+        "scenario": "building_v2b_pv_self_consumption_annual",
+        "study_case": "building_v2b_pv_self_consumption",
+    },
+    "building_v2b_renewable_alignment_annual": {
+        "scenario": "building_v2b_renewable_alignment_annual",
+        "study_case": "building_v2b_renewable_shifting_max_no_export",
+    },
+    "building_v2g_current_tariff_annual": {
+        "scenario": "building_v2g_current_tariff_annual",
+        "study_case": "building_v2g_current_tariff_annual",
+    },
+    "building_v2g_tariff_sweep_annual": {
+        "scenario": "building_v2g_tariff_sweep_annual",
+        "study_case": "building_v2g_sweep_current",
+    },
+    "building_v1g_baseline": {
+        "scenario": "building_v1g_baseline",
+        "study_case": "building_v1g_baseline",
+    },
+    "building_v2b_no_export": {
+        "scenario": "building_v2b_no_export",
+        "study_case": "building_v2b_no_export",
+    },
     "building_v2g_example": {
         "scenario": "building_v2g_example",
         "study_case": "building_v2g_example",

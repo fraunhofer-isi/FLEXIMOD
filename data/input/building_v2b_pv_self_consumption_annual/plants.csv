@@ -5,3 +5,4 @@ building_1,building,electric_vehicle,bus_route_101,grid_node,building_1_electric
 building_1,building,charging_station,charger_1,grid_node,building_1_electricity_demand,,,0.15,0.15,,,,,,,bidirectional,,,,
 building_1,building,charging_station,charger_2,grid_node,building_1_electricity_demand,,,0.15,0.15,,,,,,,bidirectional,,,,
 building_1,building,charging_station,charger_3,grid_node,building_1_electricity_demand,,,0.15,0.15,,,,,,,bidirectional,,,,
+building_1,building,pv_plant,pv_1,grid_node,building_1_electricity_demand,,,,,,,,,,,,,,0.4249916667,pv_1_generation_mw

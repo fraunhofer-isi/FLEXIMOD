@@ -310,7 +310,14 @@ class SimulationRunner:
         total_windows = len(buildings) * len(windows)
 
         for building in buildings:
-            current_soc = building.electric_vehicle.initial_soc_mwh
+            current_soc = {
+                bus_name: vehicle.initial_soc_mwh
+                for bus_name, vehicle in building.electric_vehicles.items()
+            }
+            current_renewable_soc = {
+                bus_name: 0.0 for bus_name in building.electric_vehicles
+            }
+            current_monthly_peaks: dict[str, float] = {}
             for window in windows:
                 self._progress(
                     _window_progress_message(
@@ -325,15 +332,37 @@ class SimulationRunner:
                     building,
                     window.forecasts,
                     initial_soc_mwh=current_soc,
+                    initial_renewable_soc_mwh=current_renewable_soc,
+                    initial_monthly_peak_mw=current_monthly_peaks,
                 )
                 committed = optimized.reindex(window.commit_index).copy()
                 committed["rolling_window"] = window.number
                 dispatch_parts.append(committed)
-                current_soc = float(committed["bus_soc_MWh"].iloc[-1])
+                current_soc = {
+                    bus_name: float(committed[f"{bus_name}_soc_MWh"].iloc[-1])
+                    for bus_name in building.electric_vehicles
+                }
+                if all(
+                    f"{bus_name}_renewable_soc_MWh" in committed
+                    for bus_name in building.electric_vehicles
+                ):
+                    current_renewable_soc = {
+                        bus_name: float(
+                            committed[f"{bus_name}_renewable_soc_MWh"].iloc[-1]
+                        )
+                        for bus_name in building.electric_vehicles
+                    }
+                for timestamp, grid_import_mw in committed["grid_import_MW"].items():
+                    month = pd.Timestamp(timestamp).strftime("%Y-%m")
+                    current_monthly_peaks[month] = max(
+                        current_monthly_peaks.get(month, 0.0),
+                        float(grid_import_mw),
+                    )
                 completed_windows += 1
+                total_soc = sum(current_soc.values())
                 self._progress(
                     f"Window {window.number} completed for {building.name}; "
-                    f"bus SOC = {current_soc:.3f} MWh"
+                    f"total bus SOC = {total_soc:.3f} MWh"
                 )
 
         return (
@@ -579,20 +608,138 @@ def _building_summary(dispatch_results: pd.DataFrame) -> pd.DataFrame:
 
     rows: list[dict[str, object]] = []
     for plant_name, group in dispatch_results.groupby("plant_name"):
-        rows.append(
-            {
-                "plant_name": plant_name,
-                "total_building_demand_MWh": group["building_demand_MWh"].sum(),
-                "total_bus_trip_energy_MWh": group["bus_trip_energy_MWh"].sum(),
-                "total_bus_charge_MWh": group["bus_charge_MWh"].sum(),
-                "total_bus_discharge_MWh": group["bus_discharge_MWh"].sum(),
-                "total_grid_import_MWh": group["grid_import_MWh"].sum(),
-                "total_grid_export_MWh": group["grid_export_MWh"].sum(),
-                "total_variable_cost_EUR": group["variable_cost_EUR"].sum(),
-                "final_bus_soc_MWh": group["bus_soc_MWh"].iloc[-1],
-                "final_bus_soc_fraction": group["bus_soc_fraction"].iloc[-1],
-            }
-        )
+        pv_available = float(group["pv_available_generation_MWh"].sum())
+        pv_used = float(group["pv_generation_MWh"].sum())
+        grid_export = float(group["grid_export_MWh"].sum())
+        row: dict[str, object] = {
+            "plant_name": plant_name,
+            "total_building_demand_MWh": group["building_demand_MWh"].sum(),
+            "total_bus_trip_distance_km": group["bus_trip_distance_km"].sum(),
+            "total_bus_trip_energy_MWh": group["bus_trip_energy_MWh"].sum(),
+            "total_bus_charge_MWh": group["bus_charge_MWh"].sum(),
+            "total_bus_discharge_MWh": group["bus_discharge_MWh"].sum(),
+            "total_unmet_trip_energy_MWh": group["unmet_trip_energy_MWh"].sum(),
+            "total_pv_available_generation_MWh": pv_available,
+            "total_pv_generation_MWh": pv_used,
+            "total_pv_curtailment_MWh": group["pv_curtailment_MWh"].sum(),
+            "pv_utilisation_fraction": (
+                pv_used / pv_available if pv_available > 0.0 else 0.0
+            ),
+            "total_grid_import_MWh": group["grid_import_MWh"].sum(),
+            "total_grid_export_MWh": grid_export,
+            "peak_grid_import_MW": group["grid_import_MW"].max(),
+            "peak_grid_export_MW": group["grid_export_MW"].max(),
+            "total_energy_cost": group["energy_cost"].sum(),
+            "total_demand_charge_cost": group["demand_charge_cost"].sum(),
+            "total_cost": group["total_cost"].sum(),
+            "currency": group["currency"].iloc[0],
+            "final_bus_soc_MWh": group["bus_soc_MWh"].iloc[-1],
+            "final_bus_soc_fraction": group["bus_soc_fraction"].iloc[-1],
+        }
+        if abs(grid_export) <= 1e-9:
+            row["pv_self_consumption_MWh"] = pv_used
+            row["pv_self_consumption_fraction"] = (
+                pv_used / pv_available if pv_available > 0.0 else 0.0
+            )
+        if "regional_grid_load_mw" in group:
+            row["peak_regional_grid_load_MW"] = group["regional_grid_load_mw"].max()
+        if "grid_congestion_weight" in group:
+            stress_threshold = (
+                float(group["grid_stress_threshold"].iloc[0])
+                if "grid_stress_threshold" in group
+                else 0.8
+            )
+            high_load = group["grid_congestion_weight"] >= stress_threshold
+            row["congestion_weighted_grid_import_MWh"] = (
+                group["grid_import_MWh"] * group["grid_congestion_weight"]
+            ).sum()
+            row["congestion_weighted_net_grid_import_MWh"] = (
+                group["net_grid_import_MWh"] * group["grid_congestion_weight"]
+            ).sum()
+            row["grid_stress_threshold"] = stress_threshold
+            row["grid_import_during_regional_stress_MWh"] = group.loc[
+                high_load, "grid_import_MWh"
+            ].sum()
+            row["bus_discharge_during_regional_stress_MWh"] = group.loc[
+                high_load, "bus_discharge_MWh"
+            ].sum()
+        if "regional_grid_load_state" in group:
+            for state in ("normal", "elevated", "stressed"):
+                selected = group["regional_grid_load_state"] == state
+                row[f"grid_import_during_{state}_grid_load_MWh"] = group.loc[
+                    selected, "grid_import_MWh"
+                ].sum()
+                row[f"bus_discharge_during_{state}_grid_load_MWh"] = group.loc[
+                    selected, "bus_discharge_MWh"
+                ].sum()
+        if "renewable_availability_weight" in group:
+            availability = group["renewable_availability_weight"]
+            total_charge = float(group["bus_charge_MWh"].sum())
+            weighted_charge = float((group["bus_charge_MWh"] * availability).sum())
+            row["mean_renewable_availability_weight"] = availability.mean()
+            row["renewable_weighted_bus_charge_MWh"] = weighted_charge
+            row["renewable_alignment_score"] = (
+                weighted_charge / total_charge if total_charge > 0.0 else 0.0
+            )
+            row["renewable_misalignment_MWh"] = (
+                group["bus_charge_MWh"] * (1.0 - availability)
+                + group["bus_discharge_MWh"] * availability
+            ).sum()
+            rich_threshold = (
+                float(group["renewable_rich_threshold"].iloc[0])
+                if "renewable_rich_threshold" in group
+                else float(availability.quantile(0.80))
+            )
+            renewable_rich = availability >= rich_threshold
+            row["renewable_rich_threshold"] = rich_threshold
+            row["bus_charge_during_renewable_rich_MWh"] = group.loc[
+                renewable_rich, "bus_charge_MWh"
+            ].sum()
+            row["bus_discharge_during_renewable_rich_MWh"] = group.loc[
+                renewable_rich, "bus_discharge_MWh"
+            ].sum()
+            if "modelled_vre_potential_share_of_demand" in group:
+                row["mean_modelled_vre_potential_share_of_demand"] = group[
+                    "modelled_vre_potential_share_of_demand"
+                ].mean()
+        if "renewable_equivalent_charge_MWh" in group:
+            row["renewable_equivalent_absorbed_MWh"] = group[
+                "renewable_equivalent_charge_MWh"
+            ].sum()
+            row["renewable_equivalent_delivered_MWh"] = group[
+                "renewable_equivalent_discharge_MWh"
+            ].sum()
+            row["renewable_equivalent_transport_MWh"] = group[
+                "renewable_equivalent_trip_energy_MWh"
+            ].sum()
+            row["renewable_equivalent_discharge_to_site_MWh"] = group[
+                "renewable_equivalent_discharge_to_site_MWh"
+            ].sum()
+            row["renewable_equivalent_grid_export_MWh"] = group[
+                "renewable_equivalent_grid_export_MWh"
+            ].sum()
+            row["renewable_equivalent_conversion_loss_MWh"] = group[
+                "renewable_equivalent_conversion_loss_MWh"
+            ].sum()
+            row["renewable_deficit_weighted_discharge_MWh"] = group[
+                "renewable_deficit_weighted_discharge_MWh"
+            ].sum()
+            row["final_renewable_equivalent_soc_MWh"] = group[
+                "renewable_equivalent_soc_MWh"
+            ].iloc[-1]
+        individual_soc_columns = [
+            column
+            for column in group.columns
+            if column.endswith("_soc_MWh")
+            and column != "bus_soc_MWh"
+            and not column.endswith("_renewable_soc_MWh")
+            and column != "renewable_equivalent_soc_MWh"
+        ]
+        for column in individual_soc_columns:
+            row[f"final_{column}"] = group[column].iloc[-1]
+            fraction_column = column.removesuffix("_soc_MWh") + "_soc_fraction"
+            row[f"final_{fraction_column}"] = group[fraction_column].iloc[-1]
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -602,13 +749,34 @@ def _building_market_ledger(dispatch_results: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "plant_name",
         "rolling_window",
+        "building_demand_MWh",
+        "pv_available_generation_MWh",
+        "pv_generation_MWh",
+        "pv_curtailment_MWh",
         "grid_import_MWh",
         "grid_export_MWh",
         "net_grid_import_MWh",
-        "electricity_import_price_EUR_per_MWh",
-        "electricity_export_price_EUR_per_MWh",
-        "variable_cost_EUR",
+        "billing_month",
+        "billing_peak_MW",
+        "electricity_import_price_per_MWh",
+        "electricity_export_price_per_MWh",
+        "energy_cost",
+        "demand_charge_cost",
+        "total_cost",
+        "currency",
     ]
+    columns.extend(
+        column
+        for column in (
+            "regional_grid_load_mw",
+            "regional_grid_load_fraction",
+            "grid_congestion_weight",
+            "regional_grid_load_source_year",
+            "regional_grid_load_profile",
+            "regional_grid_load_interpolated",
+        )
+        if column in dispatch_results
+    )
     return dispatch_results.reset_index()[["datetime", *columns]]
 
 
@@ -619,13 +787,32 @@ def _building_storage_ledger(dispatch_results: pd.DataFrame) -> pd.DataFrame:
         "plant_name",
         "rolling_window",
         "bus_availability_fraction",
+        "bus_trip_distance_km",
         "bus_trip_energy_MWh",
         "bus_charge_MWh",
         "bus_discharge_MWh",
         "bus_soc_MWh",
         "bus_soc_fraction",
     ]
-    return dispatch_results.reset_index()[["datetime", *columns]]
+    individual_columns = [
+        column
+        for column in dispatch_results.columns
+        if column not in columns
+        and column != "plant_name"
+        and any(
+            column.endswith(suffix)
+            for suffix in (
+                "_availability_fraction",
+                "_trip_distance_km",
+                "_trip_energy_MWh",
+                "_charge_MWh",
+                "_discharge_MWh",
+                "_soc_MWh",
+                "_soc_fraction",
+            )
+        )
+    ]
+    return dispatch_results.reset_index()[["datetime", *columns, *individual_columns]]
 
 
 def _grid_fee_summary_frame(grid_fee_results: dict[str, GridFeeResult]) -> pd.DataFrame:

@@ -1,0 +1,12 @@
+SPDX-FileCopyrightText: 2026 FLEXIMOD Developers
+SPDX-License-Identifier: CC-BY-4.0
+
+This is an indicative analytical dataset, not an operator GTFS feed or a GPS trace.
+It connects the documented route termini through representative corridor points for
+study-area visualisation. It must not be used for navigation or stop-level analysis.
+
+Route references:
+- Route 7K: https://moovitapp.com/index/en/public_transit-line-7%E0%B8%81-Bangkok-2401-1363476-4195059-0
+- Route 79: https://moovitapp.com/index/en/public_transit-line-79_%E0%B8%9B%E0%B8%AD_ac-Bangkok-2401-1363476-5901910-3833005-0
+- Route 101: https://moovitapp.com/index/en/public_transit-line-101-Bangkok-2401-1363476-4195066-3773632-0
+- Wat Yai Rom coordinate: https://www.wikidata.org/wiki/Q99413835

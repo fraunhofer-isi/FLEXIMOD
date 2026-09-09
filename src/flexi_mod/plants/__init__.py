@@ -11,6 +11,7 @@ from flexi_mod.plants.technologies import (
     ElectricBoiler,
     ElectricVehicle,
     GasBoiler,
+    PVPlant,
     ThermalStorage,
 )
 
@@ -22,6 +23,7 @@ __all__ = [
     "ElectricVehicle",
     "GasBoiler",
     "Plant",
+    "PVPlant",
     "SteamGenerationPlant",
     "ThermalStorage",
     "build_plants",

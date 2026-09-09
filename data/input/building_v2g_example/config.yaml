@@ -5,30 +5,334 @@
 cases:
   building_v2g_example:
     name: building_v2g_example
-    country: generic
-    description: Synthetic one-day building example with electric vehicles and V2G
-    timestep_minutes: 60
-    simulation_start: 2025-01-01 00:00
-    simulation_end: 2025-01-01 23:00
-    timezone: UTC
+    country: XX
+    description: V2G export at the current payment with a 5 kW export cap
+    timestep_minutes: 15
+    simulation_start: 2026-09-07 00:00
+    simulation_end: 2026-09-07 23:45
+    timezone: Asia/Bangkok
     additional_charges: false
     strategy:
       name: building_v2g
       dispatch:
         dispatch_method: pyomo
         rolling_horizon_enabled: true
-        dispatch_horizon_hours: 12
+        dispatch_horizon_hours: 24
         rolling_step_hours: 6
-    solver:
+        currency: THB
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.005
+        demand_charge_per_kw_month: 210
+    solver: &solver
       name: highs
       fallback_solvers: []
       tee: false
-    market_sequence:
+    market_sequence: &market_sequence
     - day_ahead
     markets:
       day_ahead:
         enabled: true
-        product_resolution: 60min
+        product_resolution: 15min
         signals:
-          price: electricity_import_price
-          export_price: electricity_export_price
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_current_thb_per_mwh
+
+  building_v2g_plus_500:
+    name: building_v2g_plus_500
+    country: XX
+    description: V2G export payment sensitivity at current payment plus 0.50 THB per kWh
+    timestep_minutes: 15
+    simulation_start: 2026-09-07 00:00
+    simulation_end: 2026-09-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 24
+        rolling_step_hours: 6
+        currency: THB
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.005
+        demand_charge_per_kw_month: 210
+    solver: *solver
+    market_sequence: *market_sequence
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_plus_500_thb_per_mwh
+
+  building_v2g_plus_1000:
+    name: building_v2g_plus_1000
+    country: XX
+    description: V2G export payment sensitivity at current payment plus 1.00 THB per kWh
+    timestep_minutes: 15
+    simulation_start: 2026-09-07 00:00
+    simulation_end: 2026-09-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 24
+        rolling_step_hours: 6
+        currency: THB
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.005
+        demand_charge_per_kw_month: 210
+    solver: *solver
+    market_sequence: *market_sequence
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_plus_1000_thb_per_mwh
+
+  building_v2g_plus_1500:
+    name: building_v2g_plus_1500
+    country: XX
+    description: V2G export payment sensitivity at current payment plus 1.50 THB per kWh
+    timestep_minutes: 15
+    simulation_start: 2026-09-07 00:00
+    simulation_end: 2026-09-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 24
+        rolling_step_hours: 6
+        currency: THB
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.005
+        demand_charge_per_kw_month: 210
+    solver: *solver
+    market_sequence: *market_sequence
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_plus_1500_thb_per_mwh
+
+  building_v2g_plus_2000:
+    name: building_v2g_plus_2000
+    country: XX
+    description: V2G export payment sensitivity at current payment plus 2.00 THB per kWh
+    timestep_minutes: 15
+    simulation_start: 2026-09-07 00:00
+    simulation_end: 2026-09-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 24
+        rolling_step_hours: 6
+        currency: THB
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.005
+        demand_charge_per_kw_month: 210
+    solver: *solver
+    market_sequence: *market_sequence
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_plus_2000_thb_per_mwh
+
+  building_v2g_plus_2500:
+    name: building_v2g_plus_2500
+    country: XX
+    description: V2G export payment sensitivity at current payment plus 2.50 THB per kWh
+    timestep_minutes: 15
+    simulation_start: 2026-09-07 00:00
+    simulation_end: 2026-09-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 24
+        rolling_step_hours: 6
+        currency: THB
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.005
+        demand_charge_per_kw_month: 210
+    solver: *solver
+    market_sequence: *market_sequence
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_plus_2500_thb_per_mwh
+
+  building_v2g_plus_3000:
+    name: building_v2g_plus_3000
+    country: XX
+    description: V2G export payment sensitivity at current payment plus 3.00 THB per kWh
+    timestep_minutes: 15
+    simulation_start: 2026-09-07 00:00
+    simulation_end: 2026-09-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 24
+        rolling_step_hours: 6
+        currency: THB
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.005
+        demand_charge_per_kw_month: 210
+    solver: *solver
+    market_sequence: *market_sequence
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_plus_3000_thb_per_mwh
+
+  building_v2g_plus_3500:
+    name: building_v2g_plus_3500
+    country: XX
+    description: V2G export payment sensitivity at current payment plus 3.50 THB per kWh
+    timestep_minutes: 15
+    simulation_start: 2026-09-07 00:00
+    simulation_end: 2026-09-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 24
+        rolling_step_hours: 6
+        currency: THB
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.005
+        demand_charge_per_kw_month: 210
+    solver: *solver
+    market_sequence: *market_sequence
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_plus_3500_thb_per_mwh
+
+  building_v2g_plus_4000:
+    name: building_v2g_plus_4000
+    country: XX
+    description: V2G export payment sensitivity at current payment plus 4.00 THB per kWh
+    timestep_minutes: 15
+    simulation_start: 2026-09-07 00:00
+    simulation_end: 2026-09-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 24
+        rolling_step_hours: 6
+        currency: THB
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.005
+        demand_charge_per_kw_month: 210
+    solver: *solver
+    market_sequence: *market_sequence
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_plus_4000_thb_per_mwh
+
+  building_v2g_plus_4500:
+    name: building_v2g_plus_4500
+    country: XX
+    description: V2G export payment sensitivity at current payment plus 4.50 THB per kWh
+    timestep_minutes: 15
+    simulation_start: 2026-09-07 00:00
+    simulation_end: 2026-09-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 24
+        rolling_step_hours: 6
+        currency: THB
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.005
+        demand_charge_per_kw_month: 210
+    solver: *solver
+    market_sequence: *market_sequence
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_plus_4500_thb_per_mwh
+
+  building_v2g_plus_5000:
+    name: building_v2g_plus_5000
+    country: XX
+    description: V2G export payment sensitivity at current payment plus 5.00 THB per kWh
+    timestep_minutes: 15
+    simulation_start: 2026-09-07 00:00
+    simulation_end: 2026-09-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 24
+        rolling_step_hours: 6
+        currency: THB
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.005
+        demand_charge_per_kw_month: 210
+    solver: *solver
+    market_sequence: *market_sequence
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_plus_5000_thb_per_mwh

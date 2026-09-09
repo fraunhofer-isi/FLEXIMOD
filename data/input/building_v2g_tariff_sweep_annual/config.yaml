@@ -1,0 +1,122 @@
+# SPDX-FileCopyrightText: FLEXIMOD Developers
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+shared_case: &shared_case
+  country: XX
+  timestep_minutes: 15
+  simulation_start: 2024-01-01 00:00
+  simulation_end: 2024-12-31 23:45
+  timezone: Asia/Bangkok
+  additional_charges: false
+  strategy:
+    name: building_v2g
+    dispatch: &dispatch
+      dispatch_method: pyomo
+      rolling_horizon_enabled: true
+      dispatch_horizon_hours: 48
+      rolling_step_hours: 24
+      currency: THB
+      dispatch_objective: min_cost
+      vehicle_discharge_enabled: true
+      grid_export_limit_mw: 0.005
+      demand_charge_per_kw_month: 210
+  solver:
+    name: highs
+    fallback_solvers: []
+    tee: false
+  market_sequence:
+  - day_ahead
+
+cases:
+  building_v2g_sweep_current:
+    <<: *shared_case
+    name: building_v2g_sweep_current
+    description: Annual export-payment sweep at the current payment assumption
+    markets:
+      day_ahead: &day_ahead
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_current_thb_per_mwh
+  building_v2g_sweep_plus_500:
+    <<: *shared_case
+    name: building_v2g_sweep_plus_500
+    description: Annual export-payment sweep at current plus 0.50 THB per kWh
+    markets:
+      day_ahead:
+        <<: *day_ahead
+        signals: {price: electricity_import_price_thb_per_mwh, export_price: v2g_export_price_plus_500_thb_per_mwh}
+  building_v2g_sweep_plus_1000:
+    <<: *shared_case
+    name: building_v2g_sweep_plus_1000
+    description: Annual export-payment sweep at current plus 1.00 THB per kWh
+    markets:
+      day_ahead:
+        <<: *day_ahead
+        signals: {price: electricity_import_price_thb_per_mwh, export_price: v2g_export_price_plus_1000_thb_per_mwh}
+  building_v2g_sweep_plus_1500:
+    <<: *shared_case
+    name: building_v2g_sweep_plus_1500
+    description: Annual export-payment sweep at current plus 1.50 THB per kWh
+    markets:
+      day_ahead:
+        <<: *day_ahead
+        signals: {price: electricity_import_price_thb_per_mwh, export_price: v2g_export_price_plus_1500_thb_per_mwh}
+  building_v2g_sweep_plus_2000:
+    <<: *shared_case
+    name: building_v2g_sweep_plus_2000
+    description: Annual export-payment sweep at current plus 2.00 THB per kWh
+    markets:
+      day_ahead:
+        <<: *day_ahead
+        signals: {price: electricity_import_price_thb_per_mwh, export_price: v2g_export_price_plus_2000_thb_per_mwh}
+  building_v2g_sweep_plus_2500:
+    <<: *shared_case
+    name: building_v2g_sweep_plus_2500
+    description: Annual export-payment sweep at current plus 2.50 THB per kWh
+    markets:
+      day_ahead:
+        <<: *day_ahead
+        signals: {price: electricity_import_price_thb_per_mwh, export_price: v2g_export_price_plus_2500_thb_per_mwh}
+  building_v2g_sweep_plus_3000:
+    <<: *shared_case
+    name: building_v2g_sweep_plus_3000
+    description: Annual export-payment sweep at current plus 3.00 THB per kWh
+    markets:
+      day_ahead:
+        <<: *day_ahead
+        signals: {price: electricity_import_price_thb_per_mwh, export_price: v2g_export_price_plus_3000_thb_per_mwh}
+  building_v2g_sweep_plus_3500:
+    <<: *shared_case
+    name: building_v2g_sweep_plus_3500
+    description: Annual export-payment sweep at current plus 3.50 THB per kWh
+    markets:
+      day_ahead:
+        <<: *day_ahead
+        signals: {price: electricity_import_price_thb_per_mwh, export_price: v2g_export_price_plus_3500_thb_per_mwh}
+  building_v2g_sweep_plus_4000:
+    <<: *shared_case
+    name: building_v2g_sweep_plus_4000
+    description: Annual export-payment sweep at current plus 4.00 THB per kWh
+    markets:
+      day_ahead:
+        <<: *day_ahead
+        signals: {price: electricity_import_price_thb_per_mwh, export_price: v2g_export_price_plus_4000_thb_per_mwh}
+  building_v2g_sweep_plus_4500:
+    <<: *shared_case
+    name: building_v2g_sweep_plus_4500
+    description: Annual export-payment sweep at current plus 4.50 THB per kWh
+    markets:
+      day_ahead:
+        <<: *day_ahead
+        signals: {price: electricity_import_price_thb_per_mwh, export_price: v2g_export_price_plus_4500_thb_per_mwh}
+  building_v2g_sweep_plus_5000:
+    <<: *shared_case
+    name: building_v2g_sweep_plus_5000
+    description: Annual export-payment sweep at current plus 5.00 THB per kWh
+    markets:
+      day_ahead:
+        <<: *day_ahead
+        signals: {price: electricity_import_price_thb_per_mwh, export_price: v2g_export_price_plus_5000_thb_per_mwh}

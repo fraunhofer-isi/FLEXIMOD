@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: FLEXIMOD Developers
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+shared_case: &shared_case
+  country: XX
+  timestep_minutes: 15
+  simulation_start: 2024-01-01 00:00
+  simulation_end: 2024-12-31 23:45
+  timezone: Asia/Bangkok
+  additional_charges: false
+  solver:
+    name: highs
+    fallback_solvers: []
+    tee: false
+  market_sequence:
+  - day_ahead
+  markets:
+    day_ahead:
+      enabled: true
+      product_resolution: 15min
+      signals:
+        price: electricity_import_price_thb_per_mwh
+        export_price: v2g_export_price_current_thb_per_mwh
+
+shared_dispatch: &shared_dispatch
+  dispatch_method: pyomo
+  rolling_horizon_enabled: true
+  dispatch_horizon_hours: 48
+  rolling_step_hours: 24
+  currency: THB
+  dispatch_objective: max_renewable_shifting
+  renewable_availability_weight_column: renewable_availability_weight
+  vehicle_discharge_enabled: true
+  grid_export_limit_mw: 0
+  demand_charge_per_kw_month: 210
+
+cases:
+  building_v2b_renewable_shifting_max_no_export:
+    <<: *shared_case
+    name: building_v2b_renewable_shifting_max_no_export
+    description: Maximum renewable-equivalent shifting behind the depot meter
+    strategy:
+      name: building_v2g
+      dispatch:
+        <<: *shared_dispatch
+        grid_export_limit_mw: 0
+  building_v2g_renewable_shifting_max_export_450kw:
+    <<: *shared_case
+    name: building_v2g_renewable_shifting_max_export_450kw
+    description: Maximum renewable-equivalent shifting with a 450 kW technical export limit
+    strategy:
+      name: building_v2g
+      dispatch:
+        <<: *shared_dispatch
+        grid_export_limit_mw: 0.45
+  building_v2g_renewable_shifting_max_export_5kw:
+    <<: *shared_case
+    name: building_v2g_renewable_shifting_max_export_5kw
+    description: Maximum renewable-equivalent shifting with a 5 kW policy sensitivity
+    strategy:
+      name: building_v2g
+      dispatch:
+        <<: *shared_dispatch
+        grid_export_limit_mw: 0.005
