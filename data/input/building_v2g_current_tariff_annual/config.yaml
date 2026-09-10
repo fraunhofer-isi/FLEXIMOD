@@ -5,7 +5,7 @@
 cases:
   building_v2g_current_tariff_annual:
     name: building_v2g_current_tariff_annual
-    country: XX
+    country: TH
     description: Full-year bidirectional export at the current payment assumption
     timestep_minutes: 15
     simulation_start: 2024-01-01 00:00

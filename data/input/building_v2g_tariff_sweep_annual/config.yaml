@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 shared_case: &shared_case
-  country: XX
+    country: TH
   timestep_minutes: 15
   simulation_start: 2024-01-01 00:00
   simulation_end: 2024-12-31 23:45

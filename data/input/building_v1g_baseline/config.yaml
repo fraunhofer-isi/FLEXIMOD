@@ -5,7 +5,7 @@
 cases:
   building_v1g_baseline:
     name: building_v1g_baseline
-    country: XX
+    country: TH
     description: Unidirectional depot charging with no electricity export
     timestep_minutes: 15
     simulation_start: 2026-09-07 00:00

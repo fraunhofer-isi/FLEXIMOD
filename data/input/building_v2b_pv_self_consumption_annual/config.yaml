@@ -5,8 +5,8 @@
 cases:
   building_v2b_pv_self_consumption:
     name: building_v2b_pv_self_consumption
-    description: Annual no-export rooftop-PV self-consumption case
-    country: XX
+    description: Annual rooftop-PV self-consumption with V2G export at the current 5 kW policy limit
+    country: TH
     timestep_minutes: 15
     simulation_start: 2024-01-01 00:00
     simulation_end: 2024-12-31 23:45
@@ -35,5 +35,5 @@ cases:
         currency: THB
         dispatch_objective: min_cost
         vehicle_discharge_enabled: true
-        grid_export_limit_mw: 0
+        grid_export_limit_mw: 0.005
         demand_charge_per_kw_month: 210

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 shared_case: &shared_case
-  country: XX
+  country: TH
   timestep_minutes: 15
   simulation_start: 2024-01-01 00:00
   simulation_end: 2024-12-31 23:45
@@ -39,7 +39,7 @@ cases:
   building_v2b_grid_support_max_no_export:
     <<: *shared_case
     name: building_v2b_grid_support_max_no_export
-    description: Maximum feasible congestion relief behind the depot meter
+    description: Maximum technical grid-support service with no external export
     strategy:
       name: building_v2g
       dispatch:
@@ -48,7 +48,7 @@ cases:
   building_v2g_grid_support_max_export_450kw:
     <<: *shared_case
     name: building_v2g_grid_support_max_export_450kw
-    description: Maximum feasible congestion relief with a 450 kW technical export limit
+    description: Maximum technical grid-support service under a 450 kW export sensitivity; not an approved Thai export capacity or an economic dispatch case
     strategy:
       name: building_v2g
       dispatch:
@@ -57,7 +57,7 @@ cases:
   building_v2g_grid_support_max_export_5kw:
     <<: *shared_case
     name: building_v2g_grid_support_max_export_5kw
-    description: Maximum feasible congestion relief with a 5 kW policy sensitivity
+    description: Maximum technical grid-support service under the current 5 kW-per-meter policy export limit; not an economic dispatch case
     strategy:
       name: building_v2g
       dispatch:

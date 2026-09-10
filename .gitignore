@@ -14,6 +14,8 @@ playground/
 *.egg-info/
 
 data/input/archive
+data/input/cement_inputs
+data/input/steel_inputs
 data/output/
 data/output/reports/
 data/processed/

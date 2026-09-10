@@ -5,7 +5,7 @@
 cases:
   building_v2g_example:
     name: building_v2g_example
-    country: XX
+    country: TH
     description: V2G export at the current payment with a 5 kW export cap
     timestep_minutes: 15
     simulation_start: 2026-09-07 00:00
@@ -39,7 +39,7 @@ cases:
 
   building_v2g_plus_500:
     name: building_v2g_plus_500
-    country: XX
+    country: TH
     description: V2G export payment sensitivity at current payment plus 0.50 THB per kWh
     timestep_minutes: 15
     simulation_start: 2026-09-07 00:00
@@ -69,7 +69,7 @@ cases:
 
   building_v2g_plus_1000:
     name: building_v2g_plus_1000
-    country: XX
+    country: TH
     description: V2G export payment sensitivity at current payment plus 1.00 THB per kWh
     timestep_minutes: 15
     simulation_start: 2026-09-07 00:00
@@ -99,7 +99,7 @@ cases:
 
   building_v2g_plus_1500:
     name: building_v2g_plus_1500
-    country: XX
+    country: TH
     description: V2G export payment sensitivity at current payment plus 1.50 THB per kWh
     timestep_minutes: 15
     simulation_start: 2026-09-07 00:00
@@ -129,7 +129,7 @@ cases:
 
   building_v2g_plus_2000:
     name: building_v2g_plus_2000
-    country: XX
+    country: TH
     description: V2G export payment sensitivity at current payment plus 2.00 THB per kWh
     timestep_minutes: 15
     simulation_start: 2026-09-07 00:00
@@ -159,7 +159,7 @@ cases:
 
   building_v2g_plus_2500:
     name: building_v2g_plus_2500
-    country: XX
+    country: TH
     description: V2G export payment sensitivity at current payment plus 2.50 THB per kWh
     timestep_minutes: 15
     simulation_start: 2026-09-07 00:00
@@ -189,7 +189,7 @@ cases:
 
   building_v2g_plus_3000:
     name: building_v2g_plus_3000
-    country: XX
+    country: TH
     description: V2G export payment sensitivity at current payment plus 3.00 THB per kWh
     timestep_minutes: 15
     simulation_start: 2026-09-07 00:00
@@ -219,7 +219,7 @@ cases:
 
   building_v2g_plus_3500:
     name: building_v2g_plus_3500
-    country: XX
+    country: TH
     description: V2G export payment sensitivity at current payment plus 3.50 THB per kWh
     timestep_minutes: 15
     simulation_start: 2026-09-07 00:00
@@ -249,7 +249,7 @@ cases:
 
   building_v2g_plus_4000:
     name: building_v2g_plus_4000
-    country: XX
+    country: TH
     description: V2G export payment sensitivity at current payment plus 4.00 THB per kWh
     timestep_minutes: 15
     simulation_start: 2026-09-07 00:00
@@ -279,7 +279,7 @@ cases:
 
   building_v2g_plus_4500:
     name: building_v2g_plus_4500
-    country: XX
+    country: TH
     description: V2G export payment sensitivity at current payment plus 4.50 THB per kWh
     timestep_minutes: 15
     simulation_start: 2026-09-07 00:00
@@ -309,7 +309,7 @@ cases:
 
   building_v2g_plus_5000:
     name: building_v2g_plus_5000
-    country: XX
+    country: TH
     description: V2G export payment sensitivity at current payment plus 5.00 THB per kWh
     timestep_minutes: 15
     simulation_start: 2026-09-07 00:00
