@@ -39,7 +39,7 @@ cases:
   building_v2b_grid_support_max_no_export:
     <<: *shared_case
     name: building_v2b_grid_support_max_no_export
-    description: Maximum technical grid-support service with no external export
+    description: Maximum regional high-load import relief with no external export; the signal is a regional demand proxy, not measured feeder congestion
     strategy:
       name: building_v2g
       dispatch:
@@ -48,7 +48,7 @@ cases:
   building_v2g_grid_support_max_export_450kw:
     <<: *shared_case
     name: building_v2g_grid_support_max_export_450kw
-    description: Maximum technical grid-support service under a 450 kW export sensitivity; not an approved Thai export capacity or an economic dispatch case
+    description: Maximum regional high-load import relief under a 450 kW export sensitivity; not an approved Thai export capacity or an economic dispatch case, and the signal is a regional demand proxy rather than measured feeder congestion
     strategy:
       name: building_v2g
       dispatch:
@@ -57,7 +57,7 @@ cases:
   building_v2g_grid_support_max_export_5kw:
     <<: *shared_case
     name: building_v2g_grid_support_max_export_5kw
-    description: Maximum technical grid-support service under the current 5 kW-per-meter policy export limit; not an economic dispatch case
+    description: Maximum regional high-load import relief under the current 5 kW-per-meter policy export limit; not an economic dispatch case, and the signal is a regional demand proxy rather than measured feeder congestion
     strategy:
       name: building_v2g
       dispatch:

@@ -179,12 +179,31 @@ Every building example forecast includes a 2024-derived regional load profile
 for grid-support analysis. `regional_grid_load_mw` is the external regional
 demand and is not part of the depot electricity balance.
 
-`grid_congestion_weight` is zero at or below the cleaned 2024 P90 load and one
-at or above P99, with linear scaling between them. Dispatch and summary outputs
-report regional load, congestion-weighted grid import, import during regional
-high-load intervals, and bus discharge during those intervals. The source,
-cleaning decisions, thresholds, and reproduction command are documented in
-`docs/sources/regional_grid_load_2024.md`.
+`grid_congestion_weight` is a retained historical field name, not a measurement
+of physical feeder congestion. It is zero at or below the cleaned 2024 P90
+regional load and one at or above P99, with linear scaling between them.
+Dispatch and summary outputs report regional load, high-load-weighted grid
+import, import during regional high-load intervals, and bus discharge during
+those intervals. The source, cleaning decisions, thresholds, and reproduction
+command are documented in `docs/sources/regional_grid_load_2024.md`.
+
+## I08 emergency V2G sensitivities
+
+I08 uses synthetic, regional-high-load-correlated depot-outage sensitivities. The generator
+selects the strongest non-overlapping 4-hour and 8-hour windows for which
+`grid_congestion_weight >= 0.9`, then appends a 48-hour recovery period. These
+are technical sensitivity events, not observed or forecast outages.
+
+During an outage, `grid_connection_available` is zero and the model forces both
+grid import and grid export to zero. `max_emergency_v2g_transfer` maximizes
+connected-bus discharge during the flagged outage while retaining hard route,
+availability, charger, SOC, and terminal-SOC constraints. I08 has no PV and no
+synthetic non-traction load: it reports fleet-to-fleet V2G transfer capability.
+
+The generated cases compare a prepared 80% SOC fleet with the SOC inherited
+from the preceding V1G dispatch. They assume islanding, protection, and
+grid-forming charger/controller capability; bidirectional charging hardware
+alone does not establish those capabilities.
 
 ## Full-year examples
 
@@ -199,7 +218,7 @@ available. The 2026 tariff values are modelling assumptions applied to the
 | --- | --- | --- |
 | `building_v1g_annual` | no | unidirectional annual reference |
 | `building_v2b_cost_annual` | 5 kW | least-cost V2G charging and regulated grid export at the current feed-in price |
-| `building_v2b_grid_support_annual` | configurable | maximize congestion relief with 0, 5, or 450 kW export |
+| `building_v2b_grid_support_annual` | configurable | maximize regional high-load import relief with 0, 5, or 450 kW export; this is not measured physical feeder congestion |
 | `building_v2b_pv_self_consumption_annual` | no | use measured-roof PV for depot demand and bus charging |
 | `building_v2b_renewable_alignment_annual` | configurable | maximize renewable-equivalent energy shifting with 0, 5, or 450 kW export |
 | `building_v2g_current_tariff_annual` | 5 kW | export at 2.20 THB/kWh |
@@ -207,7 +226,8 @@ available. The 2026 tariff values are modelling assumptions applied to the
 
 The grid-support file contains a behind-the-meter case and export cases with
 5 kW policy and 450 kW technical limits. Each rolling horizon first maximizes
-the continuous congestion-weighted reduction in net grid load. It then removes
+the continuous regional-high-load-weighted reduction in depot net grid import.
+It then removes
 unnecessary battery cycling and finally minimizes import cost without reducing
 the maximum service. Trip energy, availability, charger power, SOC bounds, and
 terminal SOC remain hard constraints.
@@ -217,10 +237,12 @@ states while optimization keeps the exact continuous weight:
 
 - `normal`: weight = 0;
 - `elevated`: 0 < weight < 0.8;
-- `stressed`: 0.8 <= weight <= 1.
+- `stressed` (the retained output state name): 0.8 <= weight <= 1, meaning
+  regional high load rather than measured network congestion.
 
-The 0.8 threshold is stored in `grid_stress_threshold`. It changes reporting
-only; the optimizer does not round the weight or turn it into a binary signal.
+The 0.8 threshold is stored in the retained technical field
+`grid_stress_threshold`. It changes reporting only; the optimizer does not
+round the weight or turn it into a binary signal.
 
 Run the default case in each annual example with:
 

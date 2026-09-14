@@ -1,0 +1,36 @@
+cases:
+  building_v2g_emergency_backup_4h_prepared:
+    name: building_v2g_emergency_backup_4h_prepared
+    description: 4 h regional-high-load-correlated islanded-depot V2G technical potential with
+      prepared pre-outage SOC
+    country: TH
+    timestep_minutes: 15
+    simulation_start: '2024-04-26 13:00:00'
+    simulation_end: '2024-04-28 16:45:00'
+    timezone: Asia/Bangkok
+    additional_charges: false
+    solver:
+      name: highs
+      fallback_solvers: []
+      tee: false
+    market_sequence:
+    - day_ahead
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_current_thb_per_mwh
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: false
+        currency: THB
+        dispatch_objective: max_emergency_v2g_transfer
+        emergency_event_column: synthetic_outage_event
+        grid_connection_available_column: grid_connection_available
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.0
+        demand_charge_per_kw_month: 210

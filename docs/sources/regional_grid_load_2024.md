@@ -79,7 +79,8 @@ Three missing hourly observations are linearly interpolated. Quarter-hours
 between source hours are also linearly interpolated, with the source file's
 1 January 2025 midnight observation used as the final endpoint. P90 and P99
 are calculated from the cleaned hourly 2024 series. The annual output retains
-the actual 2024 order. The continuous congestion weight remains zero at or
-below P90, increases linearly between P90 and P99, and reaches one at P99.
-For reporting, weights from 0.8 upward are labelled `stressed`, positive
-weights below 0.8 are `elevated`, and zero is `normal`.
+the actual 2024 order. The continuous `grid_congestion_weight` field is a
+regional-high-load proxy, not a measurement of physical feeder congestion. It
+remains zero at or below P90, increases linearly between P90 and P99, and
+reaches one at P99. For reporting, weights from 0.8 upward are labelled `high
+load`, positive weights below 0.8 are `elevated`, and zero is `normal`.

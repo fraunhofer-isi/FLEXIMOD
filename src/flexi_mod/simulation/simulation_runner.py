@@ -672,6 +672,32 @@ def _building_summary(dispatch_results: pd.DataFrame) -> pd.DataFrame:
                 row[f"bus_discharge_during_{state}_grid_load_MWh"] = group.loc[
                     selected, "bus_discharge_MWh"
                 ].sum()
+        if "synthetic_outage_event" in group:
+            outage = group["synthetic_outage_event"].astype(float) >= 0.5
+            outage_intervals = int(outage.sum())
+            row["synthetic_outage_duration_hours"] = outage_intervals * 0.25
+            row["emergency_v2g_transfer_MWh"] = group.loc[
+                outage, "bus_discharge_MWh"
+            ].sum()
+            row["peak_emergency_v2g_transfer_MW"] = (
+                group.loc[outage, "bus_discharge_MWh"].max() / 0.25
+                if outage.any()
+                else 0.0
+            )
+            row["grid_import_during_synthetic_outage_MWh"] = group.loc[
+                outage, "grid_import_MWh"
+            ].sum()
+            row["grid_export_during_synthetic_outage_MWh"] = group.loc[
+                outage, "grid_export_MWh"
+            ].sum()
+            row["minimum_bus_soc_during_synthetic_outage_MWh"] = group.loc[
+                outage, "bus_soc_MWh"
+            ].min()
+            if outage.any():
+                last_outage_timestamp = group.index[outage][-1]
+                row["recovery_grid_import_MWh"] = group.loc[
+                    group.index > last_outage_timestamp, "grid_import_MWh"
+                ].sum()
         if "renewable_availability_weight" in group:
             availability = group["renewable_availability_weight"]
             total_charge = float(group["bus_charge_MWh"].sum())

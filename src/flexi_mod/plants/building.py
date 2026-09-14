@@ -199,6 +199,8 @@ class Building(BasePlant):
         dispatch_objective = _dispatch_objective(config)
         if dispatch_objective == "max_grid_support":
             solver_name = _solve_maximum_service(self.name, model, config, "grid")
+        elif dispatch_objective == "max_emergency_v2g_transfer":
+            solver_name = _solve_maximum_service(self.name, model, config, "emergency")
         elif dispatch_objective == "max_renewable_shifting":
             solver_name = _solve_maximum_service(self.name, model, config, "renewable")
         else:
@@ -231,6 +233,16 @@ class Building(BasePlant):
         ).strip()
         if congestion_column:
             required_columns.add(congestion_column)
+        grid_connection_column = str(
+            config.dispatch_setting("grid_connection_available_column", "")
+        ).strip()
+        if grid_connection_column:
+            required_columns.add(grid_connection_column)
+        emergency_event_column = str(
+            config.dispatch_setting("emergency_event_column", "")
+        ).strip()
+        if emergency_event_column:
+            required_columns.add(emergency_event_column)
         renewable_column = str(
             config.dispatch_setting("renewable_availability_weight_column", "")
         ).strip()
@@ -292,6 +304,22 @@ class Building(BasePlant):
             if congestion_column
             else pd.Series(0.0, index=forecasts.index)
         )
+        grid_connection_column = str(
+            config.dispatch_setting("grid_connection_available_column", "")
+        ).strip()
+        grid_connection_available = (
+            forecasts[grid_connection_column].astype(float)
+            if grid_connection_column
+            else pd.Series(1.0, index=forecasts.index)
+        )
+        emergency_event_column = str(
+            config.dispatch_setting("emergency_event_column", "")
+        ).strip()
+        emergency_event = (
+            forecasts[emergency_event_column].astype(float)
+            if emergency_event_column
+            else pd.Series(0.0, index=forecasts.index)
+        )
         renewable_column = str(
             config.dispatch_setting("renewable_availability_weight_column", "")
         ).strip()
@@ -307,6 +335,12 @@ class Building(BasePlant):
             raise ValueError("Building electricity prices must be finite")
         if not np.isfinite(congestion_weight).all() or not congestion_weight.between(0, 1).all():
             raise ValueError("Grid congestion weights must be finite and between 0 and 1")
+        if not np.isfinite(grid_connection_available).all() or not grid_connection_available.between(
+            0, 1
+        ).all():
+            raise ValueError("Grid connection availability must be finite and between 0 and 1")
+        if not np.isfinite(emergency_event).all() or not emergency_event.between(0, 1).all():
+            raise ValueError("Emergency-event flags must be finite and between 0 and 1")
         if not np.isfinite(renewable_availability).all() or not renewable_availability.between(
             0, 1
         ).all():
@@ -337,6 +371,8 @@ class Building(BasePlant):
         model.import_price = _time_parameter(model, import_price)
         model.export_price = _time_parameter(model, export_price)
         model.grid_congestion_weight = _time_parameter(model, congestion_weight)
+        model.grid_connection_available = _time_parameter(model, grid_connection_available)
+        model.emergency_event = _time_parameter(model, emergency_event)
         model.renewable_availability_weight = _time_parameter(model, renewable_availability)
         model.additional_import_charge = pyo.Param(
             initialize=self.additional_electricity_charge_eur_per_mwh
@@ -528,11 +564,19 @@ class Building(BasePlant):
         # The building cannot import and export in the same interval.
         @model.Constraint(model.T)
         def grid_import_limit(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.grid_import_mwh[t] <= m.max_grid_import_mwh * m.grid_import_mode[t]
+            return (
+                m.grid_import_mwh[t]
+                <= m.max_grid_import_mwh * m.grid_import_mode[t] * m.grid_connection_available[t]
+            )
 
         @model.Constraint(model.T)
         def grid_export_limit(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
-            return m.grid_export_mwh[t] <= m.max_grid_export_mwh * (1 - m.grid_import_mode[t])
+            return (
+                m.grid_export_mwh[t]
+                <= m.max_grid_export_mwh
+                * (1 - m.grid_import_mode[t])
+                * m.grid_connection_available[t]
+            )
 
         @model.Constraint(model.T)
         def monthly_demand_peak(m: pyo.ConcreteModel, t: int) -> pyo.Constraint:
@@ -592,6 +636,13 @@ class Building(BasePlant):
             expr=sum(
                 model.grid_congestion_weight[t]
                 * (model.grid_export_mwh[t] - model.grid_import_mwh[t])
+                for t in model.T
+            )
+        )
+        model.emergency_v2g_transfer = pyo.Expression(
+            expr=sum(
+                model.emergency_event[t]
+                * sum(model.electric_vehicles[name].discharge_mwh[t] for name in model.BUS_IDS)
                 for t in model.T
             )
         )
@@ -857,6 +908,7 @@ def _dispatch_objective(config: CaseConfig) -> str:
         "min_congestion_with_cost_budget",
         "min_renewable_misalignment_with_cost_budget",
         "max_grid_support",
+        "max_emergency_v2g_transfer",
         "max_renewable_shifting",
     }
     if objective not in allowed:
@@ -872,9 +924,11 @@ def _solve_maximum_service(
 ) -> str:
     """Maximize service, then remove cycling, then minimize financial cost."""
 
-    service_expression = (
-        model.grid_support_value if service == "grid" else model.renewable_deficit_support
-    )
+    service_expression = {
+        "grid": model.grid_support_value,
+        "emergency": model.emergency_v2g_transfer,
+        "renewable": model.renewable_deficit_support,
+    }[service]
     model.objective.deactivate()
     model.maximum_service_objective = pyo.Objective(
         expr=service_expression,
@@ -1038,6 +1092,11 @@ def _extract_results(
             }
         )
         for column in (
+            "synthetic_outage_event",
+            "grid_connection_available",
+            "synthetic_outage_event_id",
+            "synthetic_outage_duration_hours",
+            "synthetic_outage_trigger_weight",
             "regional_grid_load_mw",
             "regional_grid_load_fraction",
             "grid_congestion_weight",
