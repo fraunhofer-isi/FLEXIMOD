@@ -22,8 +22,10 @@ two worst-case risk-averse demand scenarios have no price analogue and are
 dropped, as are all other years.
 
 Output is written to data/input/archive/electricity_15min_price_allocated/,
-mirroring the input filenames, with each original location column split into
-two columns: "<location> -- day_ahead" and "<location> -- afrr_energy".
+mirroring the input filenames. Each row also carries the two national price
+signals used for the decision, DE_DA_price and aFRR_energy_down_price (the
+latter can go negative), and each original location column is split into two
+columns: "<location> -- day_ahead" and "<location> -- afrr_energy".
 """
 from __future__ import annotations
 
@@ -112,6 +114,8 @@ def allocate_file(input_path: Path, output_path: Path, price_cache: dict) -> Non
 
         out = pd.DataFrame(index=merged.index)
         out["scenario"] = merged["scenario"]
+        out["DE_DA_price"] = merged["DE_DA_price"]
+        out["aFRR_energy_down_price"] = merged["aFRR_energy_down_price"]
         for loc in location_cols:
             demand = merged[loc]
             out[loc + DAY_AHEAD_SUFFIX] = demand.where(da_cheaper, 0.0)
@@ -122,7 +126,7 @@ def allocate_file(input_path: Path, output_path: Path, price_cache: dict) -> Non
     result = pd.concat(allocated_chunks, ignore_index=True)
     result = result.sort_values(["scenario", "timestamp"]).reset_index(drop=True)
 
-    ordered_cols = ["scenario", "timestamp"]
+    ordered_cols = ["scenario", "timestamp", "DE_DA_price", "aFRR_energy_down_price"]
     for loc in location_cols:
         ordered_cols.append(loc + DAY_AHEAD_SUFFIX)
         ordered_cols.append(loc + AFRR_SUFFIX)
