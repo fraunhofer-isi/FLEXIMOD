@@ -88,6 +88,60 @@ def _annual_service_row(
     return row
 
 
+def _pv_high_load_service_row(
+    comparison: pd.DataFrame,
+    dispatch_by_case: Mapping[str, pd.DataFrame],
+    label: str,
+) -> dict[str, object] | None:
+    """Measure PV high-load relief incrementally against PV-only operation."""
+    baseline_label = "PV-only operating reference"
+    if (
+        label not in comparison.index
+        or baseline_label not in comparison.index
+        or label not in dispatch_by_case
+        or baseline_label not in dispatch_by_case
+    ):
+        return None
+
+    case_dispatch = dispatch_by_case[label]
+    baseline_dispatch = dispatch_by_case[baseline_label]
+    common_index = baseline_dispatch.index.intersection(case_dispatch.index)
+    if common_index.empty:
+        return None
+
+    def net_import(frame: pd.DataFrame) -> pd.Series:
+        if "traction_net_grid_import_MWh" in frame:
+            return frame["traction_net_grid_import_MWh"]
+        return frame["grid_import_MWh"] - frame["grid_export_MWh"]
+
+    case_net = net_import(case_dispatch).reindex(common_index)
+    baseline_net = net_import(baseline_dispatch).reindex(common_index)
+    relief = baseline_net - case_net
+    high_load = (
+        case_dispatch.loc[common_index, "grid_congestion_weight"]
+        >= case_dispatch.loc[common_index, "grid_stress_threshold"]
+    )
+    service_mwh = float(relief.loc[high_load].clip(lower=0.0).sum())
+    peak_mw = float(relief.loc[high_load].clip(lower=0.0).max() / TIME_STEP_HOURS)
+    cost_gap = float(
+        comparison.loc[label, "total_cost_THB"]
+        - comparison.loc[baseline_label, "total_cost_THB"]
+    )
+    row: dict[str, object] = {
+        "scenario": label,
+        "service_type": "PV high-load demand management",
+        "comparison_basis": baseline_label,
+        "time_basis": "annual",
+        "cost_gap_THB": cost_gap,
+        "service_energy_MWh": service_mwh,
+        "peak_service_kW": peak_mw * 1000.0,
+        "unit_cost_status": "operator saving" if cost_gap < 0 else "compensation gap",
+        "potential_monthly_demand_charge_exposure_THB": np.nan,
+    }
+    row.update(_safe_unit_cost(cost_gap, service_mwh, peak_mw, "year"))
+    return row
+
+
 def _emergency_service_row(label: str, event: pd.DataFrame, baseline: pd.DataFrame) -> dict[str, object]:
     """Calculate an event cost relative to normal V1G over matching timestamps."""
     outage = event.get("synthetic_outage_event", pd.Series(0, index=event.index)).astype(bool)
@@ -131,10 +185,8 @@ def build_service_cost_gap(
         ("I05 maximum renewable-deficit support without export", "renewable-equivalent proxy service", "renewable_deficit_support_MWh", "maximum_grid_support_MW"),
         ("I06a maximum renewable-deficit support at 5 kW policy limit", "renewable-equivalent proxy service", "renewable_deficit_support_MWh", "maximum_grid_support_MW"),
         ("I06b maximum renewable-deficit support at 450 kW technical sensitivity", "renewable-equivalent proxy service", "renewable_deficit_support_MWh", "maximum_grid_support_MW"),
-        ("I07b PV-assisted V2G at current policy", "PV-assisted V2G export", "grid_export_MWh", "peak_grid_export_MW"),
-        ("I07c PV-assisted V2G at viable export tariff", "PV-assisted V2G export", "grid_export_MWh", "peak_grid_export_MW"),
-        ("I07d PV-assisted V2G maximum technical export", "PV-assisted V2G export", "grid_export_MWh", "peak_grid_export_MW"),
-        ("I07e PV-assisted V2G regional high-load support", "PV-assisted regional high-load support", "grid_support_during_stress_MWh", "maximum_grid_support_MW"),
+        ("I07b rooftop PV operation at current export policy", "rooftop-PV export", "grid_export_MWh", "peak_grid_export_MW"),
+        ("I07c rooftop PV operation at viable export tariff", "rooftop-PV export", "grid_export_MWh", "peak_grid_export_MW"),
     )
     rows: list[dict[str, object]] = []
     for label, service, energy_column, power_column in annual_specs:
@@ -142,6 +194,13 @@ def build_service_cost_gap(
         row = _annual_service_row(comparison, label, baseline, service, energy_column, power_column)
         if row is not None:
             rows.append(row)
+    pv_high_load_row = _pv_high_load_service_row(
+        comparison,
+        dispatch_by_case,
+        "I07d PV with high-load demand management",
+    )
+    if pv_high_load_row is not None:
+        rows.append(pv_high_load_row)
     v1g = dispatch_by_case.get("V1G baseline")
     if v1g is not None:
         for label, event in dispatch_by_case.items():

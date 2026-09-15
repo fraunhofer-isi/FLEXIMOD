@@ -39,7 +39,7 @@ cases:
         demand_charge_per_kw_month: 210
   building_v2g_pv_export_viable_tariff:
     name: building_v2g_pv_export_viable_tariff
-    description: PV-assisted V2G with the current 5 kW export limit and a 3.20 THB/kWh export-price sensitivity
+    description: Rooftop-PV self-consumption and tariff-based export with the current 5 kW export limit and a 3.20 THB/kWh export-price sensitivity
     country: TH
     timestep_minutes: 15
     simulation_start: 2024-01-01 00:00
@@ -71,9 +71,9 @@ cases:
         vehicle_discharge_enabled: true
         grid_export_limit_mw: 0.005
         demand_charge_per_kw_month: 210
-  building_v2g_pv_max_technical_export:
-    name: building_v2g_pv_max_technical_export
-    description: PV-assisted V2G maximum technical export potential at 450 kW sensitivity, including regional high-load import relief; the signal is a regional demand proxy, not measured feeder congestion
+  building_v2g_pv_cost_capped_high_load_relief:
+    name: building_v2g_pv_cost_capped_high_load_relief
+    description: Rooftop-PV self-consumption and tariff-based export with high-load demand management at the current 5 kW policy limit
     country: TH
     timestep_minutes: 15
     simulation_start: 2024-01-01 00:00
@@ -101,43 +101,12 @@ cases:
         dispatch_horizon_hours: 48
         rolling_step_hours: 24
         currency: THB
-        dispatch_objective: max_grid_support
+        # First minimise all operating cost, including the monthly demand
+        # charge and 2.20 THB/kWh export credit. Then reduce imports during
+        # regional high-load intervals without increasing that cost.
+        dispatch_objective: min_congestion_with_cost_budget
         grid_congestion_weight_column: grid_congestion_weight
-        vehicle_discharge_enabled: true
-        grid_export_limit_mw: 0.45
-        demand_charge_per_kw_month: 210
-  building_v2g_pv_grid_stress_policy_export:
-    name: building_v2g_pv_grid_stress_policy_export
-    description: PV-assisted V2G regional high-load import relief with the current 5 kW export limit and a 12-hour rolling commitment step for SOC robustness; the high-load signal is a regional demand proxy, not measured feeder congestion
-    country: TH
-    timestep_minutes: 15
-    simulation_start: 2024-01-01 00:00
-    simulation_end: 2024-12-31 23:45
-    timezone: Asia/Bangkok
-    additional_charges: false
-    solver:
-      name: highs
-      fallback_solvers: []
-      tee: false
-    market_sequence:
-    - day_ahead
-    markets:
-      day_ahead:
-        enabled: true
-        product_resolution: 15min
-        signals:
-          price: electricity_import_price_thb_per_mwh
-          export_price: v2g_export_price_current_thb_per_mwh
-    strategy:
-      name: building_v2g
-      dispatch:
-        dispatch_method: pyomo
-        rolling_horizon_enabled: true
-        dispatch_horizon_hours: 48
-        rolling_step_hours: 12
-        currency: THB
-        dispatch_objective: max_grid_support
-        grid_congestion_weight_column: grid_congestion_weight
+        grid_support_cost_budget_fraction_per_horizon: 0.0
         vehicle_discharge_enabled: true
         grid_export_limit_mw: 0.005
         demand_charge_per_kw_month: 210
