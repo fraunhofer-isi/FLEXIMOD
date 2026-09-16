@@ -93,13 +93,22 @@ def _pv_high_load_service_row(
     dispatch_by_case: Mapping[str, pd.DataFrame],
     label: str,
 ) -> dict[str, object] | None:
-    """Measure PV high-load relief incrementally against PV-only operation."""
-    baseline_label = "PV-only operating reference"
+    """Measure PV high-load relief incrementally against the PV charging reference."""
+    baseline_label = next(
+        (
+            candidate
+            for candidate in (
+                "PV + unidirectional charging reference",
+                "PV-only operating reference",  # legacy notebook label
+            )
+            if candidate in comparison.index and candidate in dispatch_by_case
+        ),
+        None,
+    )
     if (
         label not in comparison.index
-        or baseline_label not in comparison.index
+        or baseline_label is None
         or label not in dispatch_by_case
-        or baseline_label not in dispatch_by_case
     ):
         return None
 
@@ -189,8 +198,21 @@ def build_service_cost_gap(
         ("I07c rooftop PV operation at viable export tariff", "rooftop-PV export", "grid_export_MWh", "peak_grid_export_MW"),
     )
     rows: list[dict[str, object]] = []
+    pv_baseline = next(
+        (
+            candidate
+            for candidate in (
+                "PV + unidirectional charging reference",
+                "PV-only operating reference",  # legacy notebook label
+            )
+            if candidate in comparison.index
+        ),
+        None,
+    )
     for label, service, energy_column, power_column in annual_specs:
-        baseline = "PV-only operating reference" if label.startswith("I07") else "V1G baseline"
+        baseline = pv_baseline if label.startswith("I07") else "V1G baseline"
+        if baseline is None:
+            continue
         row = _annual_service_row(comparison, label, baseline, service, energy_column, power_column)
         if row is not None:
             rows.append(row)
