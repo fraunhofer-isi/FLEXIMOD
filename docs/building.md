@@ -149,7 +149,7 @@ I02 least-cost example uses bidirectional equipment and the current
 2.20 THB/kWh export payment with a 5 kW export limit. Because this study has
 no non-traction building load, its economic service is charging and discharging
 to the grid; it is not a behind-the-meter building-support case. The maximum
-grid-support and renewable-shifting examples use their own export-limit
+power-system peak-demand and renewable-shifting examples use their own export-limit
 sensitivities.
 
 For each calendar month, the optimizer adds the incremental cost of the
@@ -173,23 +173,24 @@ interval; the preceding zero-export case gives the lower end. This includes
 purchase cost, charging/discharging losses, mobility constraints, and the
 demand-charge interaction.
 
-## Regional grid load
+## Power-system demand signal
 
-Every building example forecast includes a 2024-derived regional load profile
-for grid-support analysis. `regional_grid_load_mw` is the external regional
-demand and is not part of the depot electricity balance.
+Every building example forecast includes a 2024-derived power-system demand
+profile for peak-demand-support analysis. `regional_grid_load_mw` is the
+external power-system demand and is not part of the depot electricity balance.
 
 `grid_congestion_weight` is a retained historical field name, not a measurement
 of physical feeder congestion. It is zero at or below the cleaned 2024 P90
-regional load and one at or above P99, with linear scaling between them.
-Dispatch and summary outputs report regional load, high-load-weighted grid
-import, import during regional high-load intervals, and bus discharge during
-those intervals. The source, cleaning decisions, thresholds, and reproduction
-command are documented in `docs/sources/regional_grid_load_2024.md`.
+power-system demand and one at or above P99, with linear scaling between them.
+Dispatch and summary outputs report power-system demand, peak-demand-weighted
+depot import, import during power-system peak-demand intervals, and bus
+discharge during those intervals. The source, cleaning decisions, thresholds,
+and reproduction command are documented in
+`docs/sources/regional_grid_load_2024.md`.
 
 ## I08 emergency V2G sensitivities
 
-I08 uses synthetic, regional-high-load-correlated depot-outage sensitivities. The generator
+I08 uses synthetic, power-system-peak-demand-correlated depot-outage sensitivities. The generator
 selects the strongest non-overlapping 4-hour and 8-hour windows for which
 `grid_congestion_weight >= 0.9`, then appends a 48-hour recovery period. These
 are technical sensitivity events, not observed or forecast outages.
@@ -218,15 +219,15 @@ available. The 2026 tariff values are modelling assumptions applied to the
 | --- | --- | --- |
 | `building_v1g_annual` | no | unidirectional annual reference |
 | `building_v2b_cost_annual` | 5 kW | least-cost V2G charging and regulated grid export at the current feed-in price |
-| `building_v2b_grid_support_annual` | configurable | maximize regional high-load import relief with 0, 5, or 450 kW export; this is not measured physical feeder congestion |
+| `building_v2b_grid_support_annual` | configurable | maximize power-system peak-demand import reduction with 0, 5, or 450 kW export; this is not measured physical feeder congestion |
 | `building_v2b_pv_self_consumption_annual` | no | use measured-roof PV for depot demand and bus charging |
 | `building_v2b_renewable_alignment_annual` | configurable | maximize renewable-equivalent energy shifting with 0, 5, or 450 kW export |
 | `building_v2g_current_tariff_annual` | 5 kW | export at 2.20 THB/kWh |
 | `building_v2g_tariff_sweep_annual` | 5 kW | export-payment break-even sweep |
 
-The grid-support file contains a behind-the-meter case and export cases with
+The peak-demand-support file contains a behind-the-meter case and export cases with
 5 kW policy and 450 kW technical limits. Each rolling horizon first maximizes
-the continuous regional-high-load-weighted reduction in depot net grid import.
+the continuous power-system-peak-demand-weighted reduction in depot net grid import.
 It then removes
 unnecessary battery cycling and finally minimizes import cost without reducing
 the maximum service. Trip energy, availability, charger power, SOC bounds, and
@@ -238,7 +239,7 @@ states while optimization keeps the exact continuous weight:
 - `normal`: weight = 0;
 - `elevated`: 0 < weight < 0.8;
 - `stressed` (the retained output state name): 0.8 <= weight <= 1, meaning
-  regional high load rather than measured network congestion.
+  high power-system demand rather than measured network congestion.
 
 The 0.8 threshold is stored in the retained technical field
 `grid_stress_threshold`. It changes reporting only; the optimizer does not
@@ -256,7 +257,7 @@ python -m flexi_mod.simulation.run_case --example building_v2g_current_tariff_an
 python -m flexi_mod.simulation.run_case --example building_v2g_tariff_sweep_annual --no-plots
 ```
 
-Select another grid-support export limit or export-payment sensitivity with
+Select another peak-demand-support export limit or feed-in-tariff sensitivity with
 `--study-case` and a case name from the corresponding `config.yaml`.
 
 The PV self-consumption example uses seven digitised gross roof sections,

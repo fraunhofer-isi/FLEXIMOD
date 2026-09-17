@@ -73,7 +73,7 @@ cases:
         demand_charge_per_kw_month: 210
   building_v2g_pv_cost_capped_high_load_relief:
     name: building_v2g_pv_cost_capped_high_load_relief
-    description: Rooftop-PV self-consumption and tariff-based export with high-load demand management at the current 5 kW policy limit
+    description: Rooftop-PV self-consumption and tariff-based export with power-system peak-demand management at the current 5 kW policy limit
     country: TH
     timestep_minutes: 15
     simulation_start: 2024-01-01 00:00
@@ -103,7 +103,7 @@ cases:
         currency: THB
         # First minimise all operating cost, including the monthly demand
         # charge and 2.20 THB/kWh export credit. Then reduce imports during
-        # regional high-load intervals without increasing that cost.
+        # power-system peak-demand intervals without increasing that cost.
         dispatch_objective: min_congestion_with_cost_budget
         grid_congestion_weight_column: grid_congestion_weight
         grid_support_cost_budget_fraction_per_horizon: 0.0

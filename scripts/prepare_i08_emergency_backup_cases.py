@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Generate targeted regional-high-load-correlated I08 emergency V2G case inputs."""
+"""Generate targeted power-system-peak-demand-correlated I08 emergency V2G inputs."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ EVENT_DURATIONS_HOURS = (8, 4)
 
 @dataclass(frozen=True)
 class OutageEvent:
-    """One selected regional-high-load-correlated outage sensitivity."""
+    """One selected power-system-peak-demand-correlated outage sensitivity."""
 
     event_id: str
     duration_hours: int
@@ -195,7 +195,7 @@ def generate_cases(
             case_dir = output_root / case_name
             case_dir.mkdir(parents=True, exist_ok=True)
             description = (
-                f"{event.duration_hours} h regional-high-load-correlated islanded-depot V2G "
+                f"{event.duration_hours} h power-system-peak-demand-correlated islanded-depot V2G "
                 f"technical potential with {soc_basis} pre-outage SOC"
             )
             config = _case_config(case_name, description, episode)

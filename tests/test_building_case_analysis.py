@@ -18,9 +18,9 @@ def _comparison() -> pd.DataFrame:
         },
         index=[
             "V1G baseline",
-            "I03 maximum regional high-load import relief without export",
+            "I03 maximum power-system peak-demand import reduction without export",
             "PV-only operating reference",
-            "I07d PV-assisted V2G maximum technical export",
+            "I07c rooftop PV operation at viable export tariff",
         ],
     )
 
@@ -43,13 +43,13 @@ def _dispatch(energy_cost: float, outage: list[int]) -> pd.DataFrame:
 def test_service_cost_gap_uses_relevant_baselines_and_safe_denominators() -> None:
     result = build_service_cost_gap(_comparison(), {})
 
-    grid = result.loc["I03 maximum regional high-load import relief without export"]
+    grid = result.loc["I03 maximum power-system peak-demand import reduction without export"]
     assert grid["comparison_basis"] == "V1G baseline"
     assert grid["cost_gap_THB"] == 100.0
     assert grid["cost_gap_THB_per_service_kWh"] == 0.05
     assert grid["cost_gap_THB_per_kW_year"] == 0.5
 
-    pv = result.loc["I07d PV-assisted V2G maximum technical export"]
+    pv = result.loc["I07c rooftop PV operation at viable export tariff"]
     assert pv["comparison_basis"] == "PV-only operating reference"
     assert pv["cost_gap_THB"] == 300.0
     assert pv["cost_gap_THB_per_service_kWh"] == 0.075

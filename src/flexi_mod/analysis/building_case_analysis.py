@@ -88,12 +88,12 @@ def _annual_service_row(
     return row
 
 
-def _pv_high_load_service_row(
+def _pv_peak_demand_service_row(
     comparison: pd.DataFrame,
     dispatch_by_case: Mapping[str, pd.DataFrame],
     label: str,
 ) -> dict[str, object] | None:
-    """Measure PV high-load relief incrementally against the PV charging reference."""
+    """Measure PV peak-demand import reduction against the PV charging reference."""
     baseline_label = next(
         (
             candidate
@@ -138,7 +138,7 @@ def _pv_high_load_service_row(
     )
     row: dict[str, object] = {
         "scenario": label,
-        "service_type": "PV high-load demand management",
+        "service_type": "PV power-system peak-demand management",
         "comparison_basis": baseline_label,
         "time_basis": "annual",
         "cost_gap_THB": cost_gap,
@@ -167,7 +167,7 @@ def _emergency_service_row(label: str, event: pd.DataFrame, baseline: pd.DataFra
     islanded_export = float(event.loc[outage, "grid_export_MWh"].sum())
     row: dict[str, object] = {
         "scenario": label,
-        "service_type": "regional-high-load-correlated emergency transfer",
+        "service_type": "power-system-peak-demand-correlated emergency transfer",
         "comparison_basis": "matched V1G event-and-recovery window",
         "time_basis": "event",
         "cost_gap_THB": energy_gap,
@@ -188,9 +188,9 @@ def build_service_cost_gap(
 ) -> pd.DataFrame:
     """Build non-revenue service compensation indicators from completed results."""
     annual_specs = (
-        ("I03 maximum regional high-load import relief without export", "regional high-load import relief", "grid_support_during_stress_MWh", "maximum_grid_support_MW"),
-        ("I04a maximum regional high-load import relief at 5 kW policy limit", "regional high-load import relief", "grid_support_during_stress_MWh", "maximum_grid_support_MW"),
-        ("I04b maximum regional high-load import relief at 450 kW technical sensitivity", "regional high-load import relief", "grid_support_during_stress_MWh", "maximum_grid_support_MW"),
+        ("I03 maximum power-system peak-demand import reduction without export", "power-system peak-demand import reduction", "grid_support_during_stress_MWh", "maximum_grid_support_MW"),
+        ("I04a maximum power-system peak-demand import reduction at 5 kW policy limit", "power-system peak-demand import reduction", "grid_support_during_stress_MWh", "maximum_grid_support_MW"),
+        ("I04b maximum power-system peak-demand import reduction at 450 kW technical sensitivity", "power-system peak-demand import reduction", "grid_support_during_stress_MWh", "maximum_grid_support_MW"),
         ("I05 maximum renewable-deficit support without export", "renewable-equivalent proxy service", "renewable_deficit_support_MWh", "maximum_grid_support_MW"),
         ("I06a maximum renewable-deficit support at 5 kW policy limit", "renewable-equivalent proxy service", "renewable_deficit_support_MWh", "maximum_grid_support_MW"),
         ("I06b maximum renewable-deficit support at 450 kW technical sensitivity", "renewable-equivalent proxy service", "renewable_deficit_support_MWh", "maximum_grid_support_MW"),
@@ -216,10 +216,10 @@ def build_service_cost_gap(
         row = _annual_service_row(comparison, label, baseline, service, energy_column, power_column)
         if row is not None:
             rows.append(row)
-    pv_high_load_row = _pv_high_load_service_row(
+    pv_high_load_row = _pv_peak_demand_service_row(
         comparison,
         dispatch_by_case,
-        "I07d PV with high-load demand management",
+        "I07d PV with power-system peak-demand management",
     )
     if pv_high_load_row is not None:
         rows.append(pv_high_load_row)
@@ -238,7 +238,7 @@ def stakeholder_matrix() -> pd.DataFrame:
     rows = [
         ("Fleet / public-bus operator", "Mobility-compliant charging; any operating saving", "SOC readiness, recovery energy and peak-demand exposure", "Energy-service THB/kWh; availability THB/kW-year or THB/kW-event"),
         ("Depot owner, PV owner and charging-service provider", "PV utilisation, controlled export and service revenue opportunity", "Charger controls, metering, protection and settlement interface", "PV-V2G service cost-gap metric"),
-        ("PEA or MEA distribution utility", "Potential local regional-high-load-period net-import relief", "Connection approval, local-network validation and operating limits", "Verified high-load import-relief THB/kWh and availability THB/kW-year"),
+        ("PEA or MEA distribution utility", "Potential local peak-demand-period net-import reduction", "Connection approval, local-network validation and operating limits", "Verified peak-demand import-reduction THB/kWh and availability THB/kW-year"),
         ("EGAT system operator", "Potential system-support signal response", "Dispatch coordination; no claimed avoided transmission investment", "Only after a defined system-service product"),
         ("ERC, EPPO and Ministry of Energy", "Evidence for pilot tariff, settlement and consumer-protection design", "Interconnection, measurement, allocation of value and consumer safeguards", "Use cost gaps as procurement evidence, not tariff recommendations"),
         ("Passengers, transport authorities and wider society", "Mobility continuity, resilience insight and lower traction-boundary emissions", "No external critical-load or social value monetised in this model", "Public value remains unpriced in this operational analysis"),

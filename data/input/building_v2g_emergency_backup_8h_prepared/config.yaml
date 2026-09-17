@@ -1,7 +1,7 @@
 cases:
   building_v2g_emergency_backup_8h_prepared:
     name: building_v2g_emergency_backup_8h_prepared
-    description: 8 h regional-high-load-correlated islanded-depot V2G technical potential with
+    description: 8 h power-system-peak-demand-correlated islanded-depot V2G technical potential with
       prepared pre-outage SOC
     country: TH
     timestep_minutes: 15
