@@ -11,11 +11,9 @@ import pandas as pd
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.markets.afrr_capacity import AFRRCapacityMarket
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
-from flexi_mod.markets.day_ahead import DayAheadMarket
 from flexi_mod.markets.intraday_continuous import IntradayContinuousMarket
 from flexi_mod.plants.capabilities import PlantCapabilities
 from flexi_mod.plants.signals.afrr_down_signals import AFRRDownSignals
-from flexi_mod.plants.signals.dispatch_signals import DispatchSignals
 from flexi_mod.plants.signals.idc_adjustment_signals import IDCAdjustmentSignals
 from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 from flexi_mod.strategies._benchmarks import (
@@ -55,6 +53,7 @@ from flexi_mod.strategies._clearing import (
     resolve_energy_clearing_mechanism,
 )
 from flexi_mod.strategies.base_strategy import BaseStrategy
+from flexi_mod.strategies.deciders.day_ahead import DayAheadDecider
 
 # TODO: Move IDC_MARGIN_EUR_PER_MWH to config.yaml once multi-country cases
 # or sensitivity analyses are implemented.
@@ -160,48 +159,10 @@ class HybridETESGasStrategy(BaseStrategy):
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
     ) -> pd.DataFrame:
-        market = DayAheadMarket("day_ahead", self.config.market("day_ahead"))
-        market_data = market.prepare_market_data(forecasts)
-        price_col = market.signal_column("price")
-
-        tax_rate = self._get_tax_rate(plant)
-        additional_charges_t = self.calculate_additional_charges_t(plant, forecasts)
-
-        benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
-        delivered_da_price = self._delivered_electricity_price(
-            market_data["day_ahead_price_EUR_per_MWh"],
-            tax_rate,
-            additional_charges_t,
-        )
-        charge_allowed = self._calculate_charge_gate(
-            plant=plant,
-            electricity_price=delivered_da_price,
-            benchmark=benchmark,
-        )
-        charge_allowed = charge_allowed & ~self._grid_charging_block(plant, forecasts)
-
-        signals = DispatchSignals(
-            electricity_price_col=price_col,
-            gas_price_col=GAS_PRICE_SIGNAL,
-            gas_benchmark_eur_per_mwh_th=benchmark,
-            charge_allowed=charge_allowed,
-            additional_electricity_charge_eur_per_mwh=additional_charges_t,
-            tax_rate=tax_rate,
-            **capacity_signal_kwargs(capacity_reservation, forecasts.index),
-        )
-        if rolling:
-            return plant.solve_rolling(
-                self.config,
-                forecasts,
-                signals,
-                initial_soc_mwh=initial_soc_mwh,
-            )
-        return plant.solve_horizon(
-            self.config,
-            forecasts,
-            signals,
-            initial_soc_mwh=initial_soc_mwh,
-        )
+        gas_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
+        return DayAheadDecider(
+            self.config, plant, forecasts, gas_benchmark
+        ).decide(capacity_reservation, initial_soc_mwh, rolling)
 
     def decide_intraday_continuous(
         self,
