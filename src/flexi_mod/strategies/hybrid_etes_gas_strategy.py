@@ -31,9 +31,14 @@ from flexi_mod.strategies._bids import (
     configured_afrr_energy_bid_margin,
     raw_electricity_bid_price,
 )
+from flexi_mod.strategies._charge_gate import (
+    charge_gate,
+    fixed_da_position,
+    grid_charging_block,
+    series_from_fixed_positions,
+)
 from flexi_mod.strategies.base_strategy import BaseStrategy
 
-ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH = 0.0
 # TODO: Move IDC_MARGIN_EUR_PER_MWH to config.yaml once multi-country cases
 # or sensitivity analyses are implemented.
 IDC_MARGIN_EUR_PER_MWH = 0.0
@@ -1106,58 +1111,22 @@ class HybridETESGasStrategy(BaseStrategy):
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
     ) -> pd.Series:
-        """Per-timestep mask, True where the grid-fee regulation blocks grid-charging.
+        return grid_charging_block(plant, forecasts)
 
-        Under atypical grid use (§19(2) StromNEV) the plant avoids drawing grid
-        power during DSO high-load windows to keep its billed capacity peak low.
-        """
-
-        regulation = getattr(plant, "grid_fee_regulation", None)
-        if regulation is None:
-            return pd.Series(False, index=forecasts.index)
-        mask = regulation.charging_block_mask(forecasts)
-        return mask.reindex(forecasts.index).fillna(False).astype(bool)
-
+    @staticmethod
     def _calculate_charge_gate(
-        self,
         plant: SteamGenerationPlant,
         electricity_price: pd.Series,
         benchmark: pd.Series,
     ) -> pd.Series:
-        if plant.etes is None:
-            raise ValueError(f"Plant '{plant.name}' has no ETES component")
-
-        safety_margin = ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH
-        delivered_heat_per_mwh_electric = (
-            plant.etes.efficiency_charge * plant.etes.efficiency_discharge
-        )
-        if delivered_heat_per_mwh_electric <= 0:
-            raise ValueError("ETES charge/discharge efficiencies must be positive")
-
-        effective_electric_heat_cost = (
-            electricity_price.astype(float) / delivered_heat_per_mwh_electric
-        )
-        return effective_electric_heat_cost <= (benchmark.astype(float) - safety_margin)
+        return charge_gate(plant, electricity_price, benchmark)
 
     @staticmethod
     def _fixed_da_position(
         fixed_positions: pd.DataFrame,
         index: pd.DatetimeIndex,
     ) -> pd.Series:
-        if "DA_position_MWh" in fixed_positions.columns:
-            da_position = fixed_positions["DA_position_MWh"]
-        elif "electricity_consumption_MWh" in fixed_positions.columns:
-            da_position = fixed_positions["electricity_consumption_MWh"]
-        else:
-            raise ValueError(
-                "IDC stage requires fixed day-ahead positions, but neither "
-                "'DA_position_MWh' nor 'electricity_consumption_MWh' was found."
-            )
-
-        da_position = da_position.astype(float).reindex(index)
-        if da_position.isna().any():
-            raise ValueError("Fixed day-ahead positions are not aligned with forecast timestamps")
-        return da_position.clip(lower=0.0)
+        return fixed_da_position(fixed_positions, index)
 
     @staticmethod
     def _series_from_fixed_positions(
@@ -1166,15 +1135,7 @@ class HybridETESGasStrategy(BaseStrategy):
         index: pd.DatetimeIndex,
         default: float | None = 0.0,
     ) -> pd.Series | None:
-        if column in fixed_positions.columns:
-            series = fixed_positions[column].astype(float).reindex(index)
-        elif default is None:
-            return None
-        else:
-            series = pd.Series(float(default), index=index)
-        if series.isna().any():
-            raise ValueError(f"Fixed position column '{column}' is not aligned with forecasts")
-        return series
+        return series_from_fixed_positions(fixed_positions, column, index, default)
 
 
 def _capacity_signal_kwargs(

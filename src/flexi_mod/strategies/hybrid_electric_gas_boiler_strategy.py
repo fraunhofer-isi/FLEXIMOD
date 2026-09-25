@@ -27,8 +27,8 @@ from flexi_mod.strategies._bids import (
     _validate_bid_rules,
     raw_electricity_bid_price,
 )
+from flexi_mod.strategies._charge_gate import ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH
 from flexi_mod.strategies.hybrid_etes_gas_strategy import (
-    ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH,
     IDC_MARGIN_EUR_PER_MWH,
     HybridETESGasStrategy,
 )
