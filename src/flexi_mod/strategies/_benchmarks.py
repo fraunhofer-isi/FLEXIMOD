@@ -41,9 +41,7 @@ def electricity_trading_benchmark(
     if plant.etes is None:
         raise ValueError(f"Plant '{plant.name}' has no ETES component")
 
-    delivered_heat_per_mwh_electric = (
-        plant.etes.efficiency_charge * plant.etes.efficiency_discharge
-    )
+    delivered_heat_per_mwh_electric = plant.etes.efficiency_charge * plant.etes.efficiency_discharge
     if delivered_heat_per_mwh_electric <= 0:
         raise ValueError("ETES charge/discharge efficiencies must be positive")
 

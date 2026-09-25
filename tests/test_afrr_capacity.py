@@ -28,8 +28,8 @@ def afrr_capacity_case(tmp_path: Path) -> Path:
 
 
 def test_afrr_capacity_full_storage_no_heat_demand_should_not_bid(
-        afrr_capacity_case: Path,
-        tmp_path: Path,
+    afrr_capacity_case: Path,
+    tmp_path: Path,
 ) -> None:
     """When storage is FULL and there is NO heat demand, capacity should not be reserved.
 
@@ -59,8 +59,9 @@ def test_afrr_capacity_full_storage_no_heat_demand_should_not_bid(
     print(f"Storage headroom: {block['storage_headroom_MW']}")
 
     # This assertion SHOULD pass after the fix:
-    assert block["reserved_capacity_MW"] == pytest.approx(0.0), \
+    assert block["reserved_capacity_MW"] == pytest.approx(0.0), (
         "Should not reserve capacity when storage is full and no heat demand"
+    )
 
 
 def _run_case(case_dir: Path, tmp_path: Path) -> dict[str, pd.DataFrame]:
@@ -81,10 +82,10 @@ def _run_case(case_dir: Path, tmp_path: Path) -> dict[str, pd.DataFrame]:
 
 
 def _write_config(
-        path: Path,
-        idc_enabled: bool = True,
-        afrr_enabled: bool = True,
-        afrr_capacity_enabled: bool = True,
+    path: Path,
+    idc_enabled: bool = True,
+    afrr_enabled: bool = True,
+    afrr_capacity_enabled: bool = True,
 ) -> None:
     path.write_text(
         case_config_text(
@@ -174,9 +175,9 @@ markets:
 
 
 def _write_plants(
-        path: Path,
-        storage_initial_soc: float = 0.0,
-        storage_capacity: float = 4.0,
+    path: Path,
+    storage_initial_soc: float = 0.0,
+    storage_capacity: float = 4.0,
 ) -> None:
     plants = pd.DataFrame(
         [
@@ -223,13 +224,13 @@ def _write_plants(
 
 
 def _write_forecasts(
-        path: Path,
-        da_prices: list[float] | None = None,
-        idc_prices: list[float | None] | None = None,
-        afrr_prices: list[float | None] | None = None,
-        afrr_quantities: list[float | None] | None = None,
-        afrr_capacity_prices: list[float | None] | None = None,
-        heat_demand: list[float] | None = None,
+    path: Path,
+    da_prices: list[float] | None = None,
+    idc_prices: list[float | None] | None = None,
+    afrr_prices: list[float | None] | None = None,
+    afrr_quantities: list[float | None] | None = None,
+    afrr_capacity_prices: list[float | None] | None = None,
+    heat_demand: list[float] | None = None,
 ) -> None:
     datetimes = pd.date_range("2025-01-01 00:00", periods=8, freq="15min")
     da_prices = da_prices or [10.0] * 4 + [120.0] * 4

@@ -82,9 +82,7 @@ class AFRRCapacityDecider:
     def _prepare_afrr_energy(self, forecasts: pd.DataFrame) -> None:
         self.afrr_energy_enabled = "afrr_energy" in self.config.enabled_markets
         if self.afrr_energy_enabled:
-            cleaned = prepare_afrr_down_energy_data(
-                self.config, forecasts, self.timestep_hours
-            )
+            cleaned = prepare_afrr_down_energy_data(self.config, forecasts, self.timestep_hours)
             self.quality_summary = cleaned.quality_summary
             self.afrr_energy = cleaned.frame
         else:
@@ -100,20 +98,15 @@ class AFRRCapacityDecider:
 
     def _prepare_price_gates(self) -> None:
         self.tax_rate = get_tax_rate(self.plant)
-        self.additional_charges_t = calculate_additional_charges_t(
-            self.plant, self.forecasts
-        )
+        self.additional_charges_t = calculate_additional_charges_t(self.plant, self.forecasts)
         reference_price = delivered_electricity_price(
             self.forecasts[self.da_price_col].astype(float),
             self.tax_rate,
             self.additional_charges_t,
         )
-        self.opportunity_cost = (
-            self.electricity_benchmark - reference_price
-        ).clip(lower=0.0)
+        self.opportunity_cost = (self.electricity_benchmark - reference_price).clip(lower=0.0)
         self.afrr_energy_delivered_bid_price = (
-            self.electricity_benchmark
-            - self.afrr_energy_bid_margin_eur_per_mwh
+            self.electricity_benchmark - self.afrr_energy_bid_margin_eur_per_mwh
         )
         self.delivered_afrr_energy_price = delivered_electricity_price(
             self.afrr_energy["afrr_energy_down_price_EUR_per_MWh"],
@@ -123,18 +116,13 @@ class AFRRCapacityDecider:
         self.activation_relevant = (
             self.afrr_energy["afrr_system_activation_MWh"] > 1e-12
         ) | self.afrr_energy["afrr_activation_without_price"].astype(bool)
-        self.activation_price_allowed = (
-            self.afrr_energy["afrr_price_available"].astype(bool)
-            & (self.delivered_afrr_energy_price <= self.afrr_energy_delivered_bid_price)
+        self.activation_price_allowed = self.afrr_energy["afrr_price_available"].astype(bool) & (
+            self.delivered_afrr_energy_price <= self.afrr_energy_delivered_bid_price
         )
 
-    def _prepare_block_params(
-        self, forecasts: pd.DataFrame, initial_soc_mwh: float | None
-    ) -> None:
+    def _prepare_block_params(self, forecasts: pd.DataFrame, initial_soc_mwh: float | None) -> None:
         self.max_charge_power_mw = self.plant.etes.max_power_charge_mw
-        self.min_bid_mw = float(
-            self.capacity_market.product_rules.get("min_bid_mw", 0.0)
-        )
+        self.min_bid_mw = float(self.capacity_market.product_rules.get("min_bid_mw", 0.0))
         self.bid_increment_mw = float(
             self.capacity_market.product_rules.get("bid_increment_mw", 1.0)
         )
@@ -143,9 +131,7 @@ class AFRRCapacityDecider:
             forecasts[self.plant.heat_demand_column].astype(float) * self.timestep_hours
         )
         self.projected_soc = (
-            self.plant.etes.initial_soc_mwh
-            if initial_soc_mwh is None
-            else initial_soc_mwh
+            self.plant.etes.initial_soc_mwh if initial_soc_mwh is None else initial_soc_mwh
         )
         self.grid_block = grid_charging_block(self.plant, forecasts)
 
@@ -164,39 +150,33 @@ class AFRRCapacityDecider:
         sizing = self._block_capacity_sizing(mask, block_duration_h, flags)
         market_capacity_mw = float(block["capacity_quantity_MW"])
         compliant = self._compliant_capacity(sizing, market_capacity_mw)
-        eligibility = self._block_eligibility(
-            block, mask, compliant, market_capacity_mw, flags
-        )
+        eligibility = self._block_eligibility(block, mask, compliant, market_capacity_mw, flags)
         reserved_mw = compliant if eligibility["bid_eligible"] else 0.0
-        self.projected_soc = self._advance_projected_soc(
-            mask, block_duration_h, reserved_mw
-        )
+        self.projected_soc = self._advance_projected_soc(mask, block_duration_h, reserved_mw)
         return self._build_block_record(
-            block, block_duration_h, mask, compliant, reserved_mw,
-            market_capacity_mw, sizing, flags, eligibility,
+            block,
+            block_duration_h,
+            mask,
+            compliant,
+            reserved_mw,
+            market_capacity_mw,
+            sizing,
+            flags,
+            eligibility,
         )
 
-    def _block_activation_flags(
-        self, mask: pd.Series, block_duration_h: float
-    ) -> dict:
+    def _block_activation_flags(self, mask: pd.Series, block_duration_h: float) -> dict:
         opportunity_cost_block = float(
-            (self.opportunity_cost.loc[mask] * self.timestep_hours).sum()
-            / block_duration_h
+            (self.opportunity_cost.loc[mask] * self.timestep_hours).sum() / block_duration_h
         )
         block_relevant = self.activation_relevant.loc[mask]
         block_price_allowed = self.activation_price_allowed.loc[mask]
-        block_without_price = self.afrr_energy[
-            "afrr_activation_without_price"
-        ].loc[mask]
+        block_without_price = self.afrr_energy["afrr_activation_without_price"].loc[mask]
         relevant_timesteps = int(block_relevant.sum())
         activation_without_price_timesteps = int(block_without_price.sum())
         price_failed_timesteps = int((block_relevant & ~block_price_allowed).sum())
-        relevant_with_price = block_relevant & self.afrr_energy[
-            "afrr_price_available"
-        ].loc[mask]
-        min_activation_price_margin = self._min_activation_price_margin(
-            mask, relevant_with_price
-        )
+        relevant_with_price = block_relevant & self.afrr_energy["afrr_price_available"].loc[mask]
+        min_activation_price_margin = self._min_activation_price_margin(mask, relevant_with_price)
         max_activation_need_mw = self._max_activation_need_mw(mask)
         return {
             "opportunity_cost_block": opportunity_cost_block,
@@ -224,26 +204,16 @@ class AFRRCapacityDecider:
         max_activation_need_mwh = float(
             self.afrr_energy["afrr_system_activation_MWh"].loc[mask].max()
         )
-        return (
-            max_activation_need_mwh / self.timestep_hours
-            if self.timestep_hours > 0
-            else 0.0
-        )
+        return max_activation_need_mwh / self.timestep_hours if self.timestep_hours > 0 else 0.0
 
-    def _block_capacity_sizing(
-        self, mask: pd.Series, block_duration_h: float, flags: dict
-    ) -> dict:
+    def _block_capacity_sizing(self, mask: pd.Series, block_duration_h: float, flags: dict) -> dict:
         storage_capacity_mw = max(
             0.0,
             (self.plant.etes.max_capacity_mwh - self.projected_soc)
             / (self.plant.etes.efficiency_charge * block_duration_h),
         )
-        round_trip = (
-            self.plant.etes.efficiency_charge * self.plant.etes.efficiency_discharge
-        )
-        max_discharge_mwh_step = (
-            self.plant.etes.max_power_discharge_mw * self.timestep_hours
-        )
+        round_trip = self.plant.etes.efficiency_charge * self.plant.etes.efficiency_discharge
+        max_discharge_mwh_step = self.plant.etes.max_power_discharge_mw * self.timestep_hours
         block_min_heat_outlet_mwh = float(
             self.heat_demand_mwh.loc[mask].clip(upper=max_discharge_mwh_step).min()
         )
@@ -252,9 +222,7 @@ class AFRRCapacityDecider:
             if round_trip > 0 and self.timestep_hours > 0
             else 0.0
         )
-        deliverable_capacity_mw = min(
-            self.max_charge_power_mw, storage_capacity_mw + direct_use_mw
-        )
+        deliverable_capacity_mw = min(self.max_charge_power_mw, storage_capacity_mw + direct_use_mw)
         return {
             "storage_capacity_mw": storage_capacity_mw,
             "deliverable_capacity_mw": deliverable_capacity_mw,
@@ -295,9 +263,7 @@ class AFRRCapacityDecider:
             and clearing_price >= minimum_acceptable_price
             and clearing_price >= bid_price
         )
-        technically_feasible = (
-            compliant_capacity > 1e-12 and compliant_capacity >= self.min_bid_mw
-        )
+        technically_feasible = compliant_capacity > 1e-12 and compliant_capacity >= self.min_bid_mw
         capacity_quantity_available = (
             not bool(block["missing_capacity_quantity_flag"])
             and market_capacity_mw >= self.min_bid_mw
@@ -326,9 +292,7 @@ class AFRRCapacityDecider:
         self, mask: pd.Series, block_duration_h: float, reserved_mw: float
     ) -> float:
         block_heat_thermal_mwh = float(self.heat_demand_mwh.loc[mask].sum())
-        soc_in_mwh = (
-            reserved_mw * block_duration_h * self.plant.etes.efficiency_charge
-        )
+        soc_in_mwh = reserved_mw * block_duration_h * self.plant.etes.efficiency_charge
         soc_out_mwh = min(
             block_heat_thermal_mwh / self.plant.etes.efficiency_discharge,
             self.plant.etes.max_power_discharge_mw * block_duration_h,
@@ -356,21 +320,15 @@ class AFRRCapacityDecider:
             eligibility["clearing_price"],
         )
         revenue = reserved_mw * settlement_price * block_duration_h
-        opportunity_cost_total = (
-            reserved_mw * flags["opportunity_cost_block"] * block_duration_h
-        )
+        opportunity_cost_total = reserved_mw * flags["opportunity_cost_block"] * block_duration_h
         market_surplus = (
-            reserved_mw
-            * (settlement_price - eligibility["bid_price"])
-            * block_duration_h
+            reserved_mw * (settlement_price - eligibility["bid_price"]) * block_duration_h
         )
         net_value = revenue - opportunity_cost_total
         deliverable = sizing["deliverable_capacity_mw"]
         return {
             **block.to_dict(),
-            "capacity_pricing_rule": capacity_pricing_rule(
-                self.capacity_clearing_mechanism
-            ),
+            "capacity_pricing_rule": capacity_pricing_rule(self.capacity_clearing_mechanism),
             "opportunity_cost_EUR_per_MW_h": flags["opportunity_cost_block"],
             "capacity_bid_price_EUR_per_MW_h": eligibility["bid_price"],
             "capacity_clearing_price_EUR_per_MW_h": eligibility["clearing_price"],
@@ -427,9 +385,7 @@ class AFRRCapacityDecider:
             ],
             on="afrr_capacity_block_id",
         )
-        enriched["afrr_capacity_reserved_MW"] = enriched[
-            "reserved_capacity_MW"
-        ].fillna(0.0)
+        enriched["afrr_capacity_reserved_MW"] = enriched["reserved_capacity_MW"].fillna(0.0)
         enriched["afrr_capacity_reserved_MWh"] = (
             enriched["afrr_capacity_reserved_MW"] * self.timestep_hours
         )
@@ -452,7 +408,6 @@ class AFRRCapacityDecider:
             * self.timestep_hours
         )
         enriched["afrr_capacity_net_value_EUR"] = (
-            enriched["afrr_capacity_revenue_EUR"]
-            - enriched["afrr_capacity_opportunity_cost_EUR"]
+            enriched["afrr_capacity_revenue_EUR"] - enriched["afrr_capacity_opportunity_cost_EUR"]
         )
         return enriched

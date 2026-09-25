@@ -84,9 +84,7 @@ class IntradayContinuousDecider:
 
     def _prepare_market_data(
         self,
-    ) -> tuple[
-        IntradayContinuousMarket, pd.DataFrame, str, str, pd.DataFrame
-    ]:
+    ) -> tuple[IntradayContinuousMarket, pd.DataFrame, str, str, pd.DataFrame]:
         idc_market = IntradayContinuousMarket(
             "intraday_continuous", self.config.market("intraday_continuous")
         )
@@ -116,8 +114,10 @@ class IntradayContinuousDecider:
     ) -> tuple[pd.Series, pd.Series]:
         grid_block = grid_charging_block(self.plant, forecasts)
         buy_allowed = (
-            delivered_idc_price < (self.electricity_benchmark - self.idc_margin)
-        ) & ~missing_price & ~grid_block
+            (delivered_idc_price < (self.electricity_benchmark - self.idc_margin))
+            & ~missing_price
+            & ~grid_block
+        )
         sell_allowed = (
             delivered_idc_price > (self.electricity_benchmark + self.idc_margin)
         ) & ~missing_price
@@ -138,9 +138,7 @@ class IntradayContinuousDecider:
         max_charge_mwh = self.plant.etes.max_power_charge_mw * timestep_hours
         buy_bound = pd.Series(0.0, index=forecasts.index)
         sell_bound = pd.Series(0.0, index=forecasts.index)
-        buy_bound.loc[buy_allowed] = (max_charge_mwh - da_position.loc[buy_allowed]).clip(
-            lower=0.0
-        )
+        buy_bound.loc[buy_allowed] = (max_charge_mwh - da_position.loc[buy_allowed]).clip(lower=0.0)
         sell_bound.loc[sell_allowed] = da_position.loc[sell_allowed].clip(lower=0.0)
         return buy_bound, sell_bound
 

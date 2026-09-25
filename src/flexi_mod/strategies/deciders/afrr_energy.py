@@ -49,12 +49,8 @@ def prepare_afrr_down_energy_data(
     an index-mismatch. prepare_market_data is a cheap, pure function of
     forecasts.
     """
-    afrr_energy_market = AFRRDownEnergyMarket(
-        "afrr_energy", config.market("afrr_energy")
-    )
-    return afrr_energy_market.prepare_market_data(
-        forecasts, timestep_hours=timestep_hours
-    )
+    afrr_energy_market = AFRRDownEnergyMarket("afrr_energy", config.market("afrr_energy"))
+    return afrr_energy_market.prepare_market_data(forecasts, timestep_hours=timestep_hours)
 
 
 class AFRREnergyDecider:
@@ -107,30 +103,22 @@ class AFRREnergyDecider:
         self.timestep_hours = self.config.timestep_minutes / 60.0
 
     def _prepare_market_data(self) -> None:
-        afrr_market = AFRRDownEnergyMarket(
-            "afrr_energy", self.config.market("afrr_energy")
-        )
+        afrr_market = AFRRDownEnergyMarket("afrr_energy", self.config.market("afrr_energy"))
         product_rules = afrr_market.product_rules
         self.min_bid_mw = float(product_rules.get("min_bid_mw", 0.0))
         self.bid_increment_mw = float(product_rules.get("bid_increment_mw", 1.0))
         _validate_bid_rules("afrr_energy", self.min_bid_mw, self.bid_increment_mw)
-        cleaned = prepare_afrr_down_energy_data(
-            self.config, self.forecasts, self.timestep_hours
-        )
+        cleaned = prepare_afrr_down_energy_data(self.config, self.forecasts, self.timestep_hours)
         self.quality_summary = cleaned.quality_summary
         self.clean_afrr = cleaned.frame
 
     def _prepare_charges(self) -> None:
         self.tax_rate = get_tax_rate(self.plant)
-        self.additional_charges = calculate_additional_charges_t(
-            self.plant, self.forecasts
-        )
+        self.additional_charges = calculate_additional_charges_t(self.plant, self.forecasts)
 
     def _prepare_positions(self, fixed_positions: pd.DataFrame) -> None:
         index = self.forecasts.index
-        self.da_position = series_from_fixed_positions(
-            fixed_positions, "DA_position_MWh", index
-        )
+        self.da_position = series_from_fixed_positions(fixed_positions, "DA_position_MWh", index)
         self.idc_buy = series_from_fixed_positions(
             fixed_positions, "IDC_buy_MWh", index, default=0.0
         )
@@ -185,18 +173,14 @@ class AFRREnergyDecider:
 
     def _compute_free_bid(self) -> None:
         max_charge_mwh = self.plant.etes.max_power_charge_mw * self.timestep_hours
-        charge_power_headroom = (
-            max_charge_mwh - self.final_planned - self.reserved_capacity
-        ).clip(lower=0.0)
-        storage_headroom = (
-            self.storage_capacity_headroom - self.reserved_capacity
-        ).clip(lower=0.0)
-        free_bid_potential = pd.concat(
-            [charge_power_headroom, storage_headroom], axis=1
-        ).min(axis=1)
-        free_bid_potential = free_bid_potential.where(self.price_allowed, 0.0).clip(
+        charge_power_headroom = (max_charge_mwh - self.final_planned - self.reserved_capacity).clip(
             lower=0.0
         )
+        storage_headroom = (self.storage_capacity_headroom - self.reserved_capacity).clip(lower=0.0)
+        free_bid_potential = pd.concat([charge_power_headroom, storage_headroom], axis=1).min(
+            axis=1
+        )
+        free_bid_potential = free_bid_potential.where(self.price_allowed, 0.0).clip(lower=0.0)
         self.free_bid_upper_bound = (
             free_bid_potential.div(self.timestep_hours)
             .map(
@@ -208,13 +192,11 @@ class AFRREnergyDecider:
             )
             .mul(self.timestep_hours)
         )
-        self.system_activation_for_bid = self.clean_afrr[
-            "afrr_system_activation_MWh"
-        ].where(self.price_allowed, 0.0)
+        self.system_activation_for_bid = self.clean_afrr["afrr_system_activation_MWh"].where(
+            self.price_allowed, 0.0
+        )
 
-    def _split_offer_and_activation(
-        self, capacity_reservation: pd.DataFrame | None
-    ) -> None:
+    def _split_offer_and_activation(self, capacity_reservation: pd.DataFrame | None) -> None:
         if capacity_reservation is not None and not capacity_reservation.empty:
             capacity_backed_bid = self.reserved_capacity.clip(lower=0.0)
         else:
@@ -223,9 +205,7 @@ class AFRREnergyDecider:
             self._strict_afrr_down_offer_and_activation_split(capacity_backed_bid)
         )
 
-    def _build_signals(
-        self, capacity_reservation: pd.DataFrame | None
-    ) -> AFRRDownSignals:
+    def _build_signals(self, capacity_reservation: pd.DataFrame | None) -> AFRRDownSignals:
         split = self.split
         return AFRRDownSignals(
             da_price_col=self.da_price_col,
@@ -312,15 +292,12 @@ def _compute_offer_and_activation_split(
 ) -> tuple[pd.Series, pd.Series, dict[str, pd.Series]]:
     max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours
     max_discharge_mwh = plant.etes.max_power_discharge_mw * timestep_hours
-    baseline_soc_values = (
-        baseline_storage_soc.reindex(forecasts.index).fillna(0.0).clip(lower=0.0)
-    )
+    baseline_soc_values = baseline_storage_soc.reindex(forecasts.index).fillna(0.0).clip(lower=0.0)
     replaceable_gas_heat = pd.concat(
         [
             baseline_gas_heat.reindex(forecasts.index).fillna(0.0).clip(lower=0.0),
             (
-                max_discharge_mwh
-                - baseline_storage_discharge.reindex(forecasts.index).fillna(0.0)
+                max_discharge_mwh - baseline_storage_discharge.reindex(forecasts.index).fillna(0.0)
             ).clip(lower=0.0),
         ],
         axis=1,
@@ -417,9 +394,7 @@ def _collect_per_timestep_offers(
             (float(unclaimed_future_headroom.iloc[position]) - additional_soc_mwh)
             / plant.etes.efficiency_charge,
         )
-        feasible_free_bid_mwh = min(
-            free_bid, free_room_after_capacity, unclaimed_future_cap
-        )
+        feasible_free_bid_mwh = min(free_bid, free_room_after_capacity, unclaimed_future_cap)
         free_bid = (
             _round_bid_down_to_increment(
                 feasible_free_bid_mwh / timestep_hours,
@@ -464,9 +439,7 @@ def _collect_per_timestep_offers(
         "afrr_energy_capacity_backed_activated_MWh": pd.Series(
             capacity_activated_values, index=forecasts.index
         ),
-        "afrr_energy_free_activated_MWh": pd.Series(
-            free_activated_values, index=forecasts.index
-        ),
+        "afrr_energy_free_activated_MWh": pd.Series(free_activated_values, index=forecasts.index),
         "afrr_headroom_binding": pd.Series(binding_values, index=forecasts.index),
         "afrr_curtailment_MWh": pd.Series(curtailed_values, index=forecasts.index),
     }

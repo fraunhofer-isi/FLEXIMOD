@@ -49,15 +49,11 @@ def charge_gate(
         raise ValueError(f"Plant '{plant.name}' has no ETES component")
 
     safety_margin = ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH
-    delivered_heat_per_mwh_electric = (
-        plant.etes.efficiency_charge * plant.etes.efficiency_discharge
-    )
+    delivered_heat_per_mwh_electric = plant.etes.efficiency_charge * plant.etes.efficiency_discharge
     if delivered_heat_per_mwh_electric <= 0:
         raise ValueError("ETES charge/discharge efficiencies must be positive")
 
-    effective_electric_heat_cost = (
-        electricity_price.astype(float) / delivered_heat_per_mwh_electric
-    )
+    effective_electric_heat_cost = electricity_price.astype(float) / delivered_heat_per_mwh_electric
     return effective_electric_heat_cost <= (benchmark.astype(float) - safety_margin)
 
 

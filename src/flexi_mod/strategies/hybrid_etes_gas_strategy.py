@@ -19,20 +19,15 @@ from flexi_mod.strategies._bids import (
     configured_afrr_energy_bid_margin,
 )
 from flexi_mod.strategies._charge_gate import (
-    charge_gate,
     fixed_da_position,
     grid_charging_block,
     series_from_fixed_positions,
 )
 from flexi_mod.strategies._charges import (
     calculate_additional_charges_t,
-    get_dynamic_charge_column,
     get_tax_rate,
 )
 from flexi_mod.strategies._clearing import (
-    capacity_bid_price,
-    capacity_pricing_rule,
-    capacity_settlement_price,
     resolve_capacity_clearing_mechanism,
     resolve_energy_clearing_mechanism,
 )
@@ -68,38 +63,6 @@ class HybridETESGasStrategy(BaseStrategy):
         self.afrr_capacity_block_summary = pd.DataFrame()
         self._afrr_down_energy_data_cache = {}
 
-    @property
-    def capacity_pricing_rule(self) -> str:
-        """Return the aFRR-capacity clearing mechanism in force for this case."""
-
-        return capacity_pricing_rule(self._capacity_clearing_mechanism)
-
-    def capacity_settlement_price(
-        self,
-        capacity_bid_price_eur_per_mw_h: float,
-        clearing_price_eur_per_mw_h: float,
-    ) -> float:
-        """Return the awarded-capacity settlement price in EUR/MW/h."""
-
-        return capacity_settlement_price(
-            self._capacity_clearing_mechanism,
-            capacity_bid_price_eur_per_mw_h,
-            clearing_price_eur_per_mw_h,
-        )
-
-    def capacity_bid_price(
-        self,
-        minimum_acceptable_price_eur_per_mw_h: float,
-        market_reference_price_eur_per_mw_h: float,
-    ) -> float:
-        """Return the submitted bid price for the capacity product in EUR/MW/h."""
-
-        return capacity_bid_price(
-            self._capacity_clearing_mechanism,
-            minimum_acceptable_price_eur_per_mw_h,
-            market_reference_price_eur_per_mw_h,
-        )
-
     # ─── Regulation-aware helpers ──────────────────────────────────
 
     @staticmethod
@@ -107,12 +70,6 @@ class HybridETESGasStrategy(BaseStrategy):
         """Read the multiplicative electricity tax rate from the plant's regulation."""
 
         return get_tax_rate(plant)
-
-    @staticmethod
-    def _get_dynamic_charge_column(plant: SteamGenerationPlant) -> str | None:
-        """Read the dynamic charge column name from the plant's regulation."""
-
-        return get_dynamic_charge_column(plant)
 
     def calculate_additional_charges_t(
         self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
@@ -150,9 +107,9 @@ class HybridETESGasStrategy(BaseStrategy):
         rolling: bool = True,
     ) -> pd.DataFrame:
         gas_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
-        return DayAheadDecider(
-            self.config, plant, forecasts, gas_benchmark
-        ).decide(capacity_reservation, initial_soc_mwh, rolling)
+        return DayAheadDecider(self.config, plant, forecasts, gas_benchmark).decide(
+            capacity_reservation, initial_soc_mwh, rolling
+        )
 
     def decide_intraday_continuous(
         self,
@@ -262,14 +219,6 @@ class HybridETESGasStrategy(BaseStrategy):
         forecasts: pd.DataFrame,
     ) -> pd.Series:
         return grid_charging_block(plant, forecasts)
-
-    @staticmethod
-    def _calculate_charge_gate(
-        plant: SteamGenerationPlant,
-        electricity_price: pd.Series,
-        benchmark: pd.Series,
-    ) -> pd.Series:
-        return charge_gate(plant, electricity_price, benchmark)
 
     @staticmethod
     def _fixed_da_position(

@@ -490,4 +490,3 @@ class SteamGenerationPlant(BasePlant):
 
 
 # --- Common result table ---------------------------------------------
-

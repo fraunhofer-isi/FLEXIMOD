@@ -15,9 +15,7 @@ class BaseStrategy:
     def required_forecast_columns(self) -> set[str]:
         return set()
 
-    def decide_day_ahead(
-        self, plant: PlantCapabilities, forecasts: pd.DataFrame
-    ) -> pd.DataFrame:
+    def decide_day_ahead(self, plant: PlantCapabilities, forecasts: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(index=forecasts.index)
 
     def decide_intraday_continuous(
