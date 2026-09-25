@@ -9,7 +9,6 @@ import warnings
 import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.data.data_loader import DataValidationError
 from flexi_mod.markets.afrr_capacity import AFRRCapacityMarket
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
 from flexi_mod.markets.day_ahead import DayAheadMarket
@@ -42,6 +41,11 @@ from flexi_mod.strategies._charge_gate import (
     fixed_da_position,
     grid_charging_block,
     series_from_fixed_positions,
+)
+from flexi_mod.strategies._charges import (
+    calculate_additional_charges_t,
+    get_dynamic_charge_column,
+    get_tax_rate,
 )
 from flexi_mod.strategies._clearing import (
     capacity_bid_price,
@@ -112,18 +116,14 @@ class HybridETESGasStrategy(BaseStrategy):
     @staticmethod
     def _get_tax_rate(plant: SteamGenerationPlant) -> float:
         """Read the multiplicative electricity tax rate from the plant's regulation."""
-        regulation = getattr(plant, "grid_fee_regulation", None)
-        if regulation is None:
-            return 0.0
-        return float(getattr(regulation, "electricity_tax_rate", 0.0))
+
+        return get_tax_rate(plant)
 
     @staticmethod
     def _get_dynamic_charge_column(plant: SteamGenerationPlant) -> str | None:
         """Read the dynamic charge column name from the plant's regulation."""
-        regulation = getattr(plant, "grid_fee_regulation", None)
-        if regulation is None:
-            return None
-        return getattr(regulation, "dynamic_charge_column", None)
+
+        return get_dynamic_charge_column(plant)
 
     def calculate_additional_charges_t(
         self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
@@ -138,33 +138,8 @@ class HybridETESGasStrategy(BaseStrategy):
         - Otherwise (no dynamic column declared, e.g. Germany): use the scalar
           marginal charge from the regulation.
         """
-        ac_column = self._get_dynamic_charge_column(plant)
-        scalar = float(getattr(plant, "additional_electricity_charge_eur_per_mwh", 0.0))
-        if ac_column is not None:
-            if ac_column not in forecasts.columns:
-                raise DataValidationError(
-                    f"Grid-fee regulation for plant '{plant.name}' declares dynamic "
-                    f"charge column '{ac_column}', but it is missing from "
-                    "forecasts_df.csv. Add the column (or fix its name); falling back "
-                    "to the scalar charge would silently drop the per-MWh grid fee."
-                )
-            # The dynamic column carries the time-varying per-MWh grid charge. Any
-            # static EUR/MWh levy is a *separate* component and is added on top, so
-            # dispatch matches the ex-post settlement (which also sums both). For
-            # ES/FR the static levy is 0 today, so this is a no-op there.
-            if scalar != 0.0:
-                warnings.warn(
-                    f"Plant '{plant.name}' has a static per-MWh levy ({scalar} EUR/MWh) "
-                    f"alongside dynamic charge column '{ac_column}'; both are summed for "
-                    "dispatch and settlement. Verify the levy is not already included in "
-                    "the dynamic column to avoid double counting.",
-                    stacklevel=2,
-                )
-            charges = forecasts[ac_column].astype(float) + scalar
-            charges.name = "additional_charges_EUR_per_MWh"
-            return charges
 
-        return pd.Series(scalar, index=forecasts.index, name="additional_charges_EUR_per_MWh")
+        return calculate_additional_charges_t(plant, forecasts)
 
     # ─── Core interface ────────────────────────────────────────────
 
