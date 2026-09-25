@@ -15,12 +15,11 @@ from flexi_mod.markets.afrr_capacity import AFRRCapacityMarket
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
 from flexi_mod.markets.day_ahead import DayAheadMarket
 from flexi_mod.markets.intraday_continuous import IntradayContinuousMarket
-from flexi_mod.plants.steam_generation_plant import (
-    AFRRDownSignals,
-    DispatchSignals,
-    IDCAdjustmentSignals,
-    SteamGenerationPlant,
-)
+from flexi_mod.plants.capabilities import PlantCapabilities
+from flexi_mod.plants.signals.afrr_down_signals import AFRRDownSignals
+from flexi_mod.plants.signals.dispatch_signals import DispatchSignals
+from flexi_mod.plants.signals.idc_adjustment_signals import IDCAdjustmentSignals
+from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 from flexi_mod.strategies.base_strategy import BaseStrategy
 
 GAS_PRICE_SIGNAL = "natural_gas_price"
@@ -242,7 +241,7 @@ class HybridETESGasStrategy(BaseStrategy):
 
     def decide_day_ahead(
         self,
-        plant: SteamGenerationPlant,
+        plant: PlantCapabilities,
         forecasts: pd.DataFrame,
         capacity_reservation: pd.DataFrame | None = None,
         initial_soc_mwh: float | None = None,
@@ -293,7 +292,7 @@ class HybridETESGasStrategy(BaseStrategy):
 
     def decide_intraday_continuous(
         self,
-        plant: SteamGenerationPlant,
+        plant: PlantCapabilities,
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
         capacity_reservation: pd.DataFrame | None = None,
@@ -387,7 +386,7 @@ class HybridETESGasStrategy(BaseStrategy):
 
     def decide_afrr_energy(
         self,
-        plant: SteamGenerationPlant,
+        plant: PlantCapabilities,
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
         capacity_reservation: pd.DataFrame | None = None,
@@ -763,7 +762,7 @@ class HybridETESGasStrategy(BaseStrategy):
 
     def decide_afrr_capacity(
         self,
-        plant: SteamGenerationPlant,
+        plant: PlantCapabilities,
         forecasts: pd.DataFrame,
         initial_soc_mwh: float | None = None,
     ) -> pd.DataFrame:

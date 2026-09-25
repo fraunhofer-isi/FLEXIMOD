@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
+from flexi_mod.plants.capabilities import PlantCapabilities
 
 
 class BaseStrategy:
@@ -16,13 +16,13 @@ class BaseStrategy:
         return set()
 
     def decide_day_ahead(
-        self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
+        self, plant: PlantCapabilities, forecasts: pd.DataFrame
     ) -> pd.DataFrame:
         return pd.DataFrame(index=forecasts.index)
 
     def decide_intraday_continuous(
         self,
-        plant: SteamGenerationPlant,
+        plant: PlantCapabilities,
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
     ) -> pd.DataFrame:
@@ -31,7 +31,7 @@ class BaseStrategy:
 
     def decide_afrr_energy(
         self,
-        plant: SteamGenerationPlant,
+        plant: PlantCapabilities,
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
     ) -> pd.DataFrame:
@@ -39,7 +39,7 @@ class BaseStrategy:
         return pd.DataFrame(index=forecasts.index)
 
     def decide_afrr_capacity(
-        self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
+        self, plant: PlantCapabilities, forecasts: pd.DataFrame
     ) -> pd.DataFrame:
         # Optional pre-DA reserve-capacity stage for strategies that support it.
         return pd.DataFrame(index=forecasts.index)

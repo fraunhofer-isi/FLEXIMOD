@@ -9,12 +9,10 @@ import pytest
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataLoader
-from flexi_mod.plants.steam_generation_plant import (
-    AFRRDownSignals,
-    DispatchSignals,
-    IDCAdjustmentSignals,
-    SteamGenerationPlant,
-)
+from flexi_mod.plants.signals.afrr_down_signals import AFRRDownSignals
+from flexi_mod.plants.signals.dispatch_signals import DispatchSignals
+from flexi_mod.plants.signals.idc_adjustment_signals import IDCAdjustmentSignals
+from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 
 CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_DA_ID_buy"

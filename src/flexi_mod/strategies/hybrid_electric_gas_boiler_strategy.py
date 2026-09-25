@@ -15,13 +15,12 @@ import pandas as pd
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
 from flexi_mod.markets.day_ahead import DayAheadMarket
 from flexi_mod.markets.intraday_continuous import IntradayContinuousMarket
-from flexi_mod.plants.steam_generation_plant import (
-    DIRECT_ELECTRIC_GAS_BOILER_ROUTE,
-    AFRRDownSignals,
-    DispatchSignals,
-    IDCAdjustmentSignals,
-    SteamGenerationPlant,
-)
+from flexi_mod.plants.capabilities import PlantCapabilities
+from flexi_mod.plants.constants import DIRECT_ELECTRIC_GAS_BOILER_ROUTE
+from flexi_mod.plants.signals.afrr_down_signals import AFRRDownSignals
+from flexi_mod.plants.signals.dispatch_signals import DispatchSignals
+from flexi_mod.plants.signals.idc_adjustment_signals import IDCAdjustmentSignals
+from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 from flexi_mod.strategies.hybrid_etes_gas_strategy import (
     ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH,
     GAS_PRICE_SIGNAL,
@@ -49,7 +48,7 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
 
     def decide_day_ahead(
         self,
-        plant: SteamGenerationPlant,
+        plant: PlantCapabilities,
         forecasts: pd.DataFrame,
         capacity_reservation: pd.DataFrame | None = None,
         initial_soc_mwh: float | None = None,
@@ -103,7 +102,7 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
 
     def decide_intraday_continuous(
         self,
-        plant: SteamGenerationPlant,
+        plant: PlantCapabilities,
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
         capacity_reservation: pd.DataFrame | None = None,
@@ -200,7 +199,7 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
 
     def decide_afrr_energy(
         self,
-        plant: SteamGenerationPlant,
+        plant: PlantCapabilities,
         forecasts: pd.DataFrame,
         fixed_positions: pd.DataFrame,
         capacity_reservation: pd.DataFrame | None = None,
@@ -355,7 +354,7 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
 
     def decide_afrr_capacity(
         self,
-        plant: SteamGenerationPlant,
+        plant: PlantCapabilities,
         forecasts: pd.DataFrame,
         initial_soc_mwh: float | None = None,
     ) -> pd.DataFrame:

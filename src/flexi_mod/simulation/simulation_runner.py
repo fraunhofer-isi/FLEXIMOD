@@ -18,7 +18,8 @@ from flexi_mod.ledgers.market_ledger import MarketLedger
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
 from flexi_mod.markets import BaseMarket, build_markets
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
-from flexi_mod.plants.steam_generation_plant import DispatchSignals, SteamGenerationPlant
+from flexi_mod.plants.signals.dispatch_signals import DispatchSignals
+from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 from flexi_mod.regulations import GridFeeResult, build_grid_fee_regulation
 from flexi_mod.simulation.provenance import ProvenanceCollector
 from flexi_mod.strategies import build_strategy
