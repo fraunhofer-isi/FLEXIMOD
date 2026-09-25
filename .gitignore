@@ -22,3 +22,12 @@ data/processed/
 *.parquet
 *.zip
 *.7z
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads/
+.beads-credential-key
+
+# opencode runtime artifacts
+.opencode/

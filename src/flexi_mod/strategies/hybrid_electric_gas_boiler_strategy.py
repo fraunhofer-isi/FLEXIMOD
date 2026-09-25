@@ -21,14 +21,16 @@ from flexi_mod.plants.signals.afrr_down_signals import AFRRDownSignals
 from flexi_mod.plants.signals.dispatch_signals import DispatchSignals
 from flexi_mod.plants.signals.idc_adjustment_signals import IDCAdjustmentSignals
 from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
-from flexi_mod.strategies.hybrid_etes_gas_strategy import (
-    ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH,
-    GAS_PRICE_SIGNAL,
-    IDC_MARGIN_EUR_PER_MWH,
-    HybridETESGasStrategy,
+from flexi_mod.strategies._benchmarks import GAS_PRICE_SIGNAL
+from flexi_mod.strategies._bids import (
     _round_bid_down_to_increment,
     _validate_bid_rules,
     raw_electricity_bid_price,
+)
+from flexi_mod.strategies.hybrid_etes_gas_strategy import (
+    ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH,
+    IDC_MARGIN_EUR_PER_MWH,
+    HybridETESGasStrategy,
 )
 
 CO2_PRICE_SIGNAL = "co2_price"
