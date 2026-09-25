@@ -102,7 +102,10 @@ def test_building_example_optimizes_with_rolling_horizon(
     assert summary["pv_self_consumption_fraction"].iloc[0] == pytest.approx(0.0)
     assert result.loc[result["bus_availability_fraction"] == 0.0, "bus_charge_MWh"].sum() == 0
     assert result["grid_export_MWh"].sum() == pytest.approx(0.0)
-    assert result["bus_discharge_MWh"].sum() > 0.0
+    # At the current 2.20 THB/kWh feed-in tariff, discharging is not economic.
+    # With zero non-traction depot demand there is also no behind-the-meter load
+    # for the buses to serve.
+    assert result["bus_discharge_MWh"].sum() == pytest.approx(0.0)
     assert result["grid_export_MW"].max() <= 0.005 + 1e-9
     assert result["bus_soc_fraction"].iloc[-1] == pytest.approx(0.8)
     assert summary["currency"].iloc[0] == "THB"
@@ -161,14 +164,18 @@ def test_building_cases_enforce_v1g_v2b_and_v2g_boundaries(tmp_path: Path) -> No
 
     baseline, baseline_summary = run_case(V1G_EXAMPLE_DIR, "building_v1g_baseline")
     v2b, v2b_summary = run_case(V2B_EXAMPLE_DIR, "building_v2b_no_export")
-    below_break_even, _ = run_case(EXAMPLE_DIR, "building_v2g_plus_3500")
-    above_break_even, _ = run_case(EXAMPLE_DIR, "building_v2g_plus_4000")
+    current_tariff, _ = run_case(EXAMPLE_DIR, "building_v2g_example")
+    higher_tariff, _ = run_case(EXAMPLE_DIR, "building_v2g_plus_1000")
 
     assert baseline["bus_discharge_MWh"].sum() == pytest.approx(0.0)
     assert baseline["grid_export_MWh"].sum() == pytest.approx(0.0)
-    assert v2b["bus_discharge_MWh"].sum() > 0.0
+    # This legacy-named V2B example now has zero non-traction building demand,
+    # so a no-export optimum has no useful destination for bus discharge.
+    assert v2b["bus_discharge_MWh"].sum() == pytest.approx(0.0)
     assert v2b["grid_export_MWh"].sum() == pytest.approx(0.0)
-    assert v2b_summary["peak_grid_import_MW"] < baseline_summary["peak_grid_import_MW"]
-    assert below_break_even["grid_export_MWh"].sum() == pytest.approx(0.0)
-    assert above_break_even["grid_export_MWh"].sum() > 0.0
-    assert above_break_even["grid_export_MW"].max() <= 0.005 + 1e-9
+    assert v2b_summary["peak_grid_import_MW"] == pytest.approx(
+        baseline_summary["peak_grid_import_MW"]
+    )
+    assert current_tariff["grid_export_MWh"].sum() == pytest.approx(0.0)
+    assert higher_tariff["grid_export_MWh"].sum() > 0.0
+    assert higher_tariff["grid_export_MW"].max() <= 0.005 + 1e-9

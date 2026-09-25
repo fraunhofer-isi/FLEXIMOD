@@ -40,6 +40,8 @@ def available_pyomo_solvers(config: CaseConfig) -> list[tuple[str, Any]]:
             continue
         solver = pyo.SolverFactory(candidate)
         if solver.available(exception_flag=False):
+            for option, value in config.solver_options.items():
+                solver.options[str(option)] = value
             solvers.append((candidate, solver))
 
     if not solvers:

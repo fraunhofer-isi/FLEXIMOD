@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: FLEXIMOD Developers
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+cases:
+  building_v2g_export_onset_3150:
+    name: building_v2g_export_onset_3150
+    description: Annual least-cost V2G export at the first tested total feed-in tariff that induces export (3.15 THB/kWh)
+    country: TH
+    timestep_minutes: 15
+    simulation_start: 2024-01-01 00:00
+    simulation_end: 2024-12-31 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    solver:
+      name: highs
+      fallback_solvers: []
+      tee: false
+      # Solver setting only: it does not change the formulation or case assumptions.
+      options:
+        threads: 24
+    market_sequence:
+    - day_ahead
+    markets:
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_3150_thb_per_mwh
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 48
+        rolling_step_hours: 24
+        currency: THB
+        dispatch_objective: min_cost
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 0.005
+        demand_charge_per_kw_month: 210

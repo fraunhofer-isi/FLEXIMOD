@@ -98,6 +98,7 @@ def _pv_peak_demand_service_row(
         (
             candidate
             for candidate in (
+                "I07 reference",
                 "PV + unidirectional charging reference",
                 "PV-only operating reference",  # legacy notebook label
             )
@@ -202,6 +203,7 @@ def build_service_cost_gap(
         (
             candidate
             for candidate in (
+                "I07 reference",
                 "PV + unidirectional charging reference",
                 "PV-only operating reference",  # legacy notebook label
             )

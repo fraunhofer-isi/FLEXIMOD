@@ -227,7 +227,8 @@ def test_renewable_objective_moves_charging_to_high_availability() -> None:
     )
 
 
-def test_max_grid_support_respects_export_limits_and_mobility() -> None:
+@pytest.mark.parametrize("dispatch_objective", ["max_grid_support", "max_grid_support_technical"])
+def test_max_grid_support_respects_export_limits_and_mobility(dispatch_objective: str) -> None:
     index = pd.date_range("2025-01-01", periods=8, freq="15min")
     forecasts = pd.DataFrame(
         {
@@ -246,7 +247,7 @@ def test_max_grid_support_respects_export_limits_and_mobility() -> None:
         config = CaseConfig.from_case_dir(CASE_DIR)
         config.case["strategy"]["dispatch"].update(
             {
-                "dispatch_objective": "max_grid_support",
+                "dispatch_objective": dispatch_objective,
                 "grid_congestion_weight_column": "grid_weight",
                 "vehicle_discharge_enabled": True,
                 "grid_export_limit_mw": export_limit,

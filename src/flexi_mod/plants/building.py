@@ -199,6 +199,8 @@ class Building(BasePlant):
         dispatch_objective = _dispatch_objective(config)
         if dispatch_objective == "max_grid_support":
             solver_name = _solve_maximum_service(self.name, model, config, "grid")
+        elif dispatch_objective == "max_grid_support_technical":
+            solver_name = _solve_technical_grid_support(self.name, model, config)
         elif dispatch_objective == "max_emergency_v2g_transfer":
             solver_name = _solve_maximum_service(self.name, model, config, "emergency")
         elif dispatch_objective == "max_renewable_shifting":
@@ -908,6 +910,7 @@ def _dispatch_objective(config: CaseConfig) -> str:
         "min_congestion_with_cost_budget",
         "min_renewable_misalignment_with_cost_budget",
         "max_grid_support",
+        "max_grid_support_technical",
         "max_emergency_v2g_transfer",
         "max_renewable_shifting",
     }
@@ -957,6 +960,27 @@ def _solve_maximum_service(
     model.technical_cost_objective = pyo.Objective(
         expr=model.technical_service_cost,
         sense=pyo.minimize,
+    )
+    return _solve_model(building_name, model, config)
+
+
+def _solve_technical_grid_support(
+    building_name: str,
+    model: pyo.ConcreteModel,
+    config: CaseConfig,
+) -> str:
+    """Maximise technical grid support without secondary tie-breaking solves.
+
+    This mode is intended only for large-fleet technical-potential sensitivities.
+    It retains all mobility, charger, SOC and export constraints, but does not
+    subsequently minimise throughput or financial cost among equally supportive
+    solutions.
+    """
+
+    model.objective.deactivate()
+    model.technical_grid_support_objective = pyo.Objective(
+        expr=model.grid_support_value,
+        sense=pyo.maximize,
     )
     return _solve_model(building_name, model, config)
 

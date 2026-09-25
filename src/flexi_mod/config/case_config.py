@@ -113,6 +113,15 @@ class CaseConfig:
         return bool(self.case.get("solver", {}).get("tee", False))
 
     @property
+    def solver_options(self) -> dict[str, Any]:
+        """Optional solver-native settings, such as HiGHS worker threads."""
+
+        options = self.case.get("solver", {}).get("options", {})
+        if not isinstance(options, dict):
+            raise ConfigError("cases.<case_name>.solver.options must be a mapping")
+        return dict(options)
+
+    @property
     def market_sequence(self) -> list[str]:
         return list(self.case.get("market_sequence", []))
 

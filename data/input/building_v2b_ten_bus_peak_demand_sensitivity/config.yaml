@@ -1,0 +1,147 @@
+cases:
+  building_v1g_ten_bus_reference_annual:
+    country: TH
+    timestep_minutes: 15
+    simulation_start: 2024-01-01 00:00
+    simulation_end: 2024-12-31 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    solver: &id001
+      name: highs
+      fallback_solvers: []
+      tee: false
+      options:
+        threads: 24
+    market_sequence: &id002
+    - day_ahead
+    markets: &id003
+      day_ahead:
+        enabled: true
+        product_resolution: 15min
+        signals:
+          price: electricity_import_price_thb_per_mwh
+          export_price: v2g_export_price_current_thb_per_mwh
+    name: building_v1g_ten_bus_reference_annual
+    description: 'Illustrative ten-bus future-fleet V1G reference: three Route-7ก,
+      four Route-79 and three Route-101 buses. This is not a verified current BMTA
+      fleet allocation.'
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 48
+        rolling_step_hours: 24
+        currency: THB
+        grid_congestion_weight_column: grid_congestion_weight
+        demand_charge_per_kw_month: 210
+        dispatch_objective: min_cost
+        vehicle_discharge_enabled: false
+        grid_export_limit_mw: 0.0
+  building_v2g_ten_bus_peak_demand_technical_annual:
+    country: TH
+    timestep_minutes: 15
+    simulation_start: 2024-01-01 00:00
+    simulation_end: 2024-12-31 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    solver: *id001
+    market_sequence: *id002
+    markets: *id003
+    name: building_v2g_ten_bus_peak_demand_technical_annual
+    description: Illustrative ten-bus annual maximum power-system peak-demand technical
+      potential with ten 150 kW bidirectional chargers and a 1.5 MW bidirectional
+      connection. It retains route and SOC constraints but uses a single maximum-service
+      solve per horizon; it is not an approved capacity or an economic dispatch case.
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 48
+        rolling_step_hours: 24
+        currency: THB
+        grid_congestion_weight_column: grid_congestion_weight
+        demand_charge_per_kw_month: 210
+        dispatch_objective: max_grid_support_technical
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 1.5
+  building_v1g_ten_bus_peak_event_reference:
+    country: TH
+    timestep_minutes: 15
+    simulation_start: 2024-05-06 00:00
+    simulation_end: 2024-05-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    solver: *id001
+    market_sequence: *id002
+    markets: *id003
+    name: building_v1g_ten_bus_peak_event_reference
+    description: Illustrative ten-bus V1G reference for the representative 6 May 2024
+      power-system peak-demand event.
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 48
+        rolling_step_hours: 24
+        currency: THB
+        grid_congestion_weight_column: grid_congestion_weight
+        demand_charge_per_kw_month: 210
+        dispatch_objective: min_cost
+        vehicle_discharge_enabled: false
+        grid_export_limit_mw: 0.0
+  building_v1g_ten_bus_peak_event_response:
+    country: TH
+    timestep_minutes: 15
+    simulation_start: 2024-05-06 00:00
+    simulation_end: 2024-05-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    solver: *id001
+    market_sequence: *id002
+    markets: *id003
+    name: building_v1g_ten_bus_peak_event_response
+    description: Illustrative ten-bus 6 May 2024 peak-demand response using managed
+      charging only; it is not electricity supplied by buses.
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 48
+        rolling_step_hours: 24
+        currency: THB
+        grid_congestion_weight_column: grid_congestion_weight
+        demand_charge_per_kw_month: 210
+        dispatch_objective: max_grid_support
+        vehicle_discharge_enabled: false
+        grid_export_limit_mw: 0.0
+  building_v2g_ten_bus_peak_event_technical:
+    country: TH
+    timestep_minutes: 15
+    simulation_start: 2024-05-06 00:00
+    simulation_end: 2024-05-07 23:45
+    timezone: Asia/Bangkok
+    additional_charges: false
+    solver: *id001
+    market_sequence: *id002
+    markets: *id003
+    name: building_v2g_ten_bus_peak_event_technical
+    description: Illustrative ten-bus V2G technical potential during the 6 May 2024
+      peak-demand event, with ten 150 kW bidirectional chargers and a 1.5 MW bidirectional
+      connection. This is a future-infrastructure sensitivity, not an approved capacity.
+    strategy:
+      name: building_v2g
+      dispatch:
+        dispatch_method: pyomo
+        rolling_horizon_enabled: true
+        dispatch_horizon_hours: 48
+        rolling_step_hours: 24
+        currency: THB
+        grid_congestion_weight_column: grid_congestion_weight
+        demand_charge_per_kw_month: 210
+        dispatch_objective: max_grid_support
+        vehicle_discharge_enabled: true
+        grid_export_limit_mw: 1.5
