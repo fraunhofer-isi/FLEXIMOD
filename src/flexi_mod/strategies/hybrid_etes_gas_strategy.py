@@ -4,17 +4,13 @@
 
 from __future__ import annotations
 
-import warnings
-
 import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.markets.afrr_capacity import AFRRCapacityMarket
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
-from flexi_mod.markets.intraday_continuous import IntradayContinuousMarket
 from flexi_mod.plants.capabilities import PlantCapabilities
 from flexi_mod.plants.signals.afrr_down_signals import AFRRDownSignals
-from flexi_mod.plants.signals.idc_adjustment_signals import IDCAdjustmentSignals
 from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 from flexi_mod.strategies._benchmarks import (
     GAS_PRICE_SIGNAL,
@@ -54,6 +50,7 @@ from flexi_mod.strategies._clearing import (
 )
 from flexi_mod.strategies.base_strategy import BaseStrategy
 from flexi_mod.strategies.deciders.day_ahead import DayAheadDecider
+from flexi_mod.strategies.deciders.intraday_continuous import IntradayContinuousDecider
 
 # TODO: Move IDC_MARGIN_EUR_PER_MWH to config.yaml once multi-country cases
 # or sensitivity analyses are implemented.
@@ -173,90 +170,18 @@ class HybridETESGasStrategy(BaseStrategy):
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
     ) -> pd.DataFrame:
-        idc_market = IntradayContinuousMarket(
-            "intraday_continuous",
-            self.config.market("intraday_continuous"),
-        )
-        idc_data = idc_market.prepare_market_data(forecasts)
-        idc_price_col = idc_market.signal_column("price")
-        da_price_col = self.config.market_signal("day_ahead", "price")
-        if da_price_col not in forecasts.columns:
-            forecasts = forecasts.copy()
-            forecasts[da_price_col] = 0.0
-
-        tax_rate = self._get_tax_rate(plant)
-        additional_charges_t = self.calculate_additional_charges_t(plant, forecasts)
-
-        da_position = self._fixed_da_position(fixed_positions, forecasts.index)
-        idc_price = idc_data["IDC_price_EUR_per_MWh"]
-        delivered_idc_price = self._delivered_electricity_price(
-            idc_price,
-            tax_rate,
-            additional_charges_t,
-        )
         gas_heat_benchmark = self.calculate_gas_based_heat_cost(plant, forecasts)
         electricity_benchmark = self.calculate_electricity_trading_benchmark(
-            plant,
-            gas_heat_benchmark,
+            plant, gas_heat_benchmark
         )
-
-        missing_price = ~idc_data["IDC_price_available"]
-        if missing_price.any():
-            warnings.warn(
-                "IDC price contains missing values. IDC action is set to zero for "
-                f"{int(missing_price.sum())} timestep(s).",
-                stacklevel=2,
-            )
-
-        grid_block = self._grid_charging_block(plant, forecasts)
-        buy_allowed = (
-            (delivered_idc_price < (electricity_benchmark - IDC_MARGIN_EUR_PER_MWH))
-            & ~missing_price
-            & ~grid_block
-        )
-        sell_allowed = (
-            delivered_idc_price > (electricity_benchmark + IDC_MARGIN_EUR_PER_MWH)
-        ) & ~missing_price
-        if not idc_market.buy_enabled:
-            buy_allowed = pd.Series(False, index=forecasts.index)
-        if not idc_market.sell_enabled:
-            sell_allowed = pd.Series(False, index=forecasts.index)
-
-        timestep_hours = self.config.timestep_minutes / 60.0
-        max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours
-        idc_buy_upper_bound = pd.Series(0.0, index=forecasts.index)
-        idc_sell_upper_bound = pd.Series(0.0, index=forecasts.index)
-        idc_buy_upper_bound.loc[buy_allowed] = (max_charge_mwh - da_position.loc[buy_allowed]).clip(
-            lower=0.0
-        )
-        idc_sell_upper_bound.loc[sell_allowed] = da_position.loc[sell_allowed].clip(lower=0.0)
-
-        signals = IDCAdjustmentSignals(
-            da_price_col=da_price_col,
-            idc_price_col=idc_price_col,
-            gas_price_col=GAS_PRICE_SIGNAL,
-            da_position_mwh=da_position,
-            idc_buy_upper_bound_mwh=idc_buy_upper_bound,
-            idc_sell_upper_bound_mwh=idc_sell_upper_bound,
-            gas_benchmark_eur_per_mwh_th=gas_heat_benchmark,
-            electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
-            additional_electricity_charge_eur_per_mwh=additional_charges_t,
-            tax_rate=tax_rate,
-            **capacity_signal_kwargs(capacity_reservation, forecasts.index),
-        )
-        if rolling:
-            return plant.solve_intraday_adjustment_rolling(
-                self.config,
-                forecasts,
-                signals,
-                initial_soc_mwh=initial_soc_mwh,
-            )
-        return plant.solve_intraday_adjustment_horizon(
+        return IntradayContinuousDecider(
             self.config,
+            plant,
             forecasts,
-            signals,
-            initial_soc_mwh=initial_soc_mwh,
-        )
+            gas_heat_benchmark,
+            electricity_benchmark,
+            IDC_MARGIN_EUR_PER_MWH,
+        ).decide(fixed_positions, capacity_reservation, initial_soc_mwh, rolling)
 
     def decide_afrr_energy(
         self,
