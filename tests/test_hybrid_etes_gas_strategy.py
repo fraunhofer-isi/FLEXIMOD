@@ -14,10 +14,8 @@ from conftest import case_config_text
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataValidationError
 from flexi_mod.simulation.simulation_runner import OutputOptions, SimulationRunner
-from flexi_mod.strategies.hybrid_etes_gas_strategy import (
-    HybridETESGasStrategy,
-    _round_bid_down_to_increment,
-)
+from flexi_mod.strategies._bids import _round_bid_down_to_increment
+from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 
 
 @pytest.fixture
