@@ -57,7 +57,7 @@ class ThermalStorage:
         initial_soc = _as_float(row.get("initial_soc"), "initial_soc", default=0.0)
         initial_soc = min(max(initial_soc, min_capacity), max_capacity)
 
-        return cls(
+        component = cls(
             max_power_charge_mw=_as_float(row.get("max_power_charge"), "max_power_charge"),
             max_power_discharge_mw=_as_float(row.get("max_power_discharge"), "max_power_discharge"),
             max_capacity_mwh=max_capacity,
@@ -74,6 +74,16 @@ class ThermalStorage:
             ),
             storage_type=_clean(row.get("storage_type"), "short-term_with_generator"),
         )
+        _validate_positive(component.max_power_charge_mw, "max_power_charge")
+        _validate_positive(component.max_power_discharge_mw, "max_power_discharge")
+        _validate_positive(component.max_capacity_mwh, "max_capacity")
+        _validate_non_negative(component.min_capacity_mwh, "min_capacity")
+        if component.min_capacity_mwh > component.max_capacity_mwh:
+            raise ValueError("Plant parameter 'min_capacity' cannot exceed 'max_capacity'")
+        _validate_efficiency(component.efficiency_charge, "efficiency_charge")
+        _validate_efficiency(component.efficiency_discharge, "efficiency_discharge")
+        _validate_fraction(component.storage_loss_rate, "storage_loss_rate")
+        return component
 
     def add_to_model(
         self,
@@ -159,14 +169,22 @@ class GasBoiler(Boiler):
         if fuel_type != "natural_gas":
             raise ValueError("GasBoiler currently supports only fuel_type='natural_gas'")
 
-        return cls(
+        component = cls(
             max_heat_output_mw=_as_float(row.get("max_power"), "max_power"),
             min_heat_output_mw=_as_float(row.get("min_power"), "min_power", default=0.0),
             efficiency=_as_float(row.get("efficiency"), "efficiency", default=0.9),
             fuel_type=fuel_type,
-            ramp_up_mw_per_step=_as_optional_float(row.get("ramp_up")),
-            ramp_down_mw_per_step=_as_optional_float(row.get("ramp_down")),
+            ramp_up_mw_per_step=_as_optional_float(row.get("ramp_up"), "ramp_up"),
+            ramp_down_mw_per_step=_as_optional_float(row.get("ramp_down"), "ramp_down"),
         )
+        _validate_positive(component.max_heat_output_mw, "max_power")
+        _validate_non_negative(component.min_heat_output_mw, "min_power")
+        if component.min_heat_output_mw > component.max_heat_output_mw:
+            raise ValueError("Plant parameter 'min_power' cannot exceed 'max_power'")
+        _validate_efficiency(component.efficiency, "efficiency")
+        _validate_optional_non_negative(component.ramp_up_mw_per_step, "ramp_up")
+        _validate_optional_non_negative(component.ramp_down_mw_per_step, "ramp_down")
+        return component
 
     def add_to_model(
         self,
@@ -227,13 +245,21 @@ class ElectricBoiler(Boiler):
 
     @classmethod
     def from_row(cls, row: pd.Series) -> ElectricBoiler:
-        return cls(
+        component = cls(
             max_electricity_input_mw=_as_float(row.get("max_power"), "max_power"),
             min_electricity_input_mw=_as_float(row.get("min_power"), "min_power", default=0.0),
             efficiency=_as_float(row.get("efficiency"), "efficiency", default=1.0),
-            ramp_up_mw_per_step=_as_optional_float(row.get("ramp_up")),
-            ramp_down_mw_per_step=_as_optional_float(row.get("ramp_down")),
+            ramp_up_mw_per_step=_as_optional_float(row.get("ramp_up"), "ramp_up"),
+            ramp_down_mw_per_step=_as_optional_float(row.get("ramp_down"), "ramp_down"),
         )
+        _validate_positive(component.max_electricity_input_mw, "max_power")
+        _validate_non_negative(component.min_electricity_input_mw, "min_power")
+        if component.min_electricity_input_mw > component.max_electricity_input_mw:
+            raise ValueError("Plant parameter 'min_power' cannot exceed 'max_power'")
+        _validate_efficiency(component.efficiency, "efficiency")
+        _validate_optional_non_negative(component.ramp_up_mw_per_step, "ramp_up")
+        _validate_optional_non_negative(component.ramp_down_mw_per_step, "ramp_down")
+        return component
 
     def add_to_model(
         self,
@@ -338,7 +364,8 @@ class ElectricVehicle:
                 row.get("storage_loss_rate"), "storage_loss_rate", default=0.0
             ),
             mileage_mwh_per_km=_as_optional_float(
-                _first_value(row, "mileage_mwh_per_km", "mileage")
+                _first_value(row, "mileage_mwh_per_km", "mileage"),
+                "mileage_mwh_per_km",
             ),
             power_flow_directionality=directionality,
             availability_column=_clean(
@@ -348,7 +375,7 @@ class ElectricVehicle:
                 _first_value(row, "trip_energy_column", "trip_energy_consumption")
             ),
             trip_distance_column=_clean(_first_value(row, "trip_distance_column", "trip_distance")),
-            terminal_soc_fraction=_as_optional_float(row.get("terminal_soc")),
+            terminal_soc_fraction=_as_optional_float(row.get("terminal_soc"), "terminal_soc"),
             degradation_cost_eur_per_mwh=_as_float(
                 row.get("degradation_cost_eur_per_mwh"),
                 "degradation_cost_eur_per_mwh",
@@ -1114,10 +1141,10 @@ def _as_float(value: Any, label: str, default: float | None = None) -> float:
     return number
 
 
-def _as_optional_float(value: Any) -> float | None:
+def _as_optional_float(value: Any, label: str) -> float | None:
     if pd.isna(value) or str(value).strip() == "":
         return None
-    return float(value)
+    return _as_float(value, label)
 
 
 def _first_value(row: pd.Series, *columns: str, default: Any = None) -> Any:
@@ -1189,6 +1216,11 @@ def _validate_non_negative(value: float, label: str) -> None:
 def _validate_fraction(value: float, label: str) -> None:
     if not 0.0 <= value <= 1.0:
         raise ValueError(f"Plant parameter '{label}' must be between zero and one")
+
+
+def _validate_optional_non_negative(value: float | None, label: str) -> None:
+    if value is not None:
+        _validate_non_negative(value, label)
 
 
 def _validate_efficiency(value: float, label: str) -> None:

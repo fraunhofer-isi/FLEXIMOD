@@ -67,6 +67,45 @@ def test_steam_generation_plant_exposes_modeler_facing_build_sequence() -> None:
     assert hasattr(model, "objective")
 
 
+def test_steam_parameter_errors_identify_plant_and_technology() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    rows = DataLoader(config, input_dir=CASE_DIR).load_plants()
+    rows.loc[rows["technology"] == "boiler", "efficiency"] = 1.1
+
+    with pytest.raises(
+        ValueError,
+        match="Steam plant 'plant_1', technology 'boiler'.*efficiency",
+    ):
+        SteamGenerationPlant.from_plants_dataframe(rows)
+
+
+def test_steam_forecast_errors_name_the_missing_input() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    plant = SteamGenerationPlant.from_plants_dataframe(
+        DataLoader(config, input_dir=CASE_DIR).load_plants()
+    )[0]
+    index = pd.date_range("2025-01-01 00:00", periods=2, freq="15min")
+    forecasts = pd.DataFrame(
+        {
+            "plant_1_heat_demand": [2.0, 2.0],
+            "DE_DA_price": [120.0, 120.0],
+        },
+        index=index,
+    )
+    signals = DispatchSignals(
+        electricity_price_col="DE_DA_price",
+        gas_price_col="natural_gas_price",
+        gas_benchmark_eur_per_mwh_th=pd.Series(0.0, index=index),
+        charge_allowed=pd.Series(False, index=index),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Steam plant 'plant_1'.*forecasts_df.csv.*natural_gas_price",
+    ):
+        plant.build_model(SteamMarketStage.DAY_AHEAD, config, forecasts, signals)
+
+
 def test_steam_generation_plant_short_horizon_solves() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
     loader = DataLoader(config, input_dir=CASE_DIR)

@@ -148,3 +148,34 @@ def test_data_loader_resolves_bus_depot_profiles() -> None:
     required = DataLoader(config).required_forecast_columns(_depot_rows())
 
     assert {"depot_demand", "bus_availability", "bus_trip_energy"}.issubset(required)
+
+
+def test_building_parameter_errors_identify_building_and_technology() -> None:
+    rows = _depot_rows()
+    rows.loc[0, "max_power_charge"] = float("inf")
+
+    with pytest.raises(
+        ValueError,
+        match="Building 'bangkok_depot', technology 'electric_vehicle'.*max_power_charge",
+    ):
+        Building.from_rows("bangkok_depot", rows)
+
+
+def test_building_forecast_errors_name_the_missing_input() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    building = Building.from_rows("bangkok_depot", _depot_rows())
+    index = pd.date_range("2025-01-01", periods=2, freq="15min")
+    forecasts = pd.DataFrame(
+        {
+            "depot_demand": [0.0, 0.0],
+            "bus_availability": [1.0, 1.0],
+            "import_price": [10.0, 10.0],
+        },
+        index=index,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Building 'bangkok_depot'.*forecasts_df.csv.*bus_trip_energy",
+    ):
+        building.build_model(config, forecasts, electricity_price_column="import_price")

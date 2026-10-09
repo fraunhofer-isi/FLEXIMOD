@@ -157,6 +157,23 @@ The canonical Python import package is `flexi_mod`. Model configuration, data
 loading, plant components, strategies, ledgers, simulation orchestration, and
 visualisation utilities all live under this namespace.
 
+The package root contains only package metadata. Every implementation module
+belongs to one responsibility-specific subpackage:
+
+- `config/`: case schema and configuration loading;
+- `data/`: external input-file loading and normalization;
+- `modeling/`: shared Pyomo construction, solved-value, and input-validation
+  helpers;
+- `plants/`: physical plant and technology equations;
+- `markets/` and `strategies/`: market rules and operator decisions;
+- `regulations/`: country-specific tariff and settlement rules;
+- `outputs/` and `ledgers/`: solved-model result mapping and economic records;
+- `simulation/`: orchestration and command-line entry points; and
+- `visualisation/`: analysis and plots.
+
+New modules should be placed by this responsibility, rather than added directly
+under `flexi_mod`.
+
 Important modules:
 
 ```text
@@ -167,9 +184,13 @@ src/flexi_mod/markets/day_ahead.py
 src/flexi_mod/markets/intraday_continuous.py
 src/flexi_mod/markets/afrr_energy.py
 src/flexi_mod/plants/technologies.py
+src/flexi_mod/modeling/validation.py
+src/flexi_mod/modeling/pyomo_utils.py
 src/flexi_mod/plants/steam_generation_plant.py
 src/flexi_mod/plants/steel_plant.py
 src/flexi_mod/plants/cement_plant.py
+src/flexi_mod/outputs/result_mappers.py
+src/flexi_mod/regulations/grid_fees.py
 src/flexi_mod/strategies/base_strategy.py
 src/flexi_mod/strategies/hybrid_etes_gas_strategy.py
 src/flexi_mod/ledgers/market_ledger.py
@@ -249,7 +270,7 @@ the current MVP.
 
 If the selected `cases.<case_name>` entry sets `additional_charges: true`,
 `additional_charges.csv` is interpreted by the network-tariff regulation selected
-from `case.country` (`src/flexi_mod/regulations.py`). The regulation is the single
+from `case.country` (`src/flexi_mod/regulations/grid_fees.py`). The regulation is the single
 seam between national network rules and the engine, exposing a small
 country-agnostic interface:
 
@@ -273,8 +294,16 @@ The plant model follows a reference-style split:
 
 - `technologies.py` defines technology classes, attributes, Pyomo variables,
   parameters, and component-level constraints.
+- `modeling/validation.py` provides the shared mechanics for component-row
+  context, forecast-column checks, numeric profiles, profile ranges, and
+  time-indexed Pyomo parameters.
 - `steam_generation_plant.py` connects those technologies into one plant-level
   Pyomo model.
+
+Plant and technology modules retain rules that depend on their physical
+meaning: supported topologies, fuel modes, component limits, and market-stage
+semantics. This is the same separation used by ASSUME's units: shared mechanics
+are reusable, while a component validates the inputs only it can interpret.
 
 For the first case, the plant contains:
 
@@ -312,6 +341,12 @@ fixed market positions create impossible storage operation, Pyomo reports the
 case as infeasible.
 
 ## Output Layer
+
+`outputs/result_mappers.py` is the synchronous output boundary.  A mapper reads
+the solved Pyomo model for a supported plant type and returns the stable
+dispatch-result table used by ledgers, analytics, plots, and file output.  The
+plant module owns the physical model; the mapper owns table assembly.  The
+simulation runner still owns when and where result tables are persisted.
 
 The main output files are:
 

@@ -19,6 +19,11 @@ and component values when it is constructed with `from_rows()`. Calling
 creating Pyomo components. Errors therefore identify the plant, technology, or
 missing `forecasts_df.csv` column that must be corrected.
 
+For an explicit pre-flight check, call `validate_inputs()` on the physical
+plant: building, steel, and cement accept their forecasts plus price-column
+arguments; steam also accepts its market stage and signal object. `build_model()`
+and `solve_horizon()` invoke the same validation automatically.
+
 ## Shared conventions
 
 | Item | Convention |
@@ -59,6 +64,9 @@ The existing market-stage methods take their price and position signals through
 day-ahead stage, forecasts normally include the configured electricity-price
 column, `natural_gas_price`, and the heat-demand column. `co2_price` is only
 needed when it is selected in the stage signals.
+
+An empty intraday-price value is the existing explicit exception: it is handled
+as a no-action interval and the steam strategy emits a data-quality warning.
 
 ## Steel plant
 

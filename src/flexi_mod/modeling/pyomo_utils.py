@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Reusable pandas and Pyomo helpers for plant optimization models."""
+"""Reusable pandas and Pyomo helpers for optimisation models."""
 
 from __future__ import annotations
 

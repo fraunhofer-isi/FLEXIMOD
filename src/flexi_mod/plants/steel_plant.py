@@ -13,10 +13,8 @@ the physical model without duplicating its equations.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
-import numpy as np
 import pandas as pd
 import pyomo.environ as pyo
 from pyomo.common.errors import ApplicationError
@@ -24,12 +22,17 @@ from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.plants.base_plant import BasePlant
-from flexi_mod.plants.model_utils import (
+from flexi_mod.modeling.pyomo_utils import (
     available_pyomo_solvers,
     is_infeasible_termination,
-    pyomo_value,
 )
+from flexi_mod.modeling.validation import (
+    component_from_row,
+    numeric_forecast,
+    time_parameter,
+    validate_required_forecasts,
+)
+from flexi_mod.plants.base_plant import BasePlant
 from flexi_mod.plants.technologies import (
     DRIPlant,
     ElectricArcFurnace,
@@ -72,13 +75,15 @@ class SteelPlant(BasePlant):
             raise ValueError(f"Steel plant '{plant_name}' can define at most one electrolyser")
 
         component_rows = normalised.set_index("technology", drop=False)
-        dri = _component_from_row(
+        dri = component_from_row(
+            "Steel plant",
             plant_name,
             "dri_plant",
             DRIPlant.from_row,
             component_rows.loc["dri_plant"],
         )
-        eaf = _component_from_row(
+        eaf = component_from_row(
+            "Steel plant",
             plant_name,
             "eaf",
             ElectricArcFurnace.from_row,
@@ -86,7 +91,8 @@ class SteelPlant(BasePlant):
         )
         components: dict[str, object] = {"dri_plant": dri, "eaf": eaf}
         if "electrolyser" in component_rows.index:
-            components["electrolyser"] = _component_from_row(
+            components["electrolyser"] = component_from_row(
+                "Steel plant",
                 plant_name,
                 "electrolyser",
                 Electrolyser.from_row,
@@ -153,7 +159,9 @@ class SteelPlant(BasePlant):
 
         model = self.build_model(config, forecasts, electricity_price_column)
         solver_name = _solve_model(self.name, model, config)
-        return _extract_results(self, model, forecasts, solver_name)
+        from flexi_mod.outputs.result_mappers import extract_dispatch_results
+
+        return extract_dispatch_results(self, model, forecasts, solver_name)
 
     def build_model(
         self,
@@ -181,12 +189,12 @@ class SteelPlant(BasePlant):
         """Validate this plant's forecast contract before building Pyomo objects."""
 
         required = self.required_forecast_columns() | {electricity_price_column}
-        _check_forecasts(forecasts, required, self.name)
+        validate_required_forecasts(forecasts, required, f"Steel plant '{self.name}'")
         for column in sorted(required):
-            _numeric_forecast(
+            numeric_forecast(
                 forecasts,
                 column,
-                self.name,
+                f"Steel plant '{self.name}'",
                 require_non_negative=column == self.steel_demand_column,
             )
 
@@ -203,12 +211,12 @@ class SteelPlant(BasePlant):
         """Add unit-consistent demand and commodity-price parameters."""
 
         model.dt_hours = pyo.Param(initialize=config.timestep_minutes / 60.0)
-        model.steel_demand = _time_parameter(
+        model.steel_demand = time_parameter(
             model,
-            _numeric_forecast(
+            numeric_forecast(
                 forecasts,
                 self.steel_demand_column,
-                self.name,
+                f"Steel plant '{self.name}'",
                 require_non_negative=True,
             ),
         )
@@ -221,11 +229,11 @@ class SteelPlant(BasePlant):
             "co2_price": "co2_price",
         }.items():
             values = (
-                _numeric_forecast(forecasts, column, self.name)
+                numeric_forecast(forecasts, column, f"Steel plant '{self.name}'")
                 if column in forecasts.columns
                 else pd.Series(0.0, index=forecasts.index)
             )
-            setattr(model, parameter_name, _time_parameter(model, values))
+            setattr(model, parameter_name, time_parameter(model, values))
 
     def initialize_components(self, model: pyo.ConcreteModel) -> None:
         """Add independent DRI, EAF, and optional electrolyser blocks."""
@@ -287,56 +295,6 @@ class SteelPlant(BasePlant):
         )
 
 
-def _time_parameter(model: pyo.ConcreteModel, values: pd.Series) -> pyo.Param:
-    return pyo.Param(
-        model.T,
-        initialize={t: float(values.iloc[t]) for t in model.T},
-    )
-
-
-def _numeric_forecast(
-    forecasts: pd.DataFrame,
-    column: str,
-    plant_name: str,
-    require_non_negative: bool = False,
-) -> pd.Series:
-    values = pd.to_numeric(forecasts[column], errors="coerce")
-    if values.isna().any() or not np.isfinite(values).all():
-        raise ValueError(
-            f"Steel plant '{plant_name}' forecast '{column}' must be finite and numeric"
-        )
-    if require_non_negative and (values < 0.0).any():
-        raise ValueError(f"Steel plant '{plant_name}' forecast '{column}' cannot be negative")
-    return values.astype(float)
-
-
-def _check_forecasts(
-    forecasts: pd.DataFrame,
-    required_columns: set[str],
-    plant_name: str,
-) -> None:
-    missing = sorted(required_columns - set(forecasts.columns))
-    if missing:
-        raise ValueError(
-            f"Steel plant '{plant_name}' cannot build dispatch: forecasts_df.csv is missing "
-            "required column(s): " + ", ".join(missing)
-        )
-
-
-def _component_from_row[T](
-    plant_name: str,
-    technology: str,
-    factory: Callable[[pd.Series], T],
-    row: pd.Series,
-) -> T:
-    """Add plant and technology context to component-row validation errors."""
-
-    try:
-        return factory(row)
-    except ValueError as exc:
-        raise ValueError(f"Steel plant '{plant_name}', technology '{technology}': {exc}") from exc
-
-
 def _solve_model(plant_name: str, model: pyo.ConcreteModel, config: CaseConfig) -> str:
     errors: list[str] = []
     for solver_name, solver in available_pyomo_solvers(config):
@@ -357,29 +315,3 @@ def _solve_model(plant_name: str, model: pyo.ConcreteModel, config: CaseConfig) 
         except (ApplicationError, NoFeasibleSolutionError) as exc:
             errors.append(f"{solver_name}: {exc}")
     raise RuntimeError("Steel dispatch failed for all configured solvers. " + " | ".join(errors))
-
-
-def _extract_results(
-    plant: SteelPlant,
-    model: pyo.ConcreteModel,
-    forecasts: pd.DataFrame,
-    solver_name: str,
-) -> pd.DataFrame:
-    records = []
-    for t, _timestamp in enumerate(forecasts.index):
-        row = {
-            "plant_name": plant.name,
-            "unit_type": plant.unit_type,
-            "steel_demand_t": pyomo_value(model.steel_demand[t]),
-            "steel_output_t": pyomo_value(model.eaf.steel_output[t]),
-            "dri_output_t": pyomo_value(model.dri_plant.dri_output[t]),
-            "electricity_consumption_MWh": pyomo_value(model.total_power_input[t]),
-            "natural_gas_consumption_MWh": pyomo_value(model.dri_plant.natural_gas_in[t]),
-            "hydrogen_consumption_MWh": pyomo_value(model.dri_plant.hydrogen_in[t]),
-            "variable_cost_EUR": pyomo_value(model.variable_cost[t]),
-            "solver": solver_name,
-        }
-        if hasattr(model, "electrolyser"):
-            row["hydrogen_production_MWh"] = pyomo_value(model.electrolyser.hydrogen_out[t])
-        records.append(row)
-    return pd.DataFrame(records, index=forecasts.index)

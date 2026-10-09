@@ -12,7 +12,7 @@ is **static** or **dynamic**. Use it when preparing input data for a case.
 
 The country is selected by `country:` in the case `config.yaml`
 (`DE` / `ES` / `FR`), which picks the matching regulation in
-[`src/flexi_mod/regulations.py`](../src/flexi_mod/regulations.py).
+[`src/flexi_mod/regulations/grid_fees.py`](../src/flexi_mod/regulations/grid_fees.py).
 
 ## The two input files
 

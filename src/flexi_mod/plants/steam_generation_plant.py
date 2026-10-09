@@ -24,17 +24,21 @@ from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.plants.base_plant import BasePlant
-from flexi_mod.plants.model_utils import (
+from flexi_mod.modeling.pyomo_utils import (
     available_pyomo_solvers,
     forecast_values_or_zero,
     is_infeasible_termination,
     pyomo_value,
-    series_float_or_nan,
     series_or_zero,
     series_value,
     slice_dataclass_series,
 )
+from flexi_mod.modeling.validation import (
+    component_from_row,
+    numeric_forecast,
+    validate_required_forecasts,
+)
+from flexi_mod.plants.base_plant import BasePlant
 from flexi_mod.plants.technologies import (
     TECHNOLOGY_REGISTRY,
     ElectricBoiler,
@@ -83,7 +87,13 @@ class SteamGenerationPlant(BasePlant):
                 raise ValueError(
                     f"Plant '{plant_name}' defines duplicate technology '{technology}'"
                 )
-            components[technology] = TECHNOLOGY_REGISTRY[technology].from_row(row)
+            components[technology] = component_from_row(
+                "Steam plant",
+                plant_name,
+                technology,
+                TECHNOLOGY_REGISTRY[technology].from_row,
+                row,
+            )
 
         if "boiler" not in components:
             raise ValueError(f"Plant '{plant_name}' does not define a boiler row")
@@ -349,14 +359,16 @@ class SteamGenerationPlant(BasePlant):
                 TerminationCondition.feasible,
             }:
                 route.warn_after_solve(model, _stage_warning_label(stage))
-                return _extract_stage_results(
+                from flexi_mod.outputs.result_mappers import extract_dispatch_results
+
+                return extract_dispatch_results(
                     self,
-                    stage,
                     model,
-                    config,
                     forecasts,
-                    signals,
                     candidate_name,
+                    config=config,
+                    stage=stage,
+                    signals=signals,
                 )
 
             if is_infeasible_termination(termination):
@@ -384,7 +396,7 @@ class SteamGenerationPlant(BasePlant):
         physical balance and objective.  Route classes retain the technology-
         specific equations so that this orchestration stays readable.
         """
-        _validate_stage_signal_type(stage, signals)
+        self.validate_inputs(stage, forecasts, signals, initial_soc_mwh)
         model = pyo.ConcreteModel(name=f"{self.name}_{stage.value}")
         model.T = pyo.Set(initialize=range(len(forecasts)), ordered=True)
         heat_demand = self.define_parameters(model, config, forecasts, signals)
@@ -395,6 +407,74 @@ class SteamGenerationPlant(BasePlant):
         self.define_objective(model)
         return model
 
+    def required_forecast_columns(
+        self,
+        stage: SteamMarketStage,
+        signals: SteamSignals,
+    ) -> set[str]:
+        """Return the forecast columns used by one configured market stage."""
+
+        _validate_stage_signal_type(stage, signals)
+        required = {self.heat_demand_column, signals.gas_price_col}
+        if signals.co2_price_col:
+            required.add(signals.co2_price_col)
+        if stage == SteamMarketStage.DAY_AHEAD:
+            required.add(cast(DispatchSignals, signals).electricity_price_col)
+        elif stage == SteamMarketStage.INTRADAY:
+            intraday_signals = cast(IDCAdjustmentSignals, signals)
+            required.update({intraday_signals.da_price_col, intraday_signals.idc_price_col})
+        else:
+            afrr_signals = cast(AFRRDownSignals, signals)
+            required.update({afrr_signals.da_price_col, afrr_signals.idc_price_col})
+        return required
+
+    def validate_inputs(
+        self,
+        stage: SteamMarketStage,
+        forecasts: pd.DataFrame,
+        signals: SteamSignals,
+        initial_soc_mwh: float | None = None,
+    ) -> None:
+        """Validate one stage's physical and price inputs before Pyomo creation."""
+
+        required = self.required_forecast_columns(stage, signals)
+        subject = f"Steam plant '{self.name}'"
+        validate_required_forecasts(forecasts, required, subject, operation=stage.value)
+        missing_value_allowed = (
+            cast(IDCAdjustmentSignals, signals).idc_price_col
+            if stage == SteamMarketStage.INTRADAY
+            else cast(AFRRDownSignals, signals).idc_price_col
+            if stage == SteamMarketStage.AFRR_ENERGY
+            else None
+        )
+        for column in sorted(required):
+            numeric_forecast(
+                forecasts,
+                column,
+                subject,
+                require_non_negative=column == self.heat_demand_column,
+                allow_missing_values=column == missing_value_allowed,
+            )
+
+        for label, value in {
+            "co2_emission_factor_t_per_mwh_fuel": signals.co2_emission_factor_t_per_mwh_fuel,
+            "tax_rate": signals.tax_rate,
+        }.items():
+            if not np.isfinite(float(value)):
+                raise ValueError(f"Steam plant '{self.name}' signal '{label}' must be finite")
+
+        if initial_soc_mwh is not None:
+            if not np.isfinite(initial_soc_mwh):
+                raise ValueError(f"Steam plant '{self.name}' initial_soc_mwh must be finite")
+            storage = self.components.get("thermal_storage")
+            if isinstance(storage, ThermalStorage) and not (
+                storage.min_capacity_mwh <= initial_soc_mwh <= storage.max_capacity_mwh
+            ):
+                raise ValueError(
+                    f"Steam plant '{self.name}' initial_soc_mwh must be between "
+                    f"{storage.min_capacity_mwh} and {storage.max_capacity_mwh}"
+                )
+
     def define_parameters(
         self,
         model: pyo.ConcreteModel,
@@ -404,9 +484,8 @@ class SteamGenerationPlant(BasePlant):
     ) -> list[float]:
         """Attach time-series inputs common to every steam market stage."""
         steps = list(model.T)
-        heat_demand = (
-            forecasts[self.heat_demand_column].astype(float).to_numpy()
-            * (config.timestep_minutes / 60.0)
+        heat_demand = forecasts[self.heat_demand_column].astype(float).to_numpy() * (
+            config.timestep_minutes / 60.0
         )
         additional_charge = series_or_zero(
             signals.additional_electricity_charge_eur_per_mwh,
@@ -1360,306 +1439,6 @@ def _add_common_costs_and_objective(
     )
 
 
-# --- Common result table ---------------------------------------------
-
-
-def _extract_stage_results(
-    plant: SteamGenerationPlant,
-    stage: SteamMarketStage,
-    model: pyo.ConcreteModel,
-    config: CaseConfig,
-    forecasts: pd.DataFrame,
-    signals: SteamSignals,
-    solver_name: str,
-) -> pd.DataFrame:
-    route = plant.route_process
-    direct_route = route.name == DIRECT_ELECTRIC_GAS_BOILER_ROUTE
-    dt_hours = config.timestep_minutes / 60.0
-    da_price_col = (
-        signals.electricity_price_col
-        if isinstance(signals, DispatchSignals)
-        else signals.da_price_col
-    )
-    idc_price_col = (
-        signals.idc_price_col
-        if isinstance(signals, (IDCAdjustmentSignals, AFRRDownSignals))
-        else None
-    )
-    electricity_benchmark = getattr(
-        signals,
-        "electricity_trading_benchmark_eur_per_mwh_el",
-        None,
-    )
-    rows: list[dict[str, object]] = []
-
-    for position, timestamp in enumerate(forecasts.index):
-        physical = route.physical_result_fields(model, position)
-        electricity = pyomo_value(model.electricity_consumption[position])
-        da_position = pyomo_value(model.da_position_mwh[position])
-        idc_buy = pyomo_value(model.idc_buy_mwh[position])
-        idc_sell = pyomo_value(model.idc_sell_mwh[position])
-        final_planned = pyomo_value(model.final_planned_electricity_mwh[position])
-        actual_electricity = pyomo_value(model.actual_electricity_consumption_mwh[position])
-        afrr_bid = pyomo_value(model.afrr_energy_bid_mwh[position])
-        afrr_activation = pyomo_value(model.afrr_energy_activated_mwh[position])
-        day_ahead_price = float(forecasts[da_price_col].iloc[position])
-        idc_price = (
-            series_float_or_nan(
-                forecasts[idc_price_col],
-                position,
-            )
-            if idc_price_col is not None
-            else float("nan")
-        )
-        additional_charge = pyomo_value(model.additional_electricity_charge[position])
-        afrr_price = (
-            pyomo_value(model.afrr_energy_price[position])
-            if stage == SteamMarketStage.AFRR_ENERGY
-            else float("nan")
-        )
-        tax_rate = pyomo_value(model.tax_rate)
-        benchmark = (
-            float(electricity_benchmark.iloc[position])
-            if electricity_benchmark is not None
-            else float("nan")
-        )
-        default_raw_bid_price = (
-            benchmark / (1.0 + tax_rate) - additional_charge
-            if stage == SteamMarketStage.AFRR_ENERGY
-            else float("nan")
-        )
-        afrr_bid_price = (
-            float(
-                series_value(
-                    cast(AFRRDownSignals, signals).afrr_energy_bid_price,
-                    timestamp,
-                    default_raw_bid_price,
-                )
-            )
-            if stage == SteamMarketStage.AFRR_ENERGY
-            else float("nan")
-        )
-        afrr_delivered_price = (afrr_price + additional_charge) * (1.0 + tax_rate)
-        afrr_delivered_bid_price = (
-            float(
-                series_value(
-                    cast(AFRRDownSignals, signals).afrr_energy_delivered_bid_price,
-                    timestamp,
-                    (afrr_bid_price + additional_charge) * (1.0 + tax_rate),
-                )
-            )
-            if stage == SteamMarketStage.AFRR_ENERGY
-            else float("nan")
-        )
-        afrr_market_spread = (
-            afrr_delivered_bid_price - afrr_price if stage == SteamMarketStage.AFRR_ENERGY else 0.0
-        )
-        afrr_net_spread = (
-            benchmark - afrr_delivered_price if stage == SteamMarketStage.AFRR_ENERGY else 0.0
-        )
-        afrr_reward = afrr_activation * afrr_market_spread
-        afrr_net_value = afrr_activation * afrr_net_spread
-        co2_price = (
-            float(forecasts[signals.co2_price_col].iloc[position])
-            if signals.co2_price_col and signals.co2_price_col in forecasts.columns
-            else 0.0
-        )
-        afrr_signals = (
-            cast(AFRRDownSignals, signals) if stage == SteamMarketStage.AFRR_ENERGY else None
-        )
-        default_free_volume = afrr_bid if direct_route else 0.0
-        free_bid = (
-            float(
-                series_value(
-                    afrr_signals.afrr_energy_free_bid_mwh,
-                    timestamp,
-                    default_free_volume,
-                )
-            )
-            if afrr_signals is not None
-            else 0.0
-        )
-        free_activation = (
-            float(
-                series_value(
-                    afrr_signals.afrr_energy_free_activated_mwh,
-                    timestamp,
-                    afrr_activation if direct_route else 0.0,
-                )
-            )
-            if afrr_signals is not None
-            else 0.0
-        )
-        capacity_backed_bid = (
-            0.0
-            if direct_route or afrr_signals is None
-            else float(
-                series_value(
-                    afrr_signals.afrr_energy_capacity_backed_bid_mwh,
-                    timestamp,
-                    0.0,
-                )
-            )
-        )
-        capacity_backed_activation = (
-            0.0
-            if direct_route or afrr_signals is None
-            else float(
-                series_value(
-                    afrr_signals.afrr_energy_capacity_backed_activated_mwh,
-                    timestamp,
-                    0.0,
-                )
-            )
-        )
-        electricity_market_cost = pyomo_value(model.electricity_market_cost[position])
-        additional_cost = pyomo_value(model.additional_electricity_charges_cost[position])
-        electricity_cost = pyomo_value(model.electricity_cost[position])
-        tax_cost = pyomo_value(model.tax_cost[position])
-        gas_cost = pyomo_value(model.gas_cost[position])
-        co2_cost = pyomo_value(model.co2_cost[position])
-
-        row: dict[str, object] = {
-            "datetime": timestamp,
-            "plant_name": plant.name,
-            "heat_demand_MWh": (
-                float(forecasts[plant.heat_demand_column].iloc[position]) * dt_hours
-            ),
-            "day_ahead_price_EUR_per_MWh": day_ahead_price,
-            "IDC_price_EUR_per_MWh": idc_price,
-            "additional_electricity_charge_EUR_per_MWh_el": (additional_charge),
-            "day_ahead_delivered_price_EUR_per_MWh": (
-                (day_ahead_price + additional_charge) * (1.0 + tax_rate)
-            ),
-            "IDC_delivered_price_EUR_per_MWh": ((idc_price + additional_charge) * (1.0 + tax_rate)),
-            "afrr_energy_delivered_price_EUR_per_MWh": (afrr_delivered_price),
-            "gas_price_EUR_per_MWh": float(forecasts[signals.gas_price_col].iloc[position]),
-            "co2_price_EUR_per_t": co2_price,
-            "day_ahead_price_signal": da_price_col,
-            "IDC_price_signal": idc_price_col or "",
-            "gas_price_signal": signals.gas_price_col,
-            "co2_price_signal": signals.co2_price_col or "",
-            "gas_based_heat_benchmark_EUR_per_MWh_th": float(
-                signals.gas_benchmark_eur_per_mwh_th.iloc[position]
-            ),
-            "electricity_trading_benchmark_EUR_per_MWh_el": benchmark,
-            **physical,
-            "electricity_consumption_MWh": electricity,
-            "DA_position_MWh": da_position,
-            "IDC_buy_MWh": idc_buy,
-            "IDC_sell_MWh": idc_sell,
-            "final_planned_electricity_MWh": final_planned,
-            "actual_electricity_consumption_MWh": actual_electricity,
-            "DA_electricity_cost_EUR": pyomo_value(model.da_electricity_cost[position]),
-            "IDC_buy_cost_EUR": pyomo_value(model.idc_buy_cost[position]),
-            "IDC_sell_revenue_EUR": pyomo_value(model.idc_sell_revenue[position]),
-            "afrr_energy_bid_MWh": afrr_bid,
-            "afrr_energy_bid_MW": (afrr_bid / dt_hours if dt_hours > 0 else 0.0),
-            "afrr_energy_activated_MWh": afrr_activation,
-            "afrr_energy_price_EUR_per_MWh": afrr_price,
-            "afrr_system_activation_MWh": (
-                float(afrr_signals.afrr_system_activation_mwh.iloc[position])
-                if afrr_signals is not None
-                else 0.0
-            ),
-            "afrr_energy_bid_price_EUR_per_MWh": afrr_bid_price,
-            "afrr_energy_delivered_bid_price_EUR_per_MWh": (afrr_delivered_bid_price),
-            "afrr_energy_market_spread_EUR_per_MWh": afrr_market_spread,
-            "afrr_energy_net_spread_EUR_per_MWh": afrr_net_spread,
-            "afrr_energy_cost_EUR": pyomo_value(model.afrr_energy_cost[position]),
-            "afrr_energy_savings_vs_benchmark_EUR": afrr_net_value,
-            "afrr_energy_pay_as_cleared_reward_EUR": afrr_reward,
-            "afrr_energy_net_value_after_charges_EUR": afrr_net_value,
-            "afrr_energy_capacity_backed_bid_MWh": capacity_backed_bid,
-            "afrr_energy_free_bid_MWh": free_bid,
-            "afrr_energy_capacity_backed_activated_MWh": (capacity_backed_activation),
-            "afrr_energy_free_activated_MWh": free_activation,
-            "afrr_headroom_binding": (
-                bool(
-                    series_value(
-                        afrr_signals.afrr_headroom_binding,
-                        timestamp,
-                        False,
-                    )
-                )
-                if afrr_signals is not None
-                else False
-            ),
-            "afrr_curtailment_MWh": (
-                float(
-                    series_value(
-                        afrr_signals.afrr_curtailment_mwh,
-                        timestamp,
-                        0.0,
-                    )
-                )
-                if afrr_signals is not None
-                else 0.0
-            ),
-            "electricity_market_cost_EUR": electricity_market_cost,
-            "additional_electricity_charges_cost_EUR": additional_cost,
-            "electricity_cost_EUR": electricity_cost,
-            "tax_cost_EUR": tax_cost,
-            "gas_cost_EUR": gas_cost,
-            "co2_cost_EUR": co2_cost,
-            "operating_cost_EUR": (electricity_cost + gas_cost + co2_cost + tax_cost),
-            "charge_allowed_by_strategy": _charge_allowed_flag(
-                stage,
-                signals,
-                position,
-                direct_route,
-            ),
-            "idc_buy_allowed_by_strategy": (
-                bool(
-                    cast(
-                        IDCAdjustmentSignals,
-                        signals,
-                    ).idc_buy_upper_bound_mwh.iloc[position]
-                    > 1e-12
-                )
-                if stage == SteamMarketStage.INTRADAY
-                else False
-            ),
-            "idc_sell_allowed_by_strategy": (
-                bool(
-                    cast(
-                        IDCAdjustmentSignals,
-                        signals,
-                    ).idc_sell_upper_bound_mwh.iloc[position]
-                    > 1e-12
-                )
-                if stage == SteamMarketStage.INTRADAY
-                else False
-            ),
-            "afrr_energy_bid_allowed_by_strategy": bool(afrr_bid > 1e-12),
-            "solver": solver_name,
-        }
-        row.update(
-            route.capacity_result_fields(
-                signals,
-                timestamp,
-                dt_hours,
-                final_planned,
-                physical,
-                plant.components,
-            )
-        )
-        row["gross_operating_cost_EUR"] = row["operating_cost_EUR"]
-        row["net_operating_cost_EUR"] = float(row["gross_operating_cost_EUR"]) - float(
-            row["afrr_capacity_revenue_EUR"]
-        )
-        _preserve_legacy_stage_schema(row, stage, direct_route)
-        rows.append(row)
-
-    frame = pd.DataFrame(rows).set_index("datetime")
-    numeric_columns = frame.select_dtypes(include=["number"]).columns
-    frame[numeric_columns] = frame[numeric_columns].mask(
-        frame[numeric_columns].abs() < 1e-9,
-        0.0,
-    )
-    return frame
-
-
 def _add_market_cost_expressions(model: pyo.ConcreteModel) -> None:
     model.da_electricity_cost = pyo.Expression(
         model.T,
@@ -1720,57 +1499,6 @@ def _stage_warning_label(stage: SteamMarketStage) -> str:
         SteamMarketStage.INTRADAY: "intraday adjustment",
         SteamMarketStage.AFRR_ENERGY: "aFRR down adjustment",
     }[stage]
-
-
-def _charge_allowed_flag(
-    stage: SteamMarketStage,
-    signals: SteamSignals,
-    position: int,
-    direct_route: bool,
-) -> bool:
-    if stage == SteamMarketStage.DAY_AHEAD:
-        return bool(cast(DispatchSignals, signals).charge_allowed.iloc[position])
-    if stage == SteamMarketStage.INTRADAY and not direct_route:
-        return bool(
-            cast(
-                IDCAdjustmentSignals,
-                signals,
-            ).idc_buy_upper_bound_mwh.iloc[position]
-            > 1e-12
-        )
-    return False
-
-
-def _preserve_legacy_stage_schema(
-    row: dict[str, object],
-    stage: SteamMarketStage,
-    direct_route: bool,
-) -> None:
-    if stage != SteamMarketStage.AFRR_ENERGY:
-        row.pop("afrr_energy_delivered_bid_price_EUR_per_MWh", None)
-    if direct_route:
-        return
-    if stage == SteamMarketStage.DAY_AHEAD:
-        for column in (
-            "IDC_price_signal",
-            "IDC_delivered_price_EUR_per_MWh",
-            "afrr_energy_delivered_price_EUR_per_MWh",
-            "electricity_trading_benchmark_EUR_per_MWh_el",
-            "idc_buy_allowed_by_strategy",
-            "idc_sell_allowed_by_strategy",
-            "afrr_energy_bid_allowed_by_strategy",
-            "afrr_headroom_binding",
-            "afrr_curtailment_MWh",
-        ):
-            row.pop(column, None)
-    elif stage == SteamMarketStage.INTRADAY:
-        for column in (
-            "afrr_energy_delivered_price_EUR_per_MWh",
-            "afrr_energy_bid_allowed_by_strategy",
-            "afrr_headroom_binding",
-            "afrr_curtailment_MWh",
-        ):
-            row.pop(column, None)
 
 
 def _validate_fixed_afrr_instruction(
