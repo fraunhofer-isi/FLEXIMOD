@@ -21,6 +21,7 @@ from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.data.data_loader import PlantDefinition
 from flexi_mod.modeling.pyomo_utils import (
     available_pyomo_solvers,
     is_infeasible_termination,
@@ -48,6 +49,17 @@ class CementPlant(BasePlant):
     clinker_demand_column: str = ""
     raw_meal_to_clinker_ratio: float = 1.55
     components: dict[str, object] = field(default_factory=dict)
+
+    @classmethod
+    def from_definition(cls, definition: PlantDefinition) -> CementPlant:
+        """Build from the common grouped input representation from ``DataLoader``."""
+
+        if definition.unit_type != "cement_plant":
+            raise ValueError(
+                f"Plant '{definition.name}' has unit_type='{definition.unit_type}', "
+                "not 'cement_plant'"
+            )
+        return cls.from_rows(definition.name, definition.to_rows())
 
     @classmethod
     def from_rows(cls, plant_name: str, rows: pd.DataFrame) -> CementPlant:

@@ -22,6 +22,7 @@ from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.data.data_loader import PlantDefinition
 from flexi_mod.modeling.pyomo_utils import (
     available_pyomo_solvers,
     is_infeasible_termination,
@@ -54,6 +55,17 @@ class SteelPlant(BasePlant):
     # ------------------------------------------------------------------
     # Input rows -> physical technology instances
     # ------------------------------------------------------------------
+    @classmethod
+    def from_definition(cls, definition: PlantDefinition) -> SteelPlant:
+        """Build from the common grouped input representation from ``DataLoader``."""
+
+        if definition.unit_type != "steel_plant":
+            raise ValueError(
+                f"Plant '{definition.name}' has unit_type='{definition.unit_type}', "
+                "not 'steel_plant'"
+            )
+        return cls.from_rows(definition.name, definition.to_rows())
+
     @classmethod
     def from_rows(cls, plant_name: str, rows: pd.DataFrame) -> SteelPlant:
         if rows.empty:

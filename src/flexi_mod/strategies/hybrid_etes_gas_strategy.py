@@ -20,7 +20,9 @@ from flexi_mod.plants.steam_generation_plant import (
     DispatchSignals,
     IDCAdjustmentSignals,
     SteamGenerationPlant,
+    SteamMarketStage,
 )
+from flexi_mod.simulation.market_stages import MarketStageContext, MarketStageResult
 from flexi_mod.strategies.base_strategy import BaseStrategy
 
 GAS_PRICE_SIGNAL = "natural_gas_price"
@@ -240,6 +242,60 @@ class HybridETESGasStrategy(BaseStrategy):
             required.add(self.config.market_signal("afrr_energy", "system_activation"))
         return required
 
+    def decide_market_stage(self, context: MarketStageContext) -> MarketStageResult:
+        """Apply the matching commercial rule to one prepared market stage."""
+
+        if not isinstance(context.plant, SteamGenerationPlant):
+            raise TypeError(
+                f"Strategy '{type(self).__name__}' requires SteamGenerationPlant, "
+                f"received {type(context.plant).__name__}"
+            )
+
+        plant = context.plant
+        market = context.market
+        commitments = context.commitments
+        if market.name == "day_ahead":
+            values = self.decide_day_ahead(
+                plant,
+                context.forecasts,
+                commitments.capacity_reservation,
+                initial_soc_mwh=context.initial_soc_mwh,
+                rolling=context.rolling,
+                market=market,
+            )
+        elif market.name == "intraday_continuous":
+            values = self.decide_intraday_continuous(
+                plant,
+                context.forecasts,
+                commitments.positions,
+                commitments.capacity_reservation,
+                initial_soc_mwh=context.initial_soc_mwh,
+                rolling=context.rolling,
+                market=market,
+            )
+        elif market.name == "afrr_energy":
+            values = self.decide_afrr_energy(
+                plant,
+                context.forecasts,
+                commitments.positions,
+                commitments.capacity_reservation,
+                initial_soc_mwh=context.initial_soc_mwh,
+                rolling=context.rolling,
+                market=market,
+            )
+        elif market.name == "afrr_capacity":
+            values = self.decide_afrr_capacity(
+                plant,
+                context.forecasts,
+                initial_soc_mwh=context.initial_soc_mwh,
+                market=market,
+            )
+        else:
+            raise NotImplementedError(
+                f"Strategy '{type(self).__name__}' does not support market '{market.name}'"
+            )
+        return context.result(values)
+
     def decide_day_ahead(
         self,
         plant: SteamGenerationPlant,
@@ -247,8 +303,9 @@ class HybridETESGasStrategy(BaseStrategy):
         capacity_reservation: pd.DataFrame | None = None,
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
+        market: DayAheadMarket | None = None,
     ) -> pd.DataFrame:
-        market = DayAheadMarket("day_ahead", self.config.market("day_ahead"))
+        market = market or DayAheadMarket("day_ahead", self.config.market("day_ahead"))
         market_data = market.prepare_market_data(forecasts)
         price_col = market.signal_column("price")
 
@@ -277,18 +334,13 @@ class HybridETESGasStrategy(BaseStrategy):
             tax_rate=tax_rate,
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
-        if rolling:
-            return plant.solve_rolling(
-                self.config,
-                forecasts,
-                signals,
-                initial_soc_mwh=initial_soc_mwh,
-            )
-        return plant.solve_horizon(
+        return plant.solve_market_stage(
             self.config,
             forecasts,
+            SteamMarketStage.DAY_AHEAD,
             signals,
             initial_soc_mwh=initial_soc_mwh,
+            rolling=rolling,
         )
 
     def decide_intraday_continuous(
@@ -299,8 +351,9 @@ class HybridETESGasStrategy(BaseStrategy):
         capacity_reservation: pd.DataFrame | None = None,
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
+        market: IntradayContinuousMarket | None = None,
     ) -> pd.DataFrame:
-        idc_market = IntradayContinuousMarket(
+        idc_market = market or IntradayContinuousMarket(
             "intraday_continuous",
             self.config.market("intraday_continuous"),
         )
@@ -371,18 +424,13 @@ class HybridETESGasStrategy(BaseStrategy):
             tax_rate=tax_rate,
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
-        if rolling:
-            return plant.solve_intraday_adjustment_rolling(
-                self.config,
-                forecasts,
-                signals,
-                initial_soc_mwh=initial_soc_mwh,
-            )
-        return plant.solve_intraday_adjustment_horizon(
+        return plant.solve_market_stage(
             self.config,
             forecasts,
+            SteamMarketStage.INTRADAY,
             signals,
             initial_soc_mwh=initial_soc_mwh,
+            rolling=rolling,
         )
 
     def decide_afrr_energy(
@@ -393,6 +441,7 @@ class HybridETESGasStrategy(BaseStrategy):
         capacity_reservation: pd.DataFrame | None = None,
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
+        market: AFRRDownEnergyMarket | None = None,
     ) -> pd.DataFrame:
         da_price_col = self.config.market_signal("day_ahead", "price")
         if da_price_col not in forecasts.columns:
@@ -403,7 +452,10 @@ class HybridETESGasStrategy(BaseStrategy):
             forecasts = forecasts.copy()
             forecasts[idc_price_col] = 0.0
         timestep_hours = self.config.timestep_minutes / 60.0
-        afrr_market = AFRRDownEnergyMarket("afrr_energy", self.config.market("afrr_energy"))
+        afrr_market = market or AFRRDownEnergyMarket(
+            "afrr_energy",
+            self.config.market("afrr_energy"),
+        )
         product_rules = afrr_market.product_rules
         min_bid_mw = float(product_rules.get("min_bid_mw", 0.0))
         bid_increment_mw = float(product_rules.get("bid_increment_mw", 1.0))
@@ -412,7 +464,11 @@ class HybridETESGasStrategy(BaseStrategy):
         tax_rate = self._get_tax_rate(plant)
         additional_charges_t = self.calculate_additional_charges_t(plant, forecasts)
 
-        cleaned = self._prepare_afrr_down_energy_data(forecasts, timestep_hours)
+        cleaned = self._prepare_afrr_down_energy_data(
+            forecasts,
+            timestep_hours,
+            market=afrr_market,
+        )
         clean_afrr = cleaned.frame
 
         da_position = self._series_from_fixed_positions(
@@ -586,18 +642,13 @@ class HybridETESGasStrategy(BaseStrategy):
             tax_rate=tax_rate,
             **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
-        if rolling:
-            return plant.solve_afrr_down_rolling(
-                self.config,
-                forecasts,
-                signals,
-                initial_soc_mwh=initial_soc_mwh,
-            )
-        return plant.solve_afrr_down_horizon(
+        return plant.solve_market_stage(
             self.config,
             forecasts,
+            SteamMarketStage.AFRR_ENERGY,
             signals,
             initial_soc_mwh=initial_soc_mwh,
+            rolling=rolling,
         )
 
     def _strict_afrr_down_offer_and_activation_split(
@@ -766,8 +817,9 @@ class HybridETESGasStrategy(BaseStrategy):
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
         initial_soc_mwh: float | None = None,
+        market: AFRRCapacityMarket | None = None,
     ) -> pd.DataFrame:
-        capacity_market = AFRRCapacityMarket(
+        capacity_market = market or AFRRCapacityMarket(
             "afrr_capacity",
             self.config.market("afrr_capacity"),
         )
@@ -1056,6 +1108,7 @@ class HybridETESGasStrategy(BaseStrategy):
         self,
         forecasts: pd.DataFrame,
         timestep_hours: float,
+        market: AFRRDownEnergyMarket | None = None,
     ):
         # NOTE: do not memoize by id(forecasts). CPython reuses object ids after
         # garbage collection, so a transient per-window forecasts copy (the direct
@@ -1063,7 +1116,7 @@ class HybridETESGasStrategy(BaseStrategy):
         # earlier window — returning aFRR data for the wrong index/length (e.g. across
         # a DST-shortened window) and silently corrupting results or raising an
         # index-mismatch. prepare_market_data is a cheap, pure function of forecasts.
-        afrr_energy_market = AFRRDownEnergyMarket(
+        afrr_energy_market = market or AFRRDownEnergyMarket(
             "afrr_energy",
             self.config.market("afrr_energy"),
         )

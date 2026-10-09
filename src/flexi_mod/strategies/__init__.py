@@ -7,9 +7,13 @@ from flexi_mod.strategies.hybrid_electric_gas_boiler_strategy import (
     HybridElectricGasBoilerStrategy,
 )
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
+from flexi_mod.strategies.industrial_day_ahead_strategy import (
+    IndustrialDayAheadCostMinimisationStrategy,
+)
 
 STRATEGY_REGISTRY = {
     "building_v2g": BuildingStrategy,
+    "industrial_day_ahead_cost_minimisation": IndustrialDayAheadCostMinimisationStrategy,
     "hybrid_electric_gas_boiler": HybridElectricGasBoilerStrategy,
     "hybrid_etes_gas": HybridETESGasStrategy,
     # Pay-as-cleared is a config-selected capacity-pricing rule inside
@@ -34,6 +38,7 @@ __all__ = [
     "BuildingStrategy",
     "HybridElectricGasBoilerStrategy",
     "HybridETESGasStrategy",
+    "IndustrialDayAheadCostMinimisationStrategy",
     "STRATEGY_REGISTRY",
     "build_strategy",
 ]

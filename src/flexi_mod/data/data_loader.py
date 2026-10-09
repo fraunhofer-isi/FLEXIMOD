@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,30 @@ class PlantDefinition:
     unit_type: str
     metadata: dict[str, Any]
     components: dict[str, dict[str, Any]]
+
+    def to_rows(self) -> pd.DataFrame:
+        """Return normalized technology rows for a typed plant constructor.
+
+        ``PlantDefinition`` is the common input contract between the loader and
+        plant factory. The dataframe view keeps existing ``from_rows`` APIs
+        available for direct model work and notebooks.
+        Component ids remain map keys; the original technology name is retained
+        in each component's data so a custom id never changes the physical type.
+        """
+
+        rows: list[dict[str, Any]] = []
+        for component_id, component in self.components.items():
+            technology = str(component.get("technology", component_id)).strip()
+            rows.append(
+                {
+                    "name": self.name,
+                    "unit_type": self.unit_type,
+                    **self.metadata,
+                    **component,
+                    "technology": technology,
+                }
+            )
+        return pd.DataFrame(rows)
 
 
 @dataclass(frozen=True)
@@ -194,10 +219,12 @@ class DataLoader:
                         f"Plant '{plant_name}' defines duplicate component '{component_key}'. "
                         "Use a unique component_id when a technology occurs more than once."
                     )
-                components[component_key] = _component_parameters(
+                component = _component_parameters(
                     row=row,
                     component_id_column=component_id_column,
                 )
+                component["technology"] = technology
+                components[component_key] = component
 
             definition = PlantDefinition(
                 name=str(plant_name),
@@ -211,6 +238,8 @@ class DataLoader:
     def load_case_inputs(
         self,
         required_columns: set[str] | None = None,
+        *,
+        plant_definitions: dict[str, list[PlantDefinition]] | None = None,
     ) -> CaseInputs:
         """Load grouped plant definitions and the validated forecast frame together.
 
@@ -219,14 +248,19 @@ class DataLoader:
         method and resolve profiles via :meth:`CaseInputs.forecast_for`.
         """
 
-        plants = self.load_plants()
+        definitions = (
+            self.load_plant_definitions() if plant_definitions is None else plant_definitions
+        )
         forecasts = self.load_forecasts(required_columns=required_columns)
         return CaseInputs(
-            plants_by_type=self.load_plant_definitions(plants),
+            plants_by_type=definitions,
             forecasts=forecasts,
         )
 
-    def load_additional_charges(self, plants: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    def load_additional_charges(
+        self,
+        plants: pd.DataFrame | Mapping[str, list[PlantDefinition]] | Iterable[PlantDefinition],
+    ) -> dict[str, pd.DataFrame]:
         """Load plant-specific network-tariff components.
 
         Returns one tidy frame per plant with columns ``component``, ``unit`` and
@@ -236,7 +270,7 @@ class DataLoader:
         has ``additional_charges`` disabled.
         """
 
-        plant_names = sorted(str(name) for name in plants["name"].dropna().unique())
+        plant_names = _plant_names(plants)
         if not self.config.additional_charges_enabled:
             return {}
 
@@ -322,9 +356,19 @@ class DataLoader:
 
     def required_forecast_columns(
         self,
-        plants: pd.DataFrame,
+        plants: (
+            pd.DataFrame | Mapping[str, list[PlantDefinition]] | Iterable[PlantDefinition] | None
+        ) = None,
         extra_required_columns: set[str] | None = None,
     ) -> set[str]:
+        """Return configured market signals plus declared physical profiles.
+
+        The runner supplies each typed plant's
+        :meth:`~flexi_mod.plants.base_plant.BasePlant.required_forecast_columns`
+        through ``extra_required_columns``. Passing ``plants`` retains the
+        earlier CSV-inference convenience for notebooks and compatibility.
+        """
+
         required = set(extra_required_columns or set())
 
         for market_name in self.config.enabled_markets:
@@ -336,7 +380,11 @@ class DataLoader:
                 continue
             required.update(str(column) for column in signals.values())
 
-        for plant_name, plant_rows in plants.groupby("name"):
+        if plants is None:
+            return required
+
+        plants_frame = _plant_rows(plants)
+        for plant_name, plant_rows in plants_frame.groupby("name"):
             unit_types = {
                 str(value).strip().lower() for value in plant_rows["unit_type"].dropna().tolist()
             }
@@ -595,10 +643,12 @@ def _local_timestamp_to_utc(
 
 
 def _demand_column_for_plant(plant_name: str, plant_rows: pd.DataFrame) -> str:
-    if "demand" in plant_rows.columns:
+    for field in ("demand", "steel_demand", "clinker_demand"):
+        if field not in plant_rows.columns:
+            continue
         values = [
             str(value).strip()
-            for value in plant_rows["demand"].dropna().tolist()
+            for value in plant_rows[field].dropna().tolist()
             if str(value).strip()
         ]
         if values:
@@ -606,7 +656,37 @@ def _demand_column_for_plant(plant_name: str, plant_rows: pd.DataFrame) -> str:
     return f"{plant_name}_heat_demand"
 
 
-_PLANT_METADATA_COLUMNS = ("node", "objective", "demand")
+def _plant_rows(
+    plants: pd.DataFrame | Mapping[str, list[PlantDefinition]] | Iterable[PlantDefinition],
+) -> pd.DataFrame:
+    """Normalize a legacy dataframe or grouped loader output into CSV-style rows."""
+
+    if isinstance(plants, pd.DataFrame):
+        return plants.copy()
+    if isinstance(plants, Mapping):
+        definitions = [plant for group in plants.values() for plant in group]
+    else:
+        definitions = list(plants)
+    if not definitions:
+        return pd.DataFrame(columns=["name", "unit_type", "technology"])
+    return pd.concat([plant.to_rows() for plant in definitions], ignore_index=True)
+
+
+def _plant_names(
+    plants: pd.DataFrame | Mapping[str, list[PlantDefinition]] | Iterable[PlantDefinition],
+) -> list[str]:
+    """Return stable plant names from either supported input representation."""
+
+    if isinstance(plants, pd.DataFrame):
+        return sorted(str(name) for name in plants["name"].dropna().unique())
+    if isinstance(plants, Mapping):
+        definitions = [plant for group in plants.values() for plant in group]
+    else:
+        definitions = list(plants)
+    return sorted({plant.name for plant in definitions})
+
+
+_PLANT_METADATA_COLUMNS = ("node", "objective", "demand", "steel_demand", "clinker_demand")
 
 
 def _plant_metadata(

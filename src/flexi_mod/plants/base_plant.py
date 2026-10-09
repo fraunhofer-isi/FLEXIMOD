@@ -30,3 +30,12 @@ class BasePlant:
     @property
     def plant_type(self) -> str:
         return self.unit_type
+
+    def required_forecast_columns(self) -> set[str]:
+        """Return plant-owned forecast profiles needed before market decisions.
+
+        Strategies add their configured market signals separately. Subclasses
+        override this for their physical demand and availability profiles.
+        """
+
+        return set()

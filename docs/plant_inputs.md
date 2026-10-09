@@ -115,6 +115,36 @@ price column passed to `build_model()` or `solve_horizon()`, and
 columns are required even if the selected fuel route sets a carrier flow to
 zero, which keeps the shared technology-cost interface consistent.
 
+## Running cement and steel cases
+
+Cement and steel use the same file-based workflow as the steam plant:
+`DataLoader` reads and validates `plants.csv` and `forecasts_df.csv`, the plant
+factory creates the physical model from `unit_type`, the strategy selects the
+market instruction, and the plant solves its own Pyomo formulation.
+
+For the current first industrial market route, configure:
+
+```yaml
+strategy:
+  name: industrial_day_ahead_cost_minimisation
+  dispatch:
+    dispatch_method: pyomo
+market_sequence:
+  - day_ahead
+markets:
+  day_ahead:
+    enabled: true
+    signals:
+      price: DE_DA_price
+```
+
+This strategy is intentionally day-ahead only. It records each feasible
+plant's electricity use as its day-ahead procurement position and writes the
+same dispatch, market-ledger, storage-ledger, and summary files as other
+runner cases. Cement and steel do not yet have a thermal-storage ledger or
+dedicated plots; their storage ledger is therefore an empty, schema-consistent
+table.
+
 ## Building / bus depot
 
 Use `unit_type=building`, `bus_depot`, or `electric_bus_depot`, with one
@@ -126,23 +156,25 @@ availability profile contract.
 
 The generic loader intentionally does not guess a plant's physical topology.
 It returns plant/component definitions in an ASSUME-style grouped form; the
-plant model remains the authority for technology-specific validation.
+plant model remains the authority for technology-specific validation. Building,
+Cement, Steel, and Steam all accept that same definition contract.
 
 ```python
 from flexi_mod.data.data_loader import DataLoader
 from flexi_mod.plants.steel_plant import SteelPlant
 
 loader = DataLoader(config, input_dir=case_dir)
-plants = loader.load_plants()
-steel_rows = plants.loc[plants["name"] == "steel_1"]
-plant = SteelPlant.from_rows("steel_1", steel_rows)
+definitions = loader.load_plant_definitions()
+steel_definition = definitions["steel_plant"][0]
+plant = SteelPlant.from_definition(steel_definition)
 
-forecasts = loader.load_forecasts()
+forecasts = loader.load_case_inputs(plant_definitions=definitions).forecasts
 plant.validate_inputs(forecasts, electricity_price_column="DE_DA_price")
 model = plant.build_model(config, forecasts, electricity_price_column="DE_DA_price")
 ```
 
-Steel and cement currently expose their physical `build_model()` and
-`solve_horizon()` APIs directly. They are not yet registered in the sequential
-market runner; that integration requires a sector-specific market strategy and
-is intentionally separate from the physical model and input contract.
+`SimulationRunner` follows the same path for every supported plant family:
+it loads grouped definitions, delegates typed construction to `build_plants`,
+then loads one validated forecast frame through `load_case_inputs`. Legacy
+`from_rows()` methods are retained for notebooks and direct physical-model
+tests, but are no longer the runner's construction path.

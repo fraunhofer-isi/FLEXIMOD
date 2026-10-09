@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from flexi_mod.markets.base_market import BaseMarket, MarketConfigError
+from flexi_mod.markets.base_market import BaseMarket, MarketCommitmentKind, MarketConfigError
 
 PRICE_CONSISTENCY_TOLERANCE = 1e-6
 SUPPORTED_PRICE_UNITS = {"EUR_per_MW_per_h", "EUR_per_MW_per_product"}
@@ -39,6 +39,7 @@ class AFRRCapacityMarket(BaseMarket):
     """
 
     REQUIRED_SIGNALS = ("price", "quantity")
+    COMMITMENT_KIND = MarketCommitmentKind.CAPACITY_RESERVATION
 
     @property
     def price_unit(self) -> str:

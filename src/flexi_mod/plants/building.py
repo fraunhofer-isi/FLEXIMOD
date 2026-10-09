@@ -16,6 +16,7 @@ from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.data.data_loader import PlantDefinition
 from flexi_mod.modeling.pyomo_utils import (
     available_pyomo_solvers,
     is_infeasible_termination,
@@ -48,6 +49,17 @@ class Building(BasePlant):
     # ------------------------------------------------------------------
     # Read the two technology rows from plants.csv
     # ------------------------------------------------------------------
+    @classmethod
+    def from_definition(cls, definition: PlantDefinition) -> Building:
+        """Build from the common grouped input representation from ``DataLoader``."""
+
+        if definition.unit_type not in {"building", "bus_depot", "electric_bus_depot"}:
+            raise ValueError(
+                f"Plant '{definition.name}' has unit_type='{definition.unit_type}', "
+                "not a supported building type"
+            )
+        return cls.from_rows(definition.name, definition.to_rows())
+
     @classmethod
     def from_rows(cls, building_name: str, rows: pd.DataFrame) -> Building:
         if rows.empty:

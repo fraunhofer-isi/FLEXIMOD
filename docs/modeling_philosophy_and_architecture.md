@@ -239,6 +239,19 @@ The current market classes are:
 Market classes do not decide whether the plant operator buys, sells or bids.
 Those decisions stay in the strategy layer.
 
+For every configured stage, the runner passes a typed `MarketStageContext`: the
+market rules, forecast slice, plant, earlier committed positions, any capacity
+reservation, and the rolling state. The strategy returns a `MarketStageResult`.
+Day-ahead, intraday, and aFRR-energy results replace the current dispatch
+commitment; aFRR-capacity results become the separate capacity reservation used
+by later stages. This keeps stage sequencing in the runner while preserving
+market-specific rules in strategies.
+
+These hand-off objects live in `simulation/market_stages.py`, rather than the
+market package: they describe orchestration between the runner, strategy, and
+plant. `MarketCommitmentKind` remains a market concern because each market
+declares whether it creates a dispatch commitment or a capacity reservation.
+
 ## Input Data Layer
 
 Each case input folder contains:
@@ -253,6 +266,13 @@ additional_charges.csv  # optional
 `plants.csv` defines industrial plants and their connected technologies. Rows
 with the same `name` belong to one plant. Different `technology` values define
 connected components.
+
+`DataLoader.load_plant_definitions()` groups those rows into one
+`PlantDefinition` per plant. The plant factory selects the typed Building,
+Cement, Steel, or Steam model from `unit_type`, and each model constructs
+itself through the same `from_definition()` entry point. This keeps CSV parsing
+and forecast loading outside physical plant modules; a plant retains only its
+technology/topology validation and Pyomo formulation.
 
 `forecasts_df.csv` contains all time series. For the current day-ahead MVP the
 minimum required time-series columns are:
@@ -321,6 +341,12 @@ Electricity consumption is currently equal to ETES electric charging:
 ```text
 electricity consumption = electric charge to storage
 ```
+
+For a steam market stage, the strategy supplies the commercial instruction
+(price gates, position limits, bid and activation limits). `SteamGenerationPlant`
+then executes that instruction through `solve_market_stage()`, where Pyomo
+checks plant feasibility and finds the least-cost operation. Strategies do not
+own physical equations; markets do not own operator rules.
 
 ## Objective Function
 

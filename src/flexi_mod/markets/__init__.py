@@ -8,7 +8,7 @@ from flexi_mod.markets.afrr_energy import (
     AFRRDownEnergyMarket,
     AFRRUpEnergyMarket,
 )
-from flexi_mod.markets.base_market import BaseMarket, MarketConfigError
+from flexi_mod.markets.base_market import BaseMarket, MarketCommitmentKind, MarketConfigError
 from flexi_mod.markets.day_ahead import DayAheadMarket
 from flexi_mod.markets.factory import build_market, build_markets
 from flexi_mod.markets.intraday_continuous import IntradayContinuousMarket
@@ -23,6 +23,7 @@ __all__ = [
     "DayAheadMarket",
     "IntradayContinuousMarket",
     "MarketConfigError",
+    "MarketCommitmentKind",
     "build_market",
     "build_markets",
 ]

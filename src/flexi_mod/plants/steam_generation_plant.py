@@ -24,6 +24,7 @@ from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.data.data_loader import PlantDefinition
 from flexi_mod.modeling.pyomo_utils import (
     available_pyomo_solvers,
     forecast_values_or_zero,
@@ -62,14 +63,26 @@ class SteamGenerationPlant(BasePlant):
 
     Supported routes are thermal storage plus a gas boiler, or a direct
     electric boiler plus a gas boiler. Construct the plant with
-    ``from_rows()`` and run it through one of the public ``solve_*`` methods.
-    Both routes use the same market-stage engine.
+    ``from_definition()`` (or the backwards-compatible ``from_rows()``) and
+    run it through one of the public ``solve_*`` methods. Both routes use the
+    same market-stage engine.
     """
 
     gas_emissions_factor_kg_per_mwh: float = 201.0
     components: dict[str, object] = field(default_factory=dict)
 
     # --- Construction -----------------------------------------------------
+
+    @classmethod
+    def from_definition(cls, definition: PlantDefinition) -> SteamGenerationPlant:
+        """Build from the common grouped input representation from ``DataLoader``."""
+
+        if definition.unit_type != "steam_plant":
+            raise ValueError(
+                f"Plant '{definition.name}' has unit_type='{definition.unit_type}', "
+                "not 'steam_plant'"
+            )
+        return cls.from_rows(definition.name, definition.to_rows())
 
     @classmethod
     def from_rows(cls, plant_name: str, rows: pd.DataFrame) -> SteamGenerationPlant:
@@ -283,6 +296,49 @@ class SteamGenerationPlant(BasePlant):
             self.route_process.initial_soc(self.components, initial_soc_mwh),
         )
 
+    def solve_market_stage(
+        self,
+        config: CaseConfig,
+        forecasts: pd.DataFrame,
+        stage: SteamMarketStage,
+        signals: SteamSignals,
+        *,
+        initial_soc_mwh: float | None = None,
+        rolling: bool = False,
+    ) -> pd.DataFrame:
+        """Check and execute one rule-based market instruction with Pyomo.
+
+        Strategies determine the allowed commercial action in ``signals``. This
+        plant method owns the stage-specific Pyomo feasibility and operation
+        solve, keeping physical execution out of market orchestration code.
+        """
+
+        if stage == SteamMarketStage.DAY_AHEAD:
+            if not isinstance(signals, DispatchSignals):
+                raise TypeError("Day-ahead dispatch requires DispatchSignals")
+            solver = self.solve_rolling if rolling else self.solve_horizon
+        elif stage == SteamMarketStage.INTRADAY:
+            if not isinstance(signals, IDCAdjustmentSignals):
+                raise TypeError("Intraday dispatch requires IDCAdjustmentSignals")
+            solver = (
+                self.solve_intraday_adjustment_rolling
+                if rolling
+                else self.solve_intraday_adjustment_horizon
+            )
+        elif stage == SteamMarketStage.AFRR_ENERGY:
+            if not isinstance(signals, AFRRDownSignals):
+                raise TypeError("aFRR-energy dispatch requires AFRRDownSignals")
+            solver = self.solve_afrr_down_rolling if rolling else self.solve_afrr_down_horizon
+        else:
+            raise ValueError(f"Unsupported steam market stage '{stage}'")
+
+        return solver(
+            config,
+            forecasts,
+            signals,
+            initial_soc_mwh=initial_soc_mwh,
+        )
+
     # --- Shared rolling and solver execution -----------------------------
 
     def _solve_rolling_windows(
@@ -407,7 +463,12 @@ class SteamGenerationPlant(BasePlant):
         self.define_objective(model)
         return model
 
-    def required_forecast_columns(
+    def required_forecast_columns(self) -> set[str]:
+        """Return plant-owned profiles independent of a selected market stage."""
+
+        return {self.heat_demand_column}
+
+    def required_stage_forecast_columns(
         self,
         stage: SteamMarketStage,
         signals: SteamSignals,
@@ -437,7 +498,7 @@ class SteamGenerationPlant(BasePlant):
     ) -> None:
         """Validate one stage's physical and price inputs before Pyomo creation."""
 
-        required = self.required_forecast_columns(stage, signals)
+        required = self.required_stage_forecast_columns(stage, signals)
         subject = f"Steam plant '{self.name}'"
         validate_required_forecasts(forecasts, required, subject, operation=stage.value)
         missing_value_allowed = (

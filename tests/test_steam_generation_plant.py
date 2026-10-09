@@ -32,6 +32,18 @@ def test_steam_generation_plant_builds_from_plants_csv() -> None:
     assert plants[0].gas_boiler.efficiency == 0.85
 
 
+def test_steam_generation_plant_builds_from_common_loader_definition() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    loader = DataLoader(config, input_dir=CASE_DIR)
+    definition = loader.load_plant_definitions()["steam_plant"][0]
+
+    plant = SteamGenerationPlant.from_definition(definition)
+
+    assert plant.name == definition.name
+    assert set(plant.components) == {"thermal_storage", "boiler"}
+    assert plant.required_forecast_columns() == {"plant_1_heat_demand"}
+
+
 def test_steam_generation_plant_exposes_modeler_facing_build_sequence() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
     plant = SteamGenerationPlant.from_plants_dataframe(

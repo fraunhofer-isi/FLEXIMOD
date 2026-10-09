@@ -12,6 +12,7 @@ they do not decide how an industrial operator bids, buys or sells.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, ClassVar
 
 import pandas as pd
@@ -19,6 +20,13 @@ import pandas as pd
 
 class MarketConfigError(ValueError):
     """Raised when one configured market is incomplete or inconsistent."""
+
+
+class MarketCommitmentKind(StrEnum):
+    """How a market stage carries its result into the next stage."""
+
+    DISPATCH = "dispatch"
+    CAPACITY_RESERVATION = "capacity_reservation"
 
 
 @dataclass(frozen=True)
@@ -29,6 +37,13 @@ class BaseMarket:
     config: dict[str, Any]
 
     REQUIRED_SIGNALS: ClassVar[tuple[str, ...]] = ()
+    COMMITMENT_KIND: ClassVar[MarketCommitmentKind] = MarketCommitmentKind.DISPATCH
+
+    @property
+    def commitment_kind(self) -> MarketCommitmentKind:
+        """Describe how this stage's result is passed to later market stages."""
+
+        return self.COMMITMENT_KIND
 
     @property
     def enabled(self) -> bool:

@@ -12,6 +12,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
+from flexi_mod.markets.afrr_capacity import AFRRCapacityMarket
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
 from flexi_mod.markets.day_ahead import DayAheadMarket
 from flexi_mod.markets.intraday_continuous import IntradayContinuousMarket
@@ -21,6 +22,7 @@ from flexi_mod.plants.steam_generation_plant import (
     DispatchSignals,
     IDCAdjustmentSignals,
     SteamGenerationPlant,
+    SteamMarketStage,
 )
 from flexi_mod.strategies.hybrid_etes_gas_strategy import (
     ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH,
@@ -54,11 +56,12 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
         capacity_reservation: pd.DataFrame | None = None,
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
+        market: DayAheadMarket | None = None,
     ) -> pd.DataFrame:
         self._validate_direct_route(plant)
         self._reject_capacity_reservation(capacity_reservation)
 
-        market = DayAheadMarket("day_ahead", self.config.market("day_ahead"))
+        market = market or DayAheadMarket("day_ahead", self.config.market("day_ahead"))
         market_data = market.prepare_market_data(forecasts)
         price_col = market.signal_column("price")
         tax_rate = self._get_tax_rate(plant)
@@ -87,18 +90,13 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
             co2_price_col=CO2_PRICE_SIGNAL,
             co2_emission_factor_t_per_mwh_fuel=self._gas_emission_factor(plant),
         )
-        if rolling:
-            return plant.solve_rolling(
-                self.config,
-                forecasts,
-                signals,
-                initial_soc_mwh=initial_soc_mwh,
-            )
-        return plant.solve_horizon(
+        return plant.solve_market_stage(
             self.config,
             forecasts,
+            SteamMarketStage.DAY_AHEAD,
             signals,
             initial_soc_mwh=initial_soc_mwh,
+            rolling=rolling,
         )
 
     def decide_intraday_continuous(
@@ -109,11 +107,12 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
         capacity_reservation: pd.DataFrame | None = None,
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
+        market: IntradayContinuousMarket | None = None,
     ) -> pd.DataFrame:
         self._validate_direct_route(plant)
         self._reject_capacity_reservation(capacity_reservation)
 
-        market = IntradayContinuousMarket(
+        market = market or IntradayContinuousMarket(
             "intraday_continuous",
             self.config.market("intraday_continuous"),
         )
@@ -184,18 +183,13 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
             co2_price_col=CO2_PRICE_SIGNAL,
             co2_emission_factor_t_per_mwh_fuel=self._gas_emission_factor(plant),
         )
-        if rolling:
-            return plant.solve_intraday_adjustment_rolling(
-                self.config,
-                forecasts,
-                signals,
-                initial_soc_mwh=initial_soc_mwh,
-            )
-        return plant.solve_intraday_adjustment_horizon(
+        return plant.solve_market_stage(
             self.config,
             forecasts,
+            SteamMarketStage.INTRADAY,
             signals,
             initial_soc_mwh=initial_soc_mwh,
+            rolling=rolling,
         )
 
     def decide_afrr_energy(
@@ -206,6 +200,7 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
         capacity_reservation: pd.DataFrame | None = None,
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
+        market: AFRRDownEnergyMarket | None = None,
     ) -> pd.DataFrame:
         self._validate_direct_route(plant)
         self._reject_capacity_reservation(capacity_reservation)
@@ -219,7 +214,10 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
             forecasts[idc_price_col] = 0.0
 
         timestep_hours = self.config.timestep_minutes / 60.0
-        market = AFRRDownEnergyMarket("afrr_energy", self.config.market("afrr_energy"))
+        market = market or AFRRDownEnergyMarket(
+            "afrr_energy",
+            self.config.market("afrr_energy"),
+        )
         min_bid_mw = float(market.product_rules.get("min_bid_mw", 0.0))
         bid_increment_mw = float(market.product_rules.get("bid_increment_mw", 1.0))
         _validate_bid_rules("afrr_energy", min_bid_mw, bid_increment_mw)
@@ -229,6 +227,7 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
         clean_afrr = self._prepare_afrr_down_energy_data(
             forecasts,
             timestep_hours,
+            market=market,
         ).frame
         da_position = self._required_fixed_series(
             fixed_positions,
@@ -339,18 +338,13 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
             co2_price_col=CO2_PRICE_SIGNAL,
             co2_emission_factor_t_per_mwh_fuel=self._gas_emission_factor(plant),
         )
-        if rolling:
-            return plant.solve_afrr_down_rolling(
-                self.config,
-                forecasts,
-                signals,
-                initial_soc_mwh=initial_soc_mwh,
-            )
-        return plant.solve_afrr_down_horizon(
+        return plant.solve_market_stage(
             self.config,
             forecasts,
+            SteamMarketStage.AFRR_ENERGY,
             signals,
             initial_soc_mwh=initial_soc_mwh,
+            rolling=rolling,
         )
 
     def decide_afrr_capacity(
@@ -358,8 +352,9 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
         initial_soc_mwh: float | None = None,
+        market: AFRRCapacityMarket | None = None,
     ) -> pd.DataFrame:
-        del forecasts, initial_soc_mwh
+        del forecasts, initial_soc_mwh, market
         self._validate_direct_route(plant)
         raise ValueError(
             "Strategy 'hybrid_electric_gas_boiler' does not support aFRR capacity; "

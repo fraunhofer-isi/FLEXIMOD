@@ -2,44 +2,21 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-from __future__ import annotations
-
-import pandas as pd
-
-from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
+from flexi_mod.simulation.market_stages import MarketStageContext, MarketStageResult
 
 
 class BaseStrategy:
     """Interface for sequential market strategies."""
 
+    def decide_market_stage(self, context: MarketStageContext) -> MarketStageResult:
+        """Apply this strategy to one prepared market stage.
+
+        The returned values become commitments for the remaining stages of the
+        decision window. Concrete strategies keep their market-specific rules
+        in their existing ``decide_*`` methods.
+        """
+
+        raise NotImplementedError
+
     def required_forecast_columns(self) -> set[str]:
         return set()
-
-    def decide_day_ahead(
-        self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
-    ) -> pd.DataFrame:
-        return pd.DataFrame(index=forecasts.index)
-
-    def decide_intraday_continuous(
-        self,
-        plant: SteamGenerationPlant,
-        forecasts: pd.DataFrame,
-        fixed_positions: pd.DataFrame,
-    ) -> pd.DataFrame:
-        # TODO: Implement IDC adjustments without overwriting fixed DA positions.
-        return pd.DataFrame(index=forecasts.index)
-
-    def decide_afrr_energy(
-        self,
-        plant: SteamGenerationPlant,
-        forecasts: pd.DataFrame,
-        fixed_positions: pd.DataFrame,
-    ) -> pd.DataFrame:
-        # TODO: Implement negative aFRR energy using remaining ETES charging headroom.
-        return pd.DataFrame(index=forecasts.index)
-
-    def decide_afrr_capacity(
-        self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
-    ) -> pd.DataFrame:
-        # Optional pre-DA reserve-capacity stage for strategies that support it.
-        return pd.DataFrame(index=forecasts.index)
