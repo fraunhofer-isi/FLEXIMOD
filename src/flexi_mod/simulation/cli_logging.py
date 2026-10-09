@@ -59,13 +59,14 @@ class CliLogger:
 
 
 def output_summary(outputs: dict[str, Any]) -> str:
-    csv_outputs = [name for name, path in outputs.items() if not isinstance(path, list)]
-    plot_count = _plot_count(outputs)
+    tables = [
+        name for name, path in outputs.items() if not isinstance(path, list) and name != "dashboard"
+    ]
     parts = []
-    if csv_outputs:
-        parts.append(f"{len(csv_outputs)} table file(s)")
-    if plot_count:
-        parts.append(f"{plot_count} plot file(s)")
+    if tables:
+        parts.append(f"{len(tables)} table file(s)")
+    if "dashboard" in outputs:
+        parts.append("interactive dashboard")
     return ", ".join(parts) if parts else "no files"
 
 
@@ -102,17 +103,7 @@ def missing_additional_charges_message(path: Path) -> str:
     )
 
 
-def _plot_count(outputs: dict[str, Any]) -> int:
-    plots = outputs.get("plots", [])
-    return len(plots) if isinstance(plots, list) else 0
-
-
 def _friendly_warning(message: str) -> str:
-    replacements = {
-        "No IDC sell/reduction volumes found. Skipping IDC sell source and compensation plot.": (
-            "IDC sell source plot skipped because there are no IDC sell/reduction volumes."
-        ),
-    }
     if message.startswith("aFRR down system activation contains missing values."):
         return (
             "aFRR down system activation contains missing values in one or more decision "
@@ -130,7 +121,7 @@ def _friendly_warning(message: str) -> str:
             "IDC price contains missing values in one or more decision windows. IDC action "
             "is set to zero for those timesteps."
         )
-    return replacements.get(message, message)
+    return message
 
 
 def _show_progress_by_default(message: str) -> bool:

@@ -11,18 +11,30 @@ import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataValidationError
-from flexi_mod.markets.afrr_capacity import AFRRCapacityMarket
-from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
-from flexi_mod.markets.day_ahead import DayAheadMarket
-from flexi_mod.markets.intraday_continuous import IntradayContinuousMarket
-from flexi_mod.plants.steam_generation_plant import (
-    AFRRDownSignals,
-    DispatchSignals,
-    IDCAdjustmentSignals,
-    SteamGenerationPlant,
-    SteamMarketStage,
+from flexi_mod.markets.afrr_capacity import (
+    AFRRCapacityMarket,
+    capacity_award_from_result_frame,
 )
-from flexi_mod.simulation.market_stages import MarketStageContext, MarketStageResult
+from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket, BalancingEnergyActivation
+from flexi_mod.markets.base_market import MarketResultKind
+from flexi_mod.markets.day_ahead import DayAheadMarket, DayAheadPosition
+from flexi_mod.markets.electricity_settlement import (
+    ElectricityMarketRequest,
+    ElectricityMarketStage,
+)
+from flexi_mod.markets.intraday_continuous import (
+    IntradayAdjustment,
+    IntradayContinuousMarket,
+)
+from flexi_mod.plants.steam_generation_plant import (
+    THERMAL_STORAGE_SOC_STATE_KEY,
+    SteamGenerationPlant,
+)
+from flexi_mod.simulation.market_stages import (
+    MarketStageContext,
+    MarketStageInstruction,
+    MarketStageResult,
+)
 from flexi_mod.strategies.base_strategy import BaseStrategy
 
 GAS_PRICE_SIGNAL = "natural_gas_price"
@@ -243,7 +255,44 @@ class HybridETESGasStrategy(BaseStrategy):
         return required
 
     def decide_market_stage(self, context: MarketStageContext) -> MarketStageResult:
-        """Apply the matching commercial rule to one prepared market stage."""
+        """Prepare, execute, and settle a stage for backwards-compatible callers.
+
+        The simulation runner uses ``prepare_market_stage`` and
+        ``settle_market_stage`` separately. This convenience method retains
+        the former one-call public API for notebooks and integrations.
+        """
+
+        if not isinstance(context.plant, SteamGenerationPlant):
+            raise TypeError(
+                f"Strategy '{type(self).__name__}' requires SteamGenerationPlant, "
+                f"received {type(context.plant).__name__}"
+            )
+
+        market = context.market
+        if market.name == _AFRR_CAPACITY_MARKET:
+            values = self.decide_afrr_capacity(
+                context.plant,
+                context.forecasts,
+                initial_soc_mwh=context.initial_soc_mwh,
+                market=market,
+            )
+            return context.result(values)
+
+        instruction = self.prepare_market_stage(context)
+        values = context.plant.solve_market_instruction(
+            self.config,
+            context.forecasts,
+            instruction,
+        )
+        return self.settle_market_stage(context, instruction, values)
+
+    def prepare_market_stage(self, context: MarketStageContext) -> MarketStageInstruction:
+        """Turn commercial rules into a typed plant instruction.
+
+        This method deliberately contains no Pyomo call. A plant owns its
+        feasibility check and physical dispatch; a strategy owns the market
+        policy that supplies its input signals.
+        """
 
         if not isinstance(context.plant, SteamGenerationPlant):
             raise TypeError(
@@ -253,50 +302,104 @@ class HybridETESGasStrategy(BaseStrategy):
 
         plant = context.plant
         market = context.market
-        commitments = context.commitments
+        stage_state = context.stage_state
         if market.name == "day_ahead":
-            values = self.decide_day_ahead(
+            instruction = self.prepare_day_ahead_instruction(
                 plant,
                 context.forecasts,
-                commitments.capacity_reservation,
+                stage_state.capacity_award,
                 initial_soc_mwh=context.initial_soc_mwh,
                 rolling=context.rolling,
                 market=market,
             )
         elif market.name == "intraday_continuous":
-            values = self.decide_intraday_continuous(
+            instruction = self.prepare_intraday_continuous_instruction(
                 plant,
                 context.forecasts,
-                commitments.positions,
-                commitments.capacity_reservation,
+                stage_state.operating_schedule,
+                stage_state.capacity_award,
                 initial_soc_mwh=context.initial_soc_mwh,
                 rolling=context.rolling,
                 market=market,
             )
         elif market.name == "afrr_energy":
-            values = self.decide_afrr_energy(
+            instruction = self.prepare_afrr_energy_instruction(
                 plant,
                 context.forecasts,
-                commitments.positions,
-                commitments.capacity_reservation,
+                stage_state.operating_schedule,
+                stage_state.capacity_award,
                 initial_soc_mwh=context.initial_soc_mwh,
                 rolling=context.rolling,
                 market=market,
             )
-        elif market.name == "afrr_capacity":
-            values = self.decide_afrr_capacity(
-                plant,
-                context.forecasts,
-                initial_soc_mwh=context.initial_soc_mwh,
-                market=market,
+        elif market.name == _AFRR_CAPACITY_MARKET:
+            raise ValueError(
+                "aFRR capacity is a commercial reservation stage and does not "
+                "produce a plant-dispatch instruction"
             )
         else:
             raise NotImplementedError(
                 f"Strategy '{type(self).__name__}' does not support market '{market.name}'"
             )
-        return context.result(values)
+        if instruction.market_name != market.name:
+            raise ValueError(
+                f"Prepared instruction for '{instruction.market_name}' cannot execute "
+                f"market '{market.name}'"
+            )
+        return instruction
 
-    def decide_day_ahead(
+    def settle_market_stage(
+        self,
+        context: MarketStageContext,
+        instruction: MarketStageInstruction,
+        values: pd.DataFrame,
+    ) -> MarketStageResult:
+        """Wrap completed physical dispatch in the configured market contract."""
+
+        if instruction.market_name != context.market.name:
+            raise ValueError(
+                f"Instruction for '{instruction.market_name}' cannot settle "
+                f"market '{context.market.name}'"
+            )
+        if instruction.result_kind != context.market.result_kind:
+            raise ValueError("Instruction result kind does not match its configured market")
+        return instruction.result(values)
+
+    def _electricity_instruction(
+        self,
+        *,
+        market_name: str,
+        stage: ElectricityMarketStage,
+        position: DayAheadPosition | IntradayAdjustment | BalancingEnergyActivation,
+        forecasts: pd.DataFrame,
+        capacity_reservation: pd.DataFrame | None,
+        initial_soc_mwh: float | None,
+        rolling: bool,
+    ) -> MarketStageInstruction:
+        """Package one product decision for a plant-independent market hand-off."""
+
+        capacity_award = capacity_award_from_result_frame(
+            capacity_reservation,
+            forecasts.index,
+            self.config.timestep_minutes / 60.0,
+        )
+        initial_state = (
+            {THERMAL_STORAGE_SOC_STATE_KEY: initial_soc_mwh} if initial_soc_mwh is not None else {}
+        )
+        return MarketStageInstruction(
+            market_name=market_name,
+            result_kind=MarketResultKind.OPERATING_SCHEDULE,
+            payload=ElectricityMarketRequest(
+                stage=stage,
+                position=position,
+                capacity_award=capacity_award,
+            ),
+            execution_forecasts=forecasts,
+            initial_state=initial_state,
+            rolling=rolling,
+        )
+
+    def prepare_day_ahead_instruction(
         self,
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
@@ -304,7 +407,7 @@ class HybridETESGasStrategy(BaseStrategy):
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
         market: DayAheadMarket | None = None,
-    ) -> pd.DataFrame:
+    ) -> MarketStageInstruction:
         market = market or DayAheadMarket("day_ahead", self.config.market("day_ahead"))
         market_data = market.prepare_market_data(forecasts)
         price_col = market.signal_column("price")
@@ -325,25 +428,25 @@ class HybridETESGasStrategy(BaseStrategy):
         )
         charge_allowed = charge_allowed & ~self._grid_charging_block(plant, forecasts)
 
-        signals = DispatchSignals(
+        position = DayAheadPosition(
             electricity_price_col=price_col,
             gas_price_col=GAS_PRICE_SIGNAL,
             gas_benchmark_eur_per_mwh_th=benchmark,
             charge_allowed=charge_allowed,
             additional_electricity_charge_eur_per_mwh=additional_charges_t,
             tax_rate=tax_rate,
-            **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
-        return plant.solve_market_stage(
-            self.config,
-            forecasts,
-            SteamMarketStage.DAY_AHEAD,
-            signals,
+        return self._electricity_instruction(
+            market_name=market.name,
+            stage=ElectricityMarketStage.DAY_AHEAD,
+            position=position,
+            forecasts=forecasts,
+            capacity_reservation=capacity_reservation,
             initial_soc_mwh=initial_soc_mwh,
             rolling=rolling,
         )
 
-    def decide_intraday_continuous(
+    def prepare_intraday_continuous_instruction(
         self,
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
@@ -352,7 +455,7 @@ class HybridETESGasStrategy(BaseStrategy):
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
         market: IntradayContinuousMarket | None = None,
-    ) -> pd.DataFrame:
+    ) -> MarketStageInstruction:
         idc_market = market or IntradayContinuousMarket(
             "intraday_continuous",
             self.config.market("intraday_continuous"),
@@ -411,7 +514,7 @@ class HybridETESGasStrategy(BaseStrategy):
         )
         idc_sell_upper_bound.loc[sell_allowed] = da_position.loc[sell_allowed].clip(lower=0.0)
 
-        signals = IDCAdjustmentSignals(
+        position = IntradayAdjustment(
             da_price_col=da_price_col,
             idc_price_col=idc_price_col,
             gas_price_col=GAS_PRICE_SIGNAL,
@@ -422,18 +525,18 @@ class HybridETESGasStrategy(BaseStrategy):
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
             additional_electricity_charge_eur_per_mwh=additional_charges_t,
             tax_rate=tax_rate,
-            **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
-        return plant.solve_market_stage(
-            self.config,
-            forecasts,
-            SteamMarketStage.INTRADAY,
-            signals,
+        return self._electricity_instruction(
+            market_name=idc_market.name,
+            stage=ElectricityMarketStage.INTRADAY,
+            position=position,
+            forecasts=forecasts,
+            capacity_reservation=capacity_reservation,
             initial_soc_mwh=initial_soc_mwh,
             rolling=rolling,
         )
 
-    def decide_afrr_energy(
+    def prepare_afrr_energy_instruction(
         self,
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
@@ -442,7 +545,7 @@ class HybridETESGasStrategy(BaseStrategy):
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
         market: AFRRDownEnergyMarket | None = None,
-    ) -> pd.DataFrame:
+    ) -> MarketStageInstruction:
         da_price_col = self.config.market_signal("day_ahead", "price")
         if da_price_col not in forecasts.columns:
             forecasts = forecasts.copy()
@@ -614,7 +717,7 @@ class HybridETESGasStrategy(BaseStrategy):
         headroom_binding = split["afrr_headroom_binding"]
         curtailed_activation = split["afrr_curtailment_MWh"]
 
-        signals = AFRRDownSignals(
+        position = BalancingEnergyActivation(
             da_price_col=da_price_col,
             idc_price_col=idc_price_col,
             gas_price_col=GAS_PRICE_SIGNAL,
@@ -640,16 +743,90 @@ class HybridETESGasStrategy(BaseStrategy):
             electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
             additional_electricity_charge_eur_per_mwh=additional_charges_t,
             tax_rate=tax_rate,
-            **_capacity_signal_kwargs(capacity_reservation, forecasts.index),
         )
-        return plant.solve_market_stage(
-            self.config,
-            forecasts,
-            SteamMarketStage.AFRR_ENERGY,
-            signals,
+        return self._electricity_instruction(
+            market_name=afrr_market.name,
+            stage=ElectricityMarketStage.AFRR_ENERGY,
+            position=position,
+            forecasts=forecasts,
+            capacity_reservation=capacity_reservation,
             initial_soc_mwh=initial_soc_mwh,
             rolling=rolling,
         )
+
+    # These public convenience methods preserve the pre-instruction API. New
+    # orchestration should use prepare_market_stage -> plant execution ->
+    # settle_market_stage so commercial policy and Pyomo execution stay apart.
+    def decide_day_ahead(
+        self,
+        plant: SteamGenerationPlant,
+        forecasts: pd.DataFrame,
+        capacity_reservation: pd.DataFrame | None = None,
+        initial_soc_mwh: float | None = None,
+        rolling: bool = True,
+        market: DayAheadMarket | None = None,
+    ) -> pd.DataFrame:
+        instruction = self.prepare_day_ahead_instruction(
+            plant,
+            forecasts,
+            capacity_reservation,
+            initial_soc_mwh=initial_soc_mwh,
+            rolling=rolling,
+            market=market,
+        )
+        return self._execute_market_instruction(plant, forecasts, instruction)
+
+    def decide_intraday_continuous(
+        self,
+        plant: SteamGenerationPlant,
+        forecasts: pd.DataFrame,
+        fixed_positions: pd.DataFrame,
+        capacity_reservation: pd.DataFrame | None = None,
+        initial_soc_mwh: float | None = None,
+        rolling: bool = True,
+        market: IntradayContinuousMarket | None = None,
+    ) -> pd.DataFrame:
+        instruction = self.prepare_intraday_continuous_instruction(
+            plant,
+            forecasts,
+            fixed_positions,
+            capacity_reservation,
+            initial_soc_mwh=initial_soc_mwh,
+            rolling=rolling,
+            market=market,
+        )
+        return self._execute_market_instruction(plant, forecasts, instruction)
+
+    def decide_afrr_energy(
+        self,
+        plant: SteamGenerationPlant,
+        forecasts: pd.DataFrame,
+        fixed_positions: pd.DataFrame,
+        capacity_reservation: pd.DataFrame | None = None,
+        initial_soc_mwh: float | None = None,
+        rolling: bool = True,
+        market: AFRRDownEnergyMarket | None = None,
+    ) -> pd.DataFrame:
+        instruction = self.prepare_afrr_energy_instruction(
+            plant,
+            forecasts,
+            fixed_positions,
+            capacity_reservation,
+            initial_soc_mwh=initial_soc_mwh,
+            rolling=rolling,
+            market=market,
+        )
+        return self._execute_market_instruction(plant, forecasts, instruction)
+
+    def _execute_market_instruction(
+        self,
+        plant: SteamGenerationPlant,
+        forecasts: pd.DataFrame,
+        instruction: MarketStageInstruction,
+    ) -> pd.DataFrame:
+        """Run a prepared instruction for the legacy direct strategy methods."""
+
+        return plant.solve_market_instruction(self.config, forecasts, instruction)
 
     def _strict_afrr_down_offer_and_activation_split(
         self,
@@ -1296,64 +1473,6 @@ def raw_electricity_bid_price(
     return raw_bid
 
 
-def _capacity_signal_kwargs(
-    capacity_reservation: pd.DataFrame | None,
-    index: pd.DatetimeIndex,
-) -> dict[str, pd.Series]:
-    if capacity_reservation is None or capacity_reservation.empty:
-        return {}
-
-    frame = capacity_reservation.reindex(index)
-    return {
-        "reserved_capacity_mwh": _capacity_column(frame, index, "afrr_capacity_reserved_MWh"),
-        "afrr_capacity_block_id": _capacity_object_column(
-            frame,
-            index,
-            "afrr_capacity_block_id",
-            "",
-        ),
-        "afrr_capacity_block_duration_h": _capacity_column(frame, index, "block_duration_h"),
-        "afrr_capacity_price_eur_per_mw_h": _capacity_column(
-            frame,
-            index,
-            "capacity_clearing_price_EUR_per_MW_h",
-        ),
-        "afrr_capacity_pricing_rule": _capacity_object_column(
-            frame,
-            index,
-            "capacity_pricing_rule",
-            "",
-        ),
-        "afrr_capacity_bid_price_eur_per_mw_h": _capacity_column(
-            frame,
-            index,
-            "capacity_bid_price_EUR_per_MW_h",
-        ),
-        "afrr_capacity_settlement_price_eur_per_mw_h": _capacity_column(
-            frame,
-            index,
-            "capacity_settlement_price_EUR_per_MW_h",
-        ),
-        "afrr_capacity_reserved_mw": _capacity_column(frame, index, "afrr_capacity_reserved_MW"),
-        "afrr_capacity_revenue_eur": _capacity_column(frame, index, "afrr_capacity_revenue_EUR"),
-        "afrr_capacity_opportunity_cost_eur": _capacity_column(
-            frame,
-            index,
-            "afrr_capacity_opportunity_cost_EUR",
-        ),
-        "afrr_capacity_market_surplus_eur": _capacity_column(
-            frame,
-            index,
-            "afrr_capacity_market_surplus_EUR",
-        ),
-        "afrr_capacity_net_value_eur": _capacity_column(
-            frame,
-            index,
-            "afrr_capacity_net_value_EUR",
-        ),
-    }
-
-
 def _validate_bid_rules(market_name: str, min_bid_mw: float, bid_increment_mw: float) -> None:
     if not math.isfinite(min_bid_mw):
         raise ValueError(f"{market_name}.product_rules.min_bid_mw must be finite")
@@ -1460,14 +1579,3 @@ def _capacity_column(
     ):
         return pd.Series(0.0, index=index)
     return capacity_reservation[column].astype(float).reindex(index).fillna(0.0)
-
-
-def _capacity_object_column(
-    capacity_reservation: pd.DataFrame,
-    index: pd.DatetimeIndex,
-    column: str,
-    default: object,
-) -> pd.Series:
-    if column not in capacity_reservation:
-        return pd.Series(default, index=index)
-    return capacity_reservation[column].reindex(index).fillna(default)

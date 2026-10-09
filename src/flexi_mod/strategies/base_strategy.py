@@ -11,9 +11,9 @@ class BaseStrategy:
     def decide_market_stage(self, context: MarketStageContext) -> MarketStageResult:
         """Apply this strategy to one prepared market stage.
 
-        The returned values become commitments for the remaining stages of the
-        decision window. Concrete strategies keep their market-specific rules
-        in their existing ``decide_*`` methods.
+        The returned values become market results available to the remaining
+        stages of the decision window. Concrete strategies keep their
+        market-specific rules in their existing ``decide_*`` methods.
         """
 
         raise NotImplementedError

@@ -22,7 +22,7 @@ from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.data.data_loader import PlantDefinition
+from flexi_mod.data.data_loader import PlantInput
 from flexi_mod.modeling.pyomo_utils import (
     available_pyomo_solvers,
     is_infeasible_termination,
@@ -53,25 +53,27 @@ class SteelPlant(BasePlant):
     components: dict[str, object] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
-    # Input rows -> physical technology instances
+    # Input components -> physical technology instances
     # ------------------------------------------------------------------
     @classmethod
-    def from_definition(cls, definition: PlantDefinition) -> SteelPlant:
-        """Build from the common grouped input representation from ``DataLoader``."""
+    def create(cls, plant_input: PlantInput) -> SteelPlant:
+        """Create a steel plant from the loader's parameters and components."""
 
-        if definition.unit_type != "steel_plant":
+        if plant_input.unit_type != "steel_plant":
             raise ValueError(
-                f"Plant '{definition.name}' has unit_type='{definition.unit_type}', "
+                f"Plant '{plant_input.name}' has unit_type='{plant_input.unit_type}', "
                 "not 'steel_plant'"
             )
-        return cls.from_rows(definition.name, definition.to_rows())
+        return cls._assemble(plant_input.name, plant_input.component_table())
 
     @classmethod
-    def from_rows(cls, plant_name: str, rows: pd.DataFrame) -> SteelPlant:
-        if rows.empty:
+    def _assemble(cls, plant_name: str, component_table: pd.DataFrame) -> SteelPlant:
+        """Create the physical steel model from one plant's component table."""
+
+        if component_table.empty:
             raise ValueError(f"Steel plant '{plant_name}' has no technology rows")
 
-        normalised = rows.copy()
+        normalised = component_table.copy()
         normalised["technology"] = normalised["technology"].astype(str).str.strip().str.lower()
         technologies = normalised["technology"].tolist()
         allowed = set(cls.required_technologies) | set(cls.optional_technologies)

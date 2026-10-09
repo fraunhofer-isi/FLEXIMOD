@@ -23,13 +23,13 @@ def test_cli_warning_capture_prints_friendly_notice_without_trace(
 
     with logger.capture_warnings():
         warnings.warn(
-            "No IDC sell/reduction volumes found. Skipping IDC sell source and compensation plot.",
+            "IDC price contains missing values. Extra detail that should not be shown.",
             stacklevel=1,
         )
 
     output = capsys.readouterr().out
-    assert "Notice: IDC sell source plot skipped" in output
-    assert "plot_idc_sell_source_and_compensation" not in output
+    assert "Notice: IDC price contains missing values in one or more decision windows" in output
+    assert "Extra detail" not in output
 
 
 def test_output_summary_is_compact_and_verbose_lists_paths(
@@ -38,10 +38,10 @@ def test_output_summary_is_compact_and_verbose_lists_paths(
     outputs = {
         "dispatch_results": Path("dispatch_results.csv"),
         "market_ledger": Path("market_ledger.csv"),
-        "plots": [Path("plot_1.png"), Path("plot_2.png")],
+        "dashboard": Path("dashboard.html"),
     }
 
-    assert output_summary(outputs) == "2 table file(s), 2 plot file(s)"
+    assert output_summary(outputs) == "2 table file(s), interactive dashboard"
 
     print_verbose_outputs(CliLogger(verbose=False), outputs)
     assert capsys.readouterr().out == ""
@@ -49,7 +49,7 @@ def test_output_summary_is_compact_and_verbose_lists_paths(
     print_verbose_outputs(CliLogger(verbose=True), outputs)
     verbose_output = capsys.readouterr().out
     assert "dispatch_results.csv" in verbose_output
-    assert "plot_1.png" in verbose_output
+    assert "dashboard.html" in verbose_output
 
 
 def test_run_case_concise_output_hides_individual_output_paths(
@@ -68,7 +68,7 @@ def test_run_case_concise_output_hides_individual_output_paths(
     assert "Additional charges: disabled; market prices are used directly." in output
     assert "Simulating 2025-01-01 for plant_1 (1/1 windows, 0 remaining)" in output
     assert "Day-ahead stage solved for plant_1" not in output
-    assert "Case completed: 1 table file(s), 1 plot file(s) saved." in output
+    assert "Case completed: 1 table file(s), interactive dashboard saved." in output
     assert "Created outputs:" not in output
     assert "dispatch_results.csv" not in output
     assert captured["kwargs"]["output_dir"].name == "cli_case_hybrid_etes_gas"
@@ -89,7 +89,7 @@ def test_run_case_verbose_output_lists_created_paths(
     assert "Additional charges: enabled; plant_1 = 5 tariff components." in output
     assert "Day-ahead stage solved for plant_1" in output
     assert "dispatch_results.csv" in output
-    assert "plot_1.png" in output
+    assert "dashboard.html" in output
 
 
 def test_run_case_direct_study_case_is_passed_to_runner(
@@ -154,7 +154,7 @@ def _patch_runner(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
                 self.progress_callback("Outputs saved")
             return {
                 "dispatch_results": Path("dispatch_results.csv"),
-                "plots": [Path("plot_1.png")],
+                "dashboard": Path("dashboard.html"),
             }
 
     monkeypatch.setattr(runner_module, "SimulationRunner", FakeRunner)

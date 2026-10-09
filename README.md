@@ -58,10 +58,11 @@ Run the first case:
 python src\flexi_mod\simulation\run_case.py --case data\input\hybrid_ETES_ID_buy --study-case hybrid_ETES_ID_buy
 ```
 
-Create plots from the generated output:
+The runner also writes an interactive dashboard (`dashboard.html`) next to the results.
+To rebuild it from existing output:
 
 ```powershell
-python src\flexi_mod\simulation\plot_case.py --case data\input\hybrid_ETES_ID_buy --study-case hybrid_ETES_ID_buy
+python src\flexi_mod\simulation\plot_case.py --case data\input\hybrid_ETES_ID_buy --study-case hybrid_ETES_ID_buy --open
 ```
 
 Check the output folder:
@@ -72,7 +73,7 @@ data/output/hybrid_ETES_ID_buy_hybrid_etes_gas/
 |-- market_ledger.csv
 |-- storage_cost_ledger.csv
 |-- summary_indicators.csv
-`-- plots/
+`-- dashboard.html
 ```
 
 ## Input Structure
@@ -179,12 +180,6 @@ You can also run a case directory directly:
 python src/flexi_mod/simulation/run_case.py --case data/input/hybrid_ETES_ID_buy --study-case hybrid_ETES_ID_buy
 ```
 
-Create plots from existing output files:
-
-```bash
-python src/flexi_mod/simulation/plot_case.py --case data/input/hybrid_ETES_ID_buy --study-case hybrid_ETES_ID_buy --format png
-```
-
 Outputs are written by the runner to `data/output/<case_name>_<strategy_name>/` by default.
 For the first case this is `data/output/hybrid_ETES_ID_buy_hybrid_etes_gas/`:
 
@@ -194,16 +189,60 @@ market_ledger.csv
 storage_cost_ledger.csv
 summary_indicators.csv
 afrr_energy_data_quality_summary.csv
-plots/
+dashboard.html
 ```
 
-The plotting command recalculates analytics from the output CSV files, refreshes
-`summary_indicators.csv`, and writes report-ready figures to
-`data/output/<case_name>_<strategy_name>/plots/`. The first plotting suite includes combined
-plant operation and storage dynamics, market prices and benchmark, electricity
-procurement, storage content by source market, a sample-day explanation figure,
-cost breakdown, heat supply share, electricity market share, and price-response
-plots.
+### Interactive dashboards
+
+Results are explored with Plotly dashboards. There are two front ends that show the same
+charts, so use whichever fits. The full guide, with every option and a description of each tab,
+is in [docs/dashboard.md](docs/dashboard.md).
+
+| | Static HTML | Live Dash app |
+|---|---|---|
+| Start | written by every run, or `plot_case.py` | `fleximod-dashboard` |
+| Needs | nothing (open the file) | `pip install -e .[dashboard]` |
+| Works offline | yes | yes |
+| Best for | one finished case, sharing, archiving | browsing many cases, filtering a period |
+
+**Static dashboard.** `dashboard.html` is one self-contained file with tabs (Overview,
+Markets, Operation, Costs, Patterns, Data), KPI tiles, a plant selector, hover values,
+zoom, and a light/dark switch. It adapts to the plant family detected in the dispatch table
+(steam/ETES and boiler plants, buildings with EV fleets and PV, cement, steel). Every run writes
+it into the output folder (skip it with `--no-plots`). To rebuild it, or to build a comparison
+page across many cases:
+
+```bash
+python src/flexi_mod/simulation/plot_case.py --output-dir data/output/<case_folder> --open
+python src/flexi_mod/simulation/plot_case.py --case data/input/<case> --start 2025-01-01 --end 2025-01-31
+python src/flexi_mod/simulation/plot_case.py --compare data/output/steel_results data/output/cement_results
+```
+
+Running `plot_case.py` with no arguments (for example with the editor's play button) builds the
+dashboard of the most recently written result folder under `data/output`. The script prints
+`Dashboard created: <path>` when it is done.
+
+Long runs are shown at an automatic resolution (hourly, 6-hourly or daily) so each chart stays
+readable; `--resolution native` shows every step. `--plotly-js cdn` makes the file about 5 MB
+smaller but needs internet access when it is opened.
+
+**Live dashboard.** Scans a folder for case outputs (plain `.csv` or `.csv.zst` tables) and
+lets you pick the case, plant, period and resolution, and compare many cases:
+
+```bash
+fleximod-dashboard --root data/output            # then open http://127.0.0.1:8050
+fleximod-dashboard --case data/output/<case_folder>
+```
+
+Without the installed command: `python src/flexi_mod/visualisation/dashboard/dash_app.py`.
+
+**On a remote server** there is no browser: download `dashboard.html` and open it on your own
+computer, or forward the Dash port (`ssh -L 8050:localhost:8050 user@server`, or the Ports tab in
+VS Code) and open <http://localhost:8050> locally.
+
+The dashboard code lives in `src/flexi_mod/visualisation/dashboard/`. Charts that need
+columns a case does not have (for example IDC or aFRR in a day-ahead-only run) are skipped
+rather than failing.
 
 ## Troubleshooting
 
@@ -234,6 +273,7 @@ Additional documentation is available in:
 
 - [Modeling Philosophy And Architecture](docs/modeling_philosophy_and_architecture.md)
 - [Plant Input Reference](docs/plant_inputs.md)
+- [Interactive Dashboards](docs/dashboard.md)
 - [Strategy Documentation](docs/strategies.md)
 
 ## Market Layer

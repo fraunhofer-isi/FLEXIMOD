@@ -12,9 +12,10 @@ technology and all rows with the same `name` belong to one physical plant.
 model. Keep shared plant fields (`name`, `unit_type`, `node`, `objective`, and
 the demand-column name) identical on every row belonging to that plant.
 
-The generic `DataLoader` checks the CSV shape, plant grouping, datetime grid,
-and requested forecast columns. Each plant class then checks its own topology
-and component values when it is constructed with `from_rows()`. Calling
+The generic `DataLoader` checks the CSV shape, prepares each plant's parameters
+and components, and checks the datetime grid and requested forecast columns.
+Each plant class then checks its own topology and component values when the
+plant factory creates it. Calling
 `build_model()` or `solve_horizon()` checks the plant's forecast contract before
 creating Pyomo components. Errors therefore identify the plant, technology, or
 missing `forecasts_df.csv` column that must be corrected.
@@ -59,11 +60,16 @@ steam_1,steam_plant,thermal_storage,steam_1_heat_demand,80,0,16,16,20,0.95,1.0,0
 steam_1,steam_plant,boiler,steam_1_heat_demand,,,,,,,,,20,0,0.9,natural_gas
 ```
 
-The existing market-stage methods take their price and position signals through
-`DispatchSignals`, `IDCAdjustmentSignals`, or `AFRRDownSignals`. For the
-day-ahead stage, forecasts normally include the configured electricity-price
-column, `natural_gas_price`, and the heat-demand column. `co2_price` is only
-needed when it is selected in the stage signals.
+Steam uses product-specific market inputs: `DayAheadPosition`,
+`IntradayAdjustment`, and `BalancingEnergyActivation`. A strategy wraps the
+selected product in an `ElectricityMarketRequest`; the shared electricity
+settlement model adds its market position, while the steam plant checks heat
+and technology feasibility. An awarded aFRR-capacity product is represented
+separately by `BalancingCapacityAward`.
+
+For the day-ahead stage, forecasts normally include the configured
+electricity-price column, `natural_gas_price`, and the heat-demand column.
+`co2_price` is only needed when the selected steam operating inputs use it.
 
 An empty intraday-price value is the existing explicit exception: it is handled
 as a no-action interval and the steam strategy emits a data-quality warning.
@@ -141,8 +147,8 @@ markets:
 This strategy is intentionally day-ahead only. It records each feasible
 plant's electricity use as its day-ahead procurement position and writes the
 same dispatch, market-ledger, storage-ledger, and summary files as other
-runner cases. Cement and steel do not yet have a thermal-storage ledger or
-dedicated plots; their storage ledger is therefore an empty, schema-consistent
+runner cases. Cement and steel do not have a thermal-storage ledger; their dashboard is built from
+the dispatch table, and their storage ledger is an empty, schema-consistent
 table.
 
 ## Building / bus depot
@@ -152,29 +158,25 @@ Use `unit_type=building`, `bus_depot`, or `electric_bus_depot`, with one
 [Building model inputs](building.md) for its full vehicle, charger, trip, and
 availability profile contract.
 
-## Use the generic loader and a physical plant model
+## Use the generic loader and plant factory
 
 The generic loader intentionally does not guess a plant's physical topology.
-It returns plant/component definitions in an ASSUME-style grouped form; the
-plant model remains the authority for technology-specific validation. Building,
-Cement, Steel, and Steam all accept that same definition contract.
+It prepares plant parameters and components in an ASSUME-style grouped form;
+the plant model remains the authority for technology-specific validation.
 
 ```python
 from flexi_mod.data.data_loader import DataLoader
-from flexi_mod.plants.steel_plant import SteelPlant
+from flexi_mod.plants.factory import build_plants
 
 loader = DataLoader(config, input_dir=case_dir)
-definitions = loader.load_plant_definitions()
-steel_definition = definitions["steel_plant"][0]
-plant = SteelPlant.from_definition(steel_definition)
+plant_inputs = loader.load_plant_inputs()
+plant = build_plants(plant_inputs)[0]
 
-forecasts = loader.load_case_inputs(plant_definitions=definitions).forecasts
+forecasts = loader.load_case_inputs(plant_inputs=plant_inputs).forecasts
 plant.validate_inputs(forecasts, electricity_price_column="DE_DA_price")
 model = plant.build_model(config, forecasts, electricity_price_column="DE_DA_price")
 ```
 
 `SimulationRunner` follows the same path for every supported plant family:
-it loads grouped definitions, delegates typed construction to `build_plants`,
-then loads one validated forecast frame through `load_case_inputs`. Legacy
-`from_rows()` methods are retained for notebooks and direct physical-model
-tests, but are no longer the runner's construction path.
+it loads grouped plant inputs, delegates construction to `build_plants`, then
+loads one validated forecast frame through `load_case_inputs`.

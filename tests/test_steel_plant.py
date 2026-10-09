@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from flexi_mod.plants.steel_plant import SteelPlant
+from flexi_mod.plants.factory import build_plants
 
 
 def test_hydrogen_dri_eaf_plant_solves_from_component_rows() -> None:
-    plant = SteelPlant.from_rows("steel_1", _steel_rows())
+    plant = build_plants(_steel_rows())[0]
     forecasts = _forecasts()
 
     result = plant.solve_horizon(_config(), forecasts, electricity_price_column="DE_DA_price")
@@ -48,7 +48,7 @@ def test_electrolyser_supplies_hydrogen_to_dri() -> None:
     forecasts = _forecasts()
     forecasts["DE_DA_price"] = 10.0
 
-    result = SteelPlant.from_rows("steel_1", rows).solve_horizon(
+    result = build_plants(rows)[0].solve_horizon(
         _config(), forecasts, electricity_price_column="DE_DA_price"
     )
 
@@ -60,7 +60,7 @@ def test_steel_plant_requires_dri_and_eaf() -> None:
     rows = _steel_rows().iloc[[0]].copy()
 
     with pytest.raises(ValueError, match="exactly one 'eaf' row"):
-        SteelPlant.from_rows("steel_1", rows)
+        build_plants(rows)
 
 
 def test_steel_plant_parameter_errors_identify_plant_and_technology() -> None:
@@ -71,11 +71,11 @@ def test_steel_plant_parameter_errors_identify_plant_and_technology() -> None:
         ValueError,
         match="Steel plant 'steel_1', technology 'dri_plant'.*max_power",
     ):
-        SteelPlant.from_rows("steel_1", rows)
+        build_plants(rows)
 
 
 def test_steel_plant_forecast_errors_name_the_missing_input() -> None:
-    plant = SteelPlant.from_rows("steel_1", _steel_rows())
+    plant = build_plants(_steel_rows())[0]
     forecasts = _forecasts().drop(columns="iron_ore_price")
 
     with pytest.raises(

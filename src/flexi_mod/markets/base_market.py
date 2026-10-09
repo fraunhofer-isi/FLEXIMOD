@@ -22,11 +22,11 @@ class MarketConfigError(ValueError):
     """Raised when one configured market is incomplete or inconsistent."""
 
 
-class MarketCommitmentKind(StrEnum):
-    """How a market stage carries its result into the next stage."""
+class MarketResultKind(StrEnum):
+    """The result a market stage contributes to subsequent stages."""
 
-    DISPATCH = "dispatch"
-    CAPACITY_RESERVATION = "capacity_reservation"
+    OPERATING_SCHEDULE = "operating_schedule"
+    CAPACITY_AWARD = "capacity_award"
 
 
 @dataclass(frozen=True)
@@ -37,13 +37,13 @@ class BaseMarket:
     config: dict[str, Any]
 
     REQUIRED_SIGNALS: ClassVar[tuple[str, ...]] = ()
-    COMMITMENT_KIND: ClassVar[MarketCommitmentKind] = MarketCommitmentKind.DISPATCH
+    RESULT_KIND: ClassVar[MarketResultKind] = MarketResultKind.OPERATING_SCHEDULE
 
     @property
-    def commitment_kind(self) -> MarketCommitmentKind:
-        """Describe how this stage's result is passed to later market stages."""
+    def result_kind(self) -> MarketResultKind:
+        """Describe the result this stage passes to later market stages."""
 
-        return self.COMMITMENT_KIND
+        return self.RESULT_KIND
 
     @property
     def enabled(self) -> bool:

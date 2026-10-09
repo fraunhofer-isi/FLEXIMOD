@@ -49,7 +49,7 @@ def test_case_inputs_group_components_and_resolve_plant_forecasts(tmp_path: Path
     assert list(inputs.plants_by_type) == ["steam_plant"]
     plant = inputs.plants_by_type["steam_plant"][0]
     assert plant.name == "plant_1"
-    assert plant.metadata["demand"] == "plant_1_heat_demand"
+    assert plant.parameters["demand"] == "plant_1_heat_demand"
     assert set(plant.components) == {"thermal_storage", "boiler"}
     assert plant.components["boiler"]["fuel_type"] == "natural_gas"
 
@@ -100,7 +100,7 @@ def test_case_inputs_support_component_ids_and_plant_forecast_precedence(tmp_pat
     inputs = DataLoader(config, input_dir=case_dir).load_case_inputs()
     plant = inputs.plants_by_type["steel_plant"][0]
 
-    assert plant.metadata["node"] == "north"
+    assert plant.parameters["node"] == "north"
     assert plant.components["dri_1"]["fuel_type"] == "hydrogen"
     assert plant.components["dri_2"]["max_power"] == 20.0
     assert inputs.require_forecast_for(plant, "steel_demand").iloc[0] == pytest.approx(2.0)
@@ -116,7 +116,7 @@ def test_case_inputs_reject_duplicate_component_keys(tmp_path: Path) -> None:
     loader = DataLoader(config, input_dir=case_dir)
 
     with pytest.raises(DataValidationError, match="duplicate component 'thermal_storage'"):
-        loader.load_plant_definitions()
+        loader.load_plant_inputs()
 
 
 def test_idc_enabled_does_not_resample_price_grid(tmp_path: Path) -> None:

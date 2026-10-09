@@ -12,9 +12,29 @@ the current model scope.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pandas as pd
 
 from flexi_mod.markets.base_market import BaseMarket, MarketConfigError
+
+
+@dataclass
+class IntradayAdjustment:
+    """Intraday electricity adjustment and inputs needed for plant delivery."""
+
+    da_price_col: str
+    idc_price_col: str
+    gas_price_col: str
+    da_position_mwh: pd.Series
+    idc_buy_upper_bound_mwh: pd.Series
+    idc_sell_upper_bound_mwh: pd.Series
+    gas_benchmark_eur_per_mwh_th: pd.Series
+    electricity_trading_benchmark_eur_per_mwh_el: pd.Series
+    additional_electricity_charge_eur_per_mwh: pd.Series | None = None
+    tax_rate: float = 0.0
+    co2_price_col: str | None = None
+    co2_emission_factor_t_per_mwh_fuel: float = 0.0
 
 
 class IntradayContinuousMarket(BaseMarket):

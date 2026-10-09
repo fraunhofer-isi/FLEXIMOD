@@ -142,3 +142,21 @@ def _cement_rows() -> list[dict[str, object]]:
         },
         {**common, "technology": "kiln", "specific_heat_demand": 1.0},
     ]
+
+
+def test_runner_writes_interactive_dashboard(tmp_path: Path) -> None:
+    case_dir = tmp_path / "industrial_day_ahead"
+    case_dir.mkdir()
+    _write_case(case_dir)
+
+    output_paths = SimulationRunner(
+        case_dir,
+        output_dir=case_dir / "output",
+        output_options=OutputOptions(create_plots=True),
+    ).run()
+
+    dashboard = output_paths["dashboard"]
+    assert dashboard.name == "dashboard.html"
+    content = dashboard.read_text(encoding="utf-8")
+    assert "Plotly.newPlot" in content
+    assert "cement_1" in content and "steel_1" in content

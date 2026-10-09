@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from flexi_mod.plants.cement_plant import CementPlant
+from flexi_mod.plants.factory import build_plants
 
 
 def test_cement_kiln_line_solves_from_component_rows() -> None:
-    plant = CementPlant.from_rows("cement_1", _cement_rows())
+    plant = build_plants(_cement_rows())[0]
 
     result = plant.solve_horizon(_config(), _forecasts(), electricity_price_column="DE_DA_price")
 
@@ -21,7 +21,7 @@ def test_cement_kiln_line_solves_from_component_rows() -> None:
 
 
 def test_cement_input_aliases_are_normalised() -> None:
-    plant = CementPlant.from_rows("cement_1", _cement_rows())
+    plant = build_plants(_cement_rows())[0]
 
     assert set(plant.components) == {"preheater", "calciner", "kiln"}
 
@@ -30,7 +30,7 @@ def test_cement_plant_rejects_missing_kiln() -> None:
     rows = _cement_rows().iloc[:2].copy()
 
     with pytest.raises(ValueError, match="exactly one 'kiln' row"):
-        CementPlant.from_rows("cement_1", rows)
+        build_plants(rows)
 
 
 def test_cement_parameter_errors_identify_plant_and_technology() -> None:
@@ -41,11 +41,11 @@ def test_cement_parameter_errors_identify_plant_and_technology() -> None:
         ValueError,
         match="Cement plant 'cement_1', technology 'calciner'.*eta_fossil",
     ):
-        CementPlant.from_rows("cement_1", rows)
+        build_plants(rows)
 
 
 def test_cement_forecast_errors_name_the_missing_input() -> None:
-    plant = CementPlant.from_rows("cement_1", _cement_rows())
+    plant = build_plants(_cement_rows())[0]
     forecasts = _forecasts().drop(columns="coal_price")
 
     with pytest.raises(

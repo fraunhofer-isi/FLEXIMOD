@@ -9,12 +9,19 @@ import pytest
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataLoader
-from flexi_mod.plants.steam_generation_plant import (
-    AFRRDownSignals,
-    DispatchSignals,
-    IDCAdjustmentSignals,
-    SteamGenerationPlant,
-    SteamMarketStage,
+from flexi_mod.markets.afrr_energy import BalancingEnergyActivation
+from flexi_mod.markets.day_ahead import DayAheadMarket, DayAheadPosition
+from flexi_mod.markets.electricity_settlement import (
+    ElectricityMarketRequest,
+    ElectricityMarketStage,
+)
+from flexi_mod.markets.intraday_continuous import IntradayAdjustment
+from flexi_mod.plants.factory import build_plants
+from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
+from flexi_mod.simulation.market_stages import (
+    MarketStageContext,
+    MarketStageInstruction,
+    MarketStageState,
 )
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 
@@ -24,7 +31,7 @@ CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES
 def test_steam_generation_plant_builds_from_plants_csv() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
     plants_df = DataLoader(config, input_dir=CASE_DIR).load_plants()
-    plants = SteamGenerationPlant.from_plants_dataframe(plants_df)
+    plants = build_plants(plants_df)
 
     assert len(plants) == 1
     assert set(plants[0].components) == {"thermal_storage", "boiler"}
@@ -32,23 +39,21 @@ def test_steam_generation_plant_builds_from_plants_csv() -> None:
     assert plants[0].gas_boiler.efficiency == 0.85
 
 
-def test_steam_generation_plant_builds_from_common_loader_definition() -> None:
+def test_steam_generation_plant_builds_from_common_loader_input() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
     loader = DataLoader(config, input_dir=CASE_DIR)
-    definition = loader.load_plant_definitions()["steam_plant"][0]
+    plant_input = loader.load_plant_inputs()["steam_plant"][0]
 
-    plant = SteamGenerationPlant.from_definition(definition)
+    plant = SteamGenerationPlant.create(plant_input)
 
-    assert plant.name == definition.name
+    assert plant.name == plant_input.name
     assert set(plant.components) == {"thermal_storage", "boiler"}
     assert plant.required_forecast_columns() == {"plant_1_heat_demand"}
 
 
 def test_steam_generation_plant_exposes_modeler_facing_build_sequence() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
-    plant = SteamGenerationPlant.from_plants_dataframe(
-        DataLoader(config, input_dir=CASE_DIR).load_plants()
-    )[0]
+    plant = build_plants(DataLoader(config, input_dir=CASE_DIR).load_plants())[0]
     strategy = HybridETESGasStrategy(config)
     index = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
     forecasts = pd.DataFrame(
@@ -60,7 +65,7 @@ def test_steam_generation_plant_exposes_modeler_facing_build_sequence() -> None:
         },
         index=index,
     )
-    signals = DispatchSignals(
+    position = DayAheadPosition(
         electricity_price_col="DE_DA_price",
         gas_price_col="natural_gas_price",
         co2_price_col="co2_price",
@@ -71,12 +76,61 @@ def test_steam_generation_plant_exposes_modeler_facing_build_sequence() -> None:
         charge_allowed=pd.Series(False, index=index),
     )
 
-    model = plant.build_model(SteamMarketStage.DAY_AHEAD, config, forecasts, signals)
+    model = plant.build_model(ElectricityMarketStage.DAY_AHEAD, config, forecasts, position)
 
     assert list(model.T) == [0, 1, 2, 3]
     assert set(model.technology_blocks) == {"thermal_storage", "boiler"}
     assert hasattr(model, "market_position_matches_physical_consumption")
     assert hasattr(model, "objective")
+
+
+def test_electricity_market_request_separates_policy_from_plant_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    plant = build_plants(DataLoader(config, input_dir=CASE_DIR).load_plants())[0]
+    strategy = HybridETESGasStrategy(config)
+    index = pd.date_range("2025-01-01 00:00", periods=2, freq="15min")
+    forecasts = pd.DataFrame(
+        {
+            "plant_1_heat_demand": [2.0, 2.0],
+            "DE_DA_price": [120.0, 120.0],
+            "natural_gas_price": [80.0, 80.0],
+        },
+        index=index,
+    )
+    context = MarketStageContext(
+        market=DayAheadMarket("day_ahead", config.market("day_ahead")),
+        plant=plant,
+        forecasts=forecasts,
+        stage_state=MarketStageState.empty(index),
+    )
+    executed = pd.DataFrame({"plant_name": plant.name}, index=index)
+
+    def fake_solve(
+        received_config: CaseConfig,
+        received_forecasts: pd.DataFrame,
+        stage: ElectricityMarketStage,
+        market_input: DayAheadPosition,
+        **kwargs: object,
+    ) -> pd.DataFrame:
+        assert received_config is config
+        assert received_forecasts is forecasts
+        assert stage == ElectricityMarketStage.DAY_AHEAD
+        assert isinstance(market_input, DayAheadPosition)
+        assert kwargs["rolling"] is False
+        return executed
+
+    monkeypatch.setattr(plant, "solve_market_stage", fake_solve)
+
+    instruction = strategy.prepare_market_stage(context)
+    assert isinstance(instruction, MarketStageInstruction)
+    assert isinstance(instruction.payload, ElectricityMarketRequest)
+    values = plant.solve_market_instruction(config, forecasts, instruction)
+    result = strategy.settle_market_stage(context, instruction, values)
+
+    assert values is executed
+    assert result.values is executed
 
 
 def test_steam_parameter_errors_identify_plant_and_technology() -> None:
@@ -88,14 +142,12 @@ def test_steam_parameter_errors_identify_plant_and_technology() -> None:
         ValueError,
         match="Steam plant 'plant_1', technology 'boiler'.*efficiency",
     ):
-        SteamGenerationPlant.from_plants_dataframe(rows)
+        build_plants(rows)
 
 
 def test_steam_forecast_errors_name_the_missing_input() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
-    plant = SteamGenerationPlant.from_plants_dataframe(
-        DataLoader(config, input_dir=CASE_DIR).load_plants()
-    )[0]
+    plant = build_plants(DataLoader(config, input_dir=CASE_DIR).load_plants())[0]
     index = pd.date_range("2025-01-01 00:00", periods=2, freq="15min")
     forecasts = pd.DataFrame(
         {
@@ -104,7 +156,7 @@ def test_steam_forecast_errors_name_the_missing_input() -> None:
         },
         index=index,
     )
-    signals = DispatchSignals(
+    position = DayAheadPosition(
         electricity_price_col="DE_DA_price",
         gas_price_col="natural_gas_price",
         gas_benchmark_eur_per_mwh_th=pd.Series(0.0, index=index),
@@ -115,14 +167,14 @@ def test_steam_forecast_errors_name_the_missing_input() -> None:
         ValueError,
         match="Steam plant 'plant_1'.*forecasts_df.csv.*natural_gas_price",
     ):
-        plant.build_model(SteamMarketStage.DAY_AHEAD, config, forecasts, signals)
+        plant.build_model(ElectricityMarketStage.DAY_AHEAD, config, forecasts, position)
 
 
 def test_steam_generation_plant_short_horizon_solves() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
     loader = DataLoader(config, input_dir=CASE_DIR)
     plants_df = loader.load_plants()
-    plant = SteamGenerationPlant.from_plants_dataframe(plants_df)[0]
+    plant = build_plants(plants_df)[0]
     strategy = HybridETESGasStrategy(config)
     forecasts = pd.DataFrame(
         {
@@ -135,7 +187,7 @@ def test_steam_generation_plant_short_horizon_solves() -> None:
     )
     price_col = config.market_signal("day_ahead", "price")
     benchmark = strategy.calculate_gas_based_heat_cost(plant, forecasts)
-    signals = DispatchSignals(
+    position = DayAheadPosition(
         electricity_price_col=price_col,
         gas_price_col="natural_gas_price",
         co2_price_col="co2_price",
@@ -143,7 +195,7 @@ def test_steam_generation_plant_short_horizon_solves() -> None:
         charge_allowed=pd.Series(False, index=forecasts.index),
     )
 
-    result = plant.solve_horizon(config, forecasts, signals)
+    result = plant.solve_horizon(config, forecasts, position)
 
     required_columns = {
         "etes_charge_MWh",
@@ -161,7 +213,7 @@ def test_steam_generation_plant_short_horizon_solves() -> None:
 def test_steam_generation_plant_short_idc_adjustment_horizon_solves() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
     loader = DataLoader(config, input_dir=CASE_DIR)
-    plant = SteamGenerationPlant.from_plants_dataframe(loader.load_plants())[0]
+    plant = build_plants(loader.load_plants())[0]
     strategy = HybridETESGasStrategy(config)
 
     index = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
@@ -180,7 +232,7 @@ def test_steam_generation_plant_short_idc_adjustment_horizon_solves() -> None:
         gas_benchmark,
     )
     da_position = pd.Series([0.8] * 4, index=index)
-    signals = IDCAdjustmentSignals(
+    position = IntradayAdjustment(
         da_price_col="DE_DA_price",
         idc_price_col="DE_ID3_price",
         gas_price_col="natural_gas_price",
@@ -191,7 +243,7 @@ def test_steam_generation_plant_short_idc_adjustment_horizon_solves() -> None:
         electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
     )
 
-    result = plant.solve_intraday_adjustment_horizon(config, forecasts, signals)
+    result = plant.solve_intraday_adjustment_horizon(config, forecasts, position)
 
     required_columns = {
         "DA_position_MWh",
@@ -209,9 +261,7 @@ def test_steam_generation_plant_short_idc_adjustment_horizon_solves() -> None:
 
 def test_steam_generation_plant_short_afrr_down_horizon_solves() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
-    plant = SteamGenerationPlant.from_plants_dataframe(
-        DataLoader(config, input_dir=CASE_DIR).load_plants()
-    )[0]
+    plant = build_plants(DataLoader(config, input_dir=CASE_DIR).load_plants())[0]
     strategy = HybridETESGasStrategy(config)
 
     index = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
@@ -232,7 +282,7 @@ def test_steam_generation_plant_short_afrr_down_horizon_solves() -> None:
     )
     zero = pd.Series([0.0] * 4, index=index)
     activation = pd.Series([0.4] * 4, index=index)
-    signals = AFRRDownSignals(
+    position = BalancingEnergyActivation(
         da_price_col="DE_DA_price",
         idc_price_col="DE_ID3_price",
         gas_price_col="natural_gas_price",
@@ -248,7 +298,7 @@ def test_steam_generation_plant_short_afrr_down_horizon_solves() -> None:
         electricity_trading_benchmark_eur_per_mwh_el=electricity_benchmark,
     )
 
-    result = plant.solve_afrr_down_horizon(config, forecasts, signals)
+    result = plant.solve_afrr_down_horizon(config, forecasts, position)
 
     assert result["afrr_energy_activated_MWh"].sum() == pytest.approx(1.6)
     assert result["actual_electricity_consumption_MWh"].to_numpy() == pytest.approx(
@@ -262,9 +312,7 @@ def test_steam_generation_plant_short_afrr_down_horizon_solves() -> None:
 
 def test_steam_generation_plant_fails_when_real_heat_supply_is_insufficient() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
-    plant = SteamGenerationPlant.from_plants_dataframe(
-        DataLoader(config, input_dir=CASE_DIR).load_plants()
-    )[0]
+    plant = build_plants(DataLoader(config, input_dir=CASE_DIR).load_plants())[0]
     strategy = HybridETESGasStrategy(config)
 
     index = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
@@ -277,7 +325,7 @@ def test_steam_generation_plant_fails_when_real_heat_supply_is_insufficient() ->
         },
         index=index,
     )
-    signals = DispatchSignals(
+    position = DayAheadPosition(
         electricity_price_col="DE_DA_price",
         gas_price_col="natural_gas_price",
         co2_price_col="co2_price",
@@ -289,7 +337,7 @@ def test_steam_generation_plant_fails_when_real_heat_supply_is_insufficient() ->
     )
 
     with pytest.raises(RuntimeError, match="infeasible"):
-        plant.solve_horizon(config, forecasts, signals)
+        plant.solve_horizon(config, forecasts, position)
 
 
 def _assert_useful_heat_matches_demand(result: pd.DataFrame) -> None:

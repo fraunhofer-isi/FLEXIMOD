@@ -9,7 +9,7 @@ import pytest
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataLoader
-from flexi_mod.plants import Building
+from flexi_mod.plants.factory import build_plants
 from flexi_mod.simulation.run_case import resolve_example_paths
 from flexi_mod.simulation.simulation_runner import OutputOptions, SimulationRunner
 from flexi_mod.strategies import build_strategy
@@ -27,7 +27,7 @@ def test_building_example_optimizes_with_rolling_horizon(
     config = CaseConfig.from_case_dir(EXAMPLE_DIR)
     loader = DataLoader(config, input_dir=EXAMPLE_DIR)
     plants = loader.load_plants()
-    building = Building.from_plants_dataframe(plants)[0]
+    building = build_plants(plants)[0]
     strategy = build_strategy(config.strategy_name, config)
     assert isinstance(strategy, BuildingStrategy)
 

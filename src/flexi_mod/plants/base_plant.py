@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import pandas as pd
+
+    from flexi_mod.config.case_config import CaseConfig
     from flexi_mod.regulations import GridFeeRegulation
+    from flexi_mod.simulation.market_stages import MarketStageInstruction
 
 
 DEFAULT_GAS_EMISSIONS_FACTOR_KG_PER_MWH = 201.0
@@ -39,3 +43,21 @@ class BasePlant:
         """
 
         return set()
+
+    def solve_market_instruction(
+        self,
+        config: CaseConfig,
+        forecasts: pd.DataFrame,
+        instruction: MarketStageInstruction,
+    ) -> pd.DataFrame:
+        """Execute one strategy instruction through this plant's physical model.
+
+        Subclasses define the instruction payload that they accept.  The
+        runner uses this single plant-facing entry point, so market and
+        strategy code never need to call a technology-specific Pyomo solver.
+        """
+
+        del config, forecasts, instruction
+        raise NotImplementedError(
+            f"Plant '{type(self).__name__}' does not implement market-instruction execution"
+        )

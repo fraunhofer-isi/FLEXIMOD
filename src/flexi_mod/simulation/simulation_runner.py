@@ -12,22 +12,27 @@ from pathlib import Path
 import pandas as pd
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.data.data_loader import DataLoader, PlantDefinition
+from flexi_mod.data.data_loader import DataLoader, PlantInput
 from flexi_mod.ledgers.market_ledger import MarketLedger
 from flexi_mod.ledgers.storage_cost_ledger import StorageCostLedger
-from flexi_mod.markets import BaseMarket, MarketCommitmentKind, build_markets
+from flexi_mod.markets import BaseMarket, MarketResultKind, build_markets
+from flexi_mod.markets.afrr_capacity import capacity_award_from_result_frame
 from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
+from flexi_mod.markets.day_ahead import DayAheadPosition
+from flexi_mod.markets.electricity_settlement import ElectricityMarketStage
 from flexi_mod.plants.building import Building
 from flexi_mod.plants.cement_plant import CementPlant
 from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.steam_generation_plant import (
-    DispatchSignals,
     SteamGenerationPlant,
-    SteamMarketStage,
 )
 from flexi_mod.plants.steel_plant import SteelPlant
 from flexi_mod.regulations import GridFeeResult, build_grid_fee_regulation
-from flexi_mod.simulation.market_stages import MarketCommitments, MarketStageContext
+from flexi_mod.simulation.market_stages import (
+    MarketStageContext,
+    MarketStageResult,
+    MarketStageState,
+)
 from flexi_mod.strategies import build_strategy
 from flexi_mod.strategies.building_strategy import BuildingStrategy
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
@@ -35,7 +40,8 @@ from flexi_mod.strategies.industrial_day_ahead_strategy import (
     IndustrialDayAheadCostMinimisationStrategy,
 )
 from flexi_mod.visualisation.analytics import calculate_summary_indicators
-from flexi_mod.visualisation.plots import create_case_plots
+from flexi_mod.visualisation.dashboard.data import build_case
+from flexi_mod.visualisation.dashboard.static_html import write_case_dashboard
 
 DAY_AHEAD = "day_ahead"
 INTRADAY_CONTINUOUS = "intraday_continuous"
@@ -96,8 +102,8 @@ class SimulationRunner:
 
     def run(self) -> dict[str, Path | list[Path]]:
         self._progress("Loading input data")
-        plant_definitions = self.loader.load_plant_definitions()
-        plants = build_plants(plant_definitions)
+        plant_inputs = self.loader.load_plant_inputs()
+        plants = build_plants(plant_inputs)
         building_plants = [plant for plant in plants if isinstance(plant, Building)]
         steam_plants = [plant for plant in plants if isinstance(plant, SteamGenerationPlant)]
         industrial_plants = [
@@ -125,7 +131,7 @@ class SimulationRunner:
             required_columns = self.loader.required_forecast_columns(
                 extra_required_columns=extra_required_columns,
             )
-            forecasts = self._load_case_forecasts(plant_definitions, required_columns)
+            forecasts = self._load_case_forecasts(plant_inputs, required_columns)
             self._progress("Input data loaded")
             return self._run_building_case(building_plants, forecasts, strategy)
 
@@ -141,7 +147,7 @@ class SimulationRunner:
             required_columns = self.loader.required_forecast_columns(
                 extra_required_columns=extra_required_columns,
             )
-            forecasts = self._load_case_forecasts(plant_definitions, required_columns)
+            forecasts = self._load_case_forecasts(plant_inputs, required_columns)
             self._progress("Input data loaded")
             return self._run_industrial_case(industrial_plants, forecasts, strategy)
 
@@ -156,7 +162,7 @@ class SimulationRunner:
             raise ValueError("Steam plant cases require a hybrid steam strategy")
 
         plants = steam_plants
-        additional_charges = self.loader.load_additional_charges(plant_definitions)
+        additional_charges = self.loader.load_additional_charges(plant_inputs)
         for plant in plants:
             regulation = build_grid_fee_regulation(
                 self.config.country,
@@ -179,7 +185,7 @@ class SimulationRunner:
         required_columns = self.loader.required_forecast_columns(
             extra_required_columns=extra_required_columns,
         )
-        forecasts = self._load_case_forecasts(plant_definitions, required_columns)
+        forecasts = self._load_case_forecasts(plant_inputs, required_columns)
         self._progress("Input data loaded")
         dispatch_results = self._run_market_sequence(plants, forecasts, strategy)
 
@@ -287,30 +293,60 @@ class SimulationRunner:
             output_paths["afrr_capacity_block_summary"] = path
 
         if self.output_options.create_plots:
-            self._progress("Plot creation started")
-            output_paths["plots"] = create_case_plots(
+            path = self._write_dashboard(
+                output_dir,
                 dispatch_results,
                 summary,
-                output_dir,
-                market_ledger=market_ledger.to_dataframe(),
-                storage_cost_ledger=storage_ledger.to_dataframe(),
+                storage=storage_ledger.to_dataframe(),
+                grid_fees=_grid_fee_summary_frame(grid_fee_results) if grid_fee_results else None,
+                afrr_blocks=strategy.afrr_capacity_block_summary,
             )
-            self._progress("Plots created")
+            if path is not None:
+                output_paths["dashboard"] = path
 
         self._progress("Outputs saved")
 
         return output_paths
 
+    def _write_dashboard(
+        self,
+        output_dir: Path,
+        dispatch_results: pd.DataFrame,
+        summary: pd.DataFrame,
+        storage: pd.DataFrame | None = None,
+        grid_fees: pd.DataFrame | None = None,
+        afrr_blocks: pd.DataFrame | None = None,
+    ) -> Path | None:
+        """Write ``dashboard.html``; a failed report never discards a finished simulation."""
+
+        self._progress("Dashboard creation started")
+        try:
+            case = build_case(
+                name=output_dir.name,
+                dispatch=dispatch_results,
+                summary=summary,
+                storage=storage,
+                grid_fees=grid_fees,
+                afrr_blocks=afrr_blocks,
+                output_dir=output_dir,
+            )
+            path = write_case_dashboard(case)
+        except Exception as error:
+            warnings.warn(f"Dashboard creation failed: {error}", stacklevel=2)
+            return None
+        self._progress("Dashboard created")
+        return path
+
     def _load_case_forecasts(
         self,
-        plant_definitions: dict[str, list[PlantDefinition]],
+        plant_inputs: dict[str, list[PlantInput]],
         required_columns: set[str],
     ) -> pd.DataFrame:
         """Load one validated forecast frame paired with the grouped plant inputs."""
 
         return self.loader.load_case_inputs(
             required_columns=required_columns,
-            plant_definitions=plant_definitions,
+            plant_inputs=plant_inputs,
         ).forecasts
 
     def _run_building_case(
@@ -341,13 +377,16 @@ class SimulationRunner:
             _building_storage_ledger(dispatch_results).to_csv(path, index=False)
             output_paths["storage_cost_ledger"] = path
 
+        building_summary = _building_summary(dispatch_results)
         if self.output_options.save_summary_indicators:
             path = output_dir / "summary_indicators.csv"
-            _building_summary(dispatch_results).to_csv(path, index=False)
+            building_summary.to_csv(path, index=False)
             output_paths["summary_indicators"] = path
 
         if self.output_options.create_plots:
-            self._progress("Building plots are not implemented; plot creation skipped")
+            path = self._write_dashboard(output_dir, dispatch_results, building_summary)
+            if path is not None:
+                output_paths["dashboard"] = path
         self._progress("Outputs saved")
         return output_paths
 
@@ -382,7 +421,7 @@ class SimulationRunner:
                         market=self.markets[DAY_AHEAD],
                         plant=building,
                         forecasts=window.forecasts,
-                        commitments=MarketCommitments.empty(window.forecasts.index),
+                        stage_state=MarketStageState.empty(window.forecasts.index),
                         initial_soc_mwh=current_soc,
                     )
                 )
@@ -435,18 +474,20 @@ class SimulationRunner:
                 output_dir / "storage_cost_ledger.csv"
             )
 
+        summary = calculate_summary_indicators(
+            dispatch_results,
+            market_ledger=market_ledger.to_dataframe(),
+            storage_cost_ledger=storage_ledger.to_dataframe(),
+        )
         if self.output_options.save_summary_indicators:
-            summary = calculate_summary_indicators(
-                dispatch_results,
-                market_ledger=market_ledger.to_dataframe(),
-                storage_cost_ledger=storage_ledger.to_dataframe(),
-            )
             path = output_dir / "summary_indicators.csv"
             summary.to_csv(path, index=False)
             output_paths["summary_indicators"] = path
 
         if self.output_options.create_plots:
-            self._progress("Cement and steel plots are not implemented; plot creation skipped")
+            path = self._write_dashboard(output_dir, dispatch_results, summary)
+            if path is not None:
+                output_paths["dashboard"] = path
         self._progress("Outputs saved")
         return output_paths
 
@@ -481,7 +522,7 @@ class SimulationRunner:
                         market=market,
                         plant=plant,
                         forecasts=window.forecasts,
-                        commitments=MarketCommitments.empty(window.forecasts.index),
+                        stage_state=MarketStageState.empty(window.forecasts.index),
                     )
                 )
                 if stage_result.market_name != market.name:
@@ -489,9 +530,9 @@ class SimulationRunner:
                         f"Strategy returned result for '{stage_result.market_name}' while "
                         f"executing market '{market.name}'"
                     )
-                if stage_result.commitment_kind != MarketCommitmentKind.DISPATCH:
+                if stage_result.result_kind != MarketResultKind.OPERATING_SCHEDULE:
                     raise ValueError(
-                        "Industrial day-ahead strategy must return a dispatch commitment"
+                        "Industrial day-ahead strategy must return an operating schedule"
                     )
                 committed = stage_result.values.reindex(window.commit_index).copy()
                 committed["rolling_window"] = window.number
@@ -575,7 +616,7 @@ class SimulationRunner:
                     f"{window_start:%Y-%m-%d %H:%M} to {window_end:%Y-%m-%d %H:%M}{soc_note}"
                 )
 
-                commitments = MarketCommitments.empty(window_forecasts.index)
+                stage_state = MarketStageState.empty(window_forecasts.index)
                 stage_outputs: dict[str, pd.DataFrame] = {}
                 dispatch_stage_ran = False
 
@@ -589,44 +630,45 @@ class SimulationRunner:
                     if timing:
                         self._progress(timing)
 
-                    stage_result = strategy.decide_market_stage(
-                        MarketStageContext(
+                    stage_result = self._execute_steam_market_stage(
+                        strategy=strategy,
+                        context=MarketStageContext(
                             market=market,
                             plant=plant,
                             forecasts=window_forecasts,
-                            commitments=commitments,
+                            stage_state=stage_state,
                             initial_soc_mwh=current_soc,
-                        )
+                        ),
                     )
                     if stage_result.market_name != market.name:
                         raise ValueError(
                             f"Strategy returned result for '{stage_result.market_name}' while "
                             f"executing market '{market.name}'"
                         )
-                    if stage_result.commitment_kind != market.commitment_kind:
+                    if stage_result.result_kind != market.result_kind:
                         raise ValueError(
-                            f"Strategy returned commitment kind '{stage_result.commitment_kind}' "
-                            f"for market '{market.name}', expected '{market.commitment_kind}'"
+                            f"Strategy returned result kind '{stage_result.result_kind}' "
+                            f"for market '{market.name}', expected '{market.result_kind}'"
                         )
-                    if stage_result.commitment_kind == MarketCommitmentKind.CAPACITY_RESERVATION:
-                        commitments = MarketCommitments(
-                            positions=commitments.positions,
-                            capacity_reservation=stage_result.values,
+                    if stage_result.result_kind == MarketResultKind.CAPACITY_AWARD:
+                        stage_state = MarketStageState(
+                            operating_schedule=stage_state.operating_schedule,
+                            capacity_award=stage_result.values,
                         )
-                        stage_outputs[market.name] = commitments.capacity_reservation.copy()
+                        stage_outputs[market.name] = stage_state.capacity_award.copy()
                         capacity_summary_parts.extend(
-                            _capacity_summaries_for_commit(
+                            _capacity_summaries_for_window(
                                 strategy.afrr_capacity_block_summary,
-                                commitments.capacity_reservation,
+                                stage_state.capacity_award,
                                 commit_index,
                             )
                         )
                     else:
-                        commitments = MarketCommitments(
-                            positions=stage_result.values,
-                            capacity_reservation=commitments.capacity_reservation,
+                        stage_state = MarketStageState(
+                            operating_schedule=stage_result.values,
+                            capacity_award=stage_state.capacity_award,
                         )
-                        stage_outputs[market.name] = commitments.positions.copy()
+                        stage_outputs[market.name] = stage_state.operating_schedule.copy()
                         dispatch_stage_ran = True
                     self._progress(f"{_stage_label(market.name)} stage solved for {plant.name}")
 
@@ -635,15 +677,15 @@ class SimulationRunner:
                         plant=plant,
                         config=self.config,
                         forecasts=window_forecasts,
-                        capacity_reservation=commitments.capacity_reservation,
+                        capacity_award_values=stage_state.capacity_award,
                         initial_soc_mwh=current_soc,
                     )
-                    commitments = MarketCommitments(
-                        positions=fixed_positions,
-                        capacity_reservation=commitments.capacity_reservation,
+                    stage_state = MarketStageState(
+                        operating_schedule=fixed_positions,
+                        capacity_award=stage_state.capacity_award,
                     )
 
-                committed = commitments.positions.reindex(commit_index).copy()
+                committed = stage_state.operating_schedule.reindex(commit_index).copy()
                 committed = _add_stage_dispatch_columns(committed, stage_outputs)
                 dispatch_parts.append(committed)
                 if has_storage:
@@ -667,6 +709,40 @@ class SimulationRunner:
             .set_index("datetime")
         )
         return combined
+
+    def _execute_steam_market_stage(
+        self,
+        strategy: HybridETESGasStrategy,
+        context: MarketStageContext,
+    ) -> MarketStageResult:
+        """Coordinate one Steam market stage without owning plant feasibility.
+
+        Capacity produces a commercial award directly from the strategy.
+        Operating-schedule stages follow the reusable contract: the strategy
+        prepares a typed instruction, the plant runs its Pyomo feasibility and
+        operation solve, and the strategy settles the executed values.
+        """
+
+        if context.market.result_kind == MarketResultKind.CAPACITY_AWARD:
+            return strategy.decide_market_stage(context)
+
+        instruction = strategy.prepare_market_stage(context)
+        if instruction.market_name != context.market.name:
+            raise ValueError(
+                f"Strategy prepared an instruction for '{instruction.market_name}' while "
+                f"executing market '{context.market.name}'"
+            )
+        if instruction.result_kind != context.market.result_kind:
+            raise ValueError(
+                f"Strategy prepared result kind '{instruction.result_kind}' for "
+                f"market '{context.market.name}', expected '{context.market.result_kind}'"
+            )
+        values = context.plant.solve_market_instruction(
+            self.config,
+            context.forecasts,
+            instruction,
+        )
+        return strategy.settle_market_stage(context, instruction, values)
 
     def _progress(self, message: str) -> None:
         if self._progress_callback is not None:
@@ -890,7 +966,7 @@ def _run_zero_electricity_dispatch(
     plant: SteamGenerationPlant,
     config: CaseConfig,
     forecasts: pd.DataFrame,
-    capacity_reservation: pd.DataFrame,
+    capacity_award_values: pd.DataFrame,
     initial_soc_mwh: float,
 ) -> pd.DataFrame:
     """Dispatch useful heat with no electricity market procurement."""
@@ -902,7 +978,7 @@ def _run_zero_electricity_dispatch(
     if plant.gas_boiler is None:
         raise ValueError(f"Plant '{plant.name}' needs a gas boiler for zero-electricity dispatch")
     gas_benchmark = dispatch_forecasts[gas_price_col].astype(float) / plant.gas_boiler.efficiency
-    signals = DispatchSignals(
+    position = DayAheadPosition(
         electricity_price_col=zero_price_col,
         gas_price_col=gas_price_col,
         gas_benchmark_eur_per_mwh_th=gas_benchmark,
@@ -912,14 +988,19 @@ def _run_zero_electricity_dispatch(
             index=dispatch_forecasts.index,
         ),
         tax_rate=getattr(plant.grid_fee_regulation, "electricity_tax_rate", 0.0),
-        **_capacity_signal_kwargs(capacity_reservation, dispatch_forecasts.index),
+    )
+    capacity_award = capacity_award_from_result_frame(
+        capacity_award_values,
+        dispatch_forecasts.index,
+        config.timestep_minutes / 60.0,
     )
     result = plant.solve_market_stage(
         config,
         dispatch_forecasts,
-        SteamMarketStage.DAY_AHEAD,
-        signals,
+        ElectricityMarketStage.DAY_AHEAD,
+        position,
         initial_soc_mwh=initial_soc_mwh,
+        capacity_award=capacity_award,
     )
     result["DA_position_MWh"] = 0.0
     result["final_planned_electricity_MWh"] = 0.0
@@ -928,112 +1009,17 @@ def _run_zero_electricity_dispatch(
     return result
 
 
-def _capacity_signal_kwargs(
-    capacity_reservation: pd.DataFrame | None,
-    index: pd.DatetimeIndex,
-) -> dict[str, pd.Series]:
-    if capacity_reservation is None or capacity_reservation.empty:
-        return {}
-
-    frame = capacity_reservation.reindex(index)
-    return {
-        "reserved_capacity_mwh": _capacity_float_column(
-            frame,
-            index,
-            "afrr_capacity_reserved_MWh",
-        ),
-        "afrr_capacity_block_id": _capacity_object_column(
-            frame,
-            index,
-            "afrr_capacity_block_id",
-            "",
-        ),
-        "afrr_capacity_block_duration_h": _capacity_float_column(
-            frame,
-            index,
-            "block_duration_h",
-        ),
-        "afrr_capacity_price_eur_per_mw_h": _capacity_float_column(
-            frame,
-            index,
-            "capacity_clearing_price_EUR_per_MW_h",
-        ),
-        "afrr_capacity_pricing_rule": _capacity_object_column(
-            frame,
-            index,
-            "capacity_pricing_rule",
-            "",
-        ),
-        "afrr_capacity_bid_price_eur_per_mw_h": _capacity_float_column(
-            frame,
-            index,
-            "capacity_bid_price_EUR_per_MW_h",
-        ),
-        "afrr_capacity_settlement_price_eur_per_mw_h": _capacity_float_column(
-            frame,
-            index,
-            "capacity_settlement_price_EUR_per_MW_h",
-        ),
-        "afrr_capacity_reserved_mw": _capacity_float_column(
-            frame,
-            index,
-            "afrr_capacity_reserved_MW",
-        ),
-        "afrr_capacity_revenue_eur": _capacity_float_column(
-            frame,
-            index,
-            "afrr_capacity_revenue_EUR",
-        ),
-        "afrr_capacity_opportunity_cost_eur": _capacity_float_column(
-            frame,
-            index,
-            "afrr_capacity_opportunity_cost_EUR",
-        ),
-        "afrr_capacity_market_surplus_eur": _capacity_float_column(
-            frame,
-            index,
-            "afrr_capacity_market_surplus_EUR",
-        ),
-        "afrr_capacity_net_value_eur": _capacity_float_column(
-            frame,
-            index,
-            "afrr_capacity_net_value_EUR",
-        ),
-    }
-
-
-def _capacity_float_column(
-    capacity_reservation: pd.DataFrame,
-    index: pd.DatetimeIndex,
-    column: str,
-) -> pd.Series:
-    if column not in capacity_reservation:
-        return pd.Series(0.0, index=index)
-    return capacity_reservation[column].astype(float).reindex(index).fillna(0.0)
-
-
-def _capacity_object_column(
-    capacity_reservation: pd.DataFrame,
-    index: pd.DatetimeIndex,
-    column: str,
-    default: object,
-) -> pd.Series:
-    if column not in capacity_reservation:
-        return pd.Series(default, index=index)
-    return capacity_reservation[column].reindex(index).fillna(default)
-
-
-def _capacity_summaries_for_commit(
+def _capacity_summaries_for_window(
     block_summary: pd.DataFrame,
-    capacity_reservation: pd.DataFrame,
+    capacity_award: pd.DataFrame,
     commit_index: pd.DatetimeIndex,
 ) -> list[pd.DataFrame]:
-    if block_summary.empty or capacity_reservation.empty:
+    if block_summary.empty or capacity_award.empty:
         return []
-    if "afrr_capacity_block_id" not in capacity_reservation.columns:
+    if "afrr_capacity_block_id" not in capacity_award.columns:
         return []
     block_ids = (
-        capacity_reservation.reindex(commit_index)["afrr_capacity_block_id"]
+        capacity_award.reindex(commit_index)["afrr_capacity_block_id"]
         .dropna()
         .astype(str)
         .unique()

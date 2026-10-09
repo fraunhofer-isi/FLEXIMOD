@@ -16,7 +16,7 @@ from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.data.data_loader import PlantDefinition
+from flexi_mod.data.data_loader import PlantInput
 from flexi_mod.modeling.pyomo_utils import (
     available_pyomo_solvers,
     is_infeasible_termination,
@@ -47,25 +47,27 @@ class Building(BasePlant):
     components: dict[str, object] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
-    # Read the two technology rows from plants.csv
+    # Assemble the two configured technologies
     # ------------------------------------------------------------------
     @classmethod
-    def from_definition(cls, definition: PlantDefinition) -> Building:
-        """Build from the common grouped input representation from ``DataLoader``."""
+    def create(cls, plant_input: PlantInput) -> Building:
+        """Create a building model from the loader's parameters and components."""
 
-        if definition.unit_type not in {"building", "bus_depot", "electric_bus_depot"}:
+        if plant_input.unit_type not in {"building", "bus_depot", "electric_bus_depot"}:
             raise ValueError(
-                f"Plant '{definition.name}' has unit_type='{definition.unit_type}', "
+                f"Plant '{plant_input.name}' has unit_type='{plant_input.unit_type}', "
                 "not a supported building type"
             )
-        return cls.from_rows(definition.name, definition.to_rows())
+        return cls._assemble(plant_input.name, plant_input.component_table())
 
     @classmethod
-    def from_rows(cls, building_name: str, rows: pd.DataFrame) -> Building:
-        if rows.empty:
+    def _assemble(cls, building_name: str, component_table: pd.DataFrame) -> Building:
+        """Create the building model from one plant's component table."""
+
+        if component_table.empty:
             raise ValueError(f"Building '{building_name}' has no technology rows")
 
-        rows = rows.copy()
+        rows = component_table.copy()
         rows["technology"] = rows["technology"].astype(str).str.strip().str.lower()
         _check_technology_rows(building_name, rows)
 
@@ -115,10 +117,6 @@ class Building(BasePlant):
                 "charging_station": station,
             },
         )
-
-    @classmethod
-    def from_plants_dataframe(cls, plants: pd.DataFrame) -> list[Building]:
-        return [cls.from_rows(str(name), rows) for name, rows in plants.groupby("name", sort=False)]
 
     @property
     def electric_vehicle(self) -> ElectricVehicle:
@@ -491,7 +489,7 @@ def _infeasible_message(building_name: str, solver_name: str) -> str:
     )
 
 
-def building_profile_columns(plant_name: str, rows: pd.DataFrame) -> set[str]:
-    """Return profile columns needed by a building in ``plants.csv``."""
+def building_profile_columns(plant_name: str, component_table: pd.DataFrame) -> set[str]:
+    """Return profile columns needed by a building component table."""
 
-    return Building.from_rows(str(plant_name).strip(), rows).required_forecast_columns()
+    return Building._assemble(str(plant_name).strip(), component_table).required_forecast_columns()

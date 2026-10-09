@@ -6,7 +6,7 @@ from flexi_mod.data.data_loader import (
     CaseInputs,
     DataLoader,
     DataValidationError,
-    PlantDefinition,
+    PlantInput,
     get_plant_forecast_column,
 )
 
@@ -14,6 +14,6 @@ __all__ = [
     "CaseInputs",
     "DataLoader",
     "DataValidationError",
-    "PlantDefinition",
+    "PlantInput",
     "get_plant_forecast_column",
 ]

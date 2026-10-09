@@ -18,18 +18,24 @@ import pandas as pd
 import pyomo.environ as pyo
 
 from flexi_mod.config.case_config import CaseConfig
+from flexi_mod.markets.afrr_capacity import (
+    BalancingCapacityAward,
+    capacity_award_result_fields,
+)
+from flexi_mod.markets.afrr_energy import BalancingEnergyActivation
+from flexi_mod.markets.day_ahead import DayAheadPosition
+from flexi_mod.markets.electricity_settlement import (
+    ElectricityMarketStage,
+    ElectricityMarketStageInput,
+)
+from flexi_mod.markets.intraday_continuous import IntradayAdjustment
 from flexi_mod.modeling.pyomo_utils import pyomo_value, series_float_or_nan, series_value
 from flexi_mod.plants.base_plant import BasePlant
 from flexi_mod.plants.building import Building
 from flexi_mod.plants.cement_plant import CementPlant
 from flexi_mod.plants.steam_generation_plant import (
     DIRECT_ELECTRIC_GAS_BOILER_ROUTE,
-    AFRRDownSignals,
-    DispatchSignals,
-    IDCAdjustmentSignals,
     SteamGenerationPlant,
-    SteamMarketStage,
-    SteamSignals,
 )
 from flexi_mod.plants.steel_plant import SteelPlant
 
@@ -41,8 +47,9 @@ class ResultContext:
     forecasts: pd.DataFrame
     solver_name: str
     config: CaseConfig | None = None
-    stage: SteamMarketStage | None = None
-    signals: SteamSignals | None = None
+    stage: ElectricityMarketStage | None = None
+    market_input: ElectricityMarketStageInput | None = None
+    capacity_award: BalancingCapacityAward | None = None
 
 
 def extract_dispatch_results(
@@ -52,8 +59,9 @@ def extract_dispatch_results(
     solver_name: str,
     *,
     config: CaseConfig | None = None,
-    stage: SteamMarketStage | None = None,
-    signals: SteamSignals | None = None,
+    stage: ElectricityMarketStage | None = None,
+    market_input: ElectricityMarketStageInput | None = None,
+    capacity_award: BalancingCapacityAward | None = None,
 ) -> pd.DataFrame:
     """Use the registered mapper for ``plant`` to create dispatch-result rows."""
 
@@ -69,7 +77,8 @@ def extract_dispatch_results(
             solver_name=solver_name,
             config=config,
             stage=stage,
-            signals=signals,
+            market_input=market_input,
+            capacity_award=capacity_award,
         ),
     )
 
@@ -176,27 +185,28 @@ def _map_steam(
     context: ResultContext,
 ) -> pd.DataFrame:
     steam_plant = _expect_plant_type(plant, SteamGenerationPlant)
-    if context.config is None or context.stage is None or context.signals is None:
-        raise ValueError("Steam result mapping requires config, stage, and market signals")
+    if context.config is None or context.stage is None or context.market_input is None:
+        raise ValueError("Steam result mapping requires config, stage, and market input")
 
     config = context.config
     stage = context.stage
-    signals = context.signals
+    market_input = context.market_input
+    capacity_award = context.capacity_award
     route = steam_plant.route_process
     direct_route = route.name == DIRECT_ELECTRIC_GAS_BOILER_ROUTE
     dt_hours = config.timestep_minutes / 60.0
     da_price_col = (
-        signals.electricity_price_col
-        if isinstance(signals, DispatchSignals)
-        else signals.da_price_col
+        market_input.electricity_price_col
+        if isinstance(market_input, DayAheadPosition)
+        else market_input.da_price_col
     )
     idc_price_col = (
-        signals.idc_price_col
-        if isinstance(signals, (IDCAdjustmentSignals, AFRRDownSignals))
+        market_input.idc_price_col
+        if isinstance(market_input, (IntradayAdjustment, BalancingEnergyActivation))
         else None
     )
     electricity_benchmark = getattr(
-        signals,
+        market_input,
         "electricity_trading_benchmark_eur_per_mwh_el",
         None,
     )
@@ -224,7 +234,7 @@ def _map_steam(
         additional_charge = pyomo_value(model.additional_electricity_charge[position])
         afrr_price = (
             pyomo_value(model.afrr_energy_price[position])
-            if stage == SteamMarketStage.AFRR_ENERGY
+            if stage == ElectricityMarketStage.AFRR_ENERGY
             else float("nan")
         )
         tax_rate = pyomo_value(model.tax_rate)
@@ -235,77 +245,84 @@ def _map_steam(
         )
         default_raw_bid_price = (
             benchmark / (1.0 + tax_rate) - additional_charge
-            if stage == SteamMarketStage.AFRR_ENERGY
+            if stage == ElectricityMarketStage.AFRR_ENERGY
             else float("nan")
         )
         afrr_bid_price = (
             float(
                 series_value(
-                    cast(AFRRDownSignals, signals).afrr_energy_bid_price,
+                    cast(BalancingEnergyActivation, market_input).afrr_energy_bid_price,
                     timestamp,
                     default_raw_bid_price,
                 )
             )
-            if stage == SteamMarketStage.AFRR_ENERGY
+            if stage == ElectricityMarketStage.AFRR_ENERGY
             else float("nan")
         )
         afrr_delivered_price = (afrr_price + additional_charge) * (1.0 + tax_rate)
         afrr_delivered_bid_price = (
             float(
                 series_value(
-                    cast(AFRRDownSignals, signals).afrr_energy_delivered_bid_price,
+                    cast(BalancingEnergyActivation, market_input).afrr_energy_delivered_bid_price,
                     timestamp,
                     (afrr_bid_price + additional_charge) * (1.0 + tax_rate),
                 )
             )
-            if stage == SteamMarketStage.AFRR_ENERGY
+            if stage == ElectricityMarketStage.AFRR_ENERGY
             else float("nan")
         )
         afrr_market_spread = (
-            afrr_delivered_bid_price - afrr_price if stage == SteamMarketStage.AFRR_ENERGY else 0.0
+            afrr_delivered_bid_price - afrr_price
+            if stage == ElectricityMarketStage.AFRR_ENERGY
+            else 0.0
         )
         afrr_net_spread = (
-            benchmark - afrr_delivered_price if stage == SteamMarketStage.AFRR_ENERGY else 0.0
+            benchmark - afrr_delivered_price if stage == ElectricityMarketStage.AFRR_ENERGY else 0.0
         )
         afrr_reward = afrr_activation * afrr_market_spread
         afrr_net_value = afrr_activation * afrr_net_spread
         co2_price = (
-            float(context.forecasts[signals.co2_price_col].iloc[position])
-            if signals.co2_price_col and signals.co2_price_col in context.forecasts.columns
+            float(context.forecasts[market_input.co2_price_col].iloc[position])
+            if (
+                market_input.co2_price_col
+                and market_input.co2_price_col in context.forecasts.columns
+            )
             else 0.0
         )
-        afrr_signals = (
-            cast(AFRRDownSignals, signals) if stage == SteamMarketStage.AFRR_ENERGY else None
+        activation = (
+            cast(BalancingEnergyActivation, market_input)
+            if stage == ElectricityMarketStage.AFRR_ENERGY
+            else None
         )
         default_free_volume = afrr_bid if direct_route else 0.0
         free_bid = (
             float(
                 series_value(
-                    afrr_signals.afrr_energy_free_bid_mwh,
+                    activation.afrr_energy_free_bid_mwh,
                     timestamp,
                     default_free_volume,
                 )
             )
-            if afrr_signals is not None
+            if activation is not None
             else 0.0
         )
         free_activation = (
             float(
                 series_value(
-                    afrr_signals.afrr_energy_free_activated_mwh,
+                    activation.afrr_energy_free_activated_mwh,
                     timestamp,
                     afrr_activation if direct_route else 0.0,
                 )
             )
-            if afrr_signals is not None
+            if activation is not None
             else 0.0
         )
         capacity_backed_bid = (
             0.0
-            if direct_route or afrr_signals is None
+            if direct_route or activation is None
             else float(
                 series_value(
-                    afrr_signals.afrr_energy_capacity_backed_bid_mwh,
+                    activation.afrr_energy_capacity_backed_bid_mwh,
                     timestamp,
                     0.0,
                 )
@@ -313,10 +330,10 @@ def _map_steam(
         )
         capacity_backed_activation = (
             0.0
-            if direct_route or afrr_signals is None
+            if direct_route or activation is None
             else float(
                 series_value(
-                    afrr_signals.afrr_energy_capacity_backed_activated_mwh,
+                    activation.afrr_energy_capacity_backed_activated_mwh,
                     timestamp,
                     0.0,
                 )
@@ -328,6 +345,11 @@ def _map_steam(
         tax_cost = pyomo_value(model.tax_cost[position])
         gas_cost = pyomo_value(model.gas_cost[position])
         co2_cost = pyomo_value(model.co2_cost[position])
+        capacity_market_fields = capacity_award_result_fields(
+            capacity_award,
+            timestamp,
+            dt_hours,
+        )
 
         row: dict[str, object] = {
             "datetime": timestamp,
@@ -343,14 +365,16 @@ def _map_steam(
             ),
             "IDC_delivered_price_EUR_per_MWh": ((idc_price + additional_charge) * (1.0 + tax_rate)),
             "afrr_energy_delivered_price_EUR_per_MWh": (afrr_delivered_price),
-            "gas_price_EUR_per_MWh": float(context.forecasts[signals.gas_price_col].iloc[position]),
+            "gas_price_EUR_per_MWh": float(
+                context.forecasts[market_input.gas_price_col].iloc[position]
+            ),
             "co2_price_EUR_per_t": co2_price,
             "day_ahead_price_signal": da_price_col,
             "IDC_price_signal": idc_price_col or "",
-            "gas_price_signal": signals.gas_price_col,
-            "co2_price_signal": signals.co2_price_col or "",
+            "gas_price_signal": market_input.gas_price_col,
+            "co2_price_signal": market_input.co2_price_col or "",
             "gas_based_heat_benchmark_EUR_per_MWh_th": float(
-                signals.gas_benchmark_eur_per_mwh_th.iloc[position]
+                market_input.gas_benchmark_eur_per_mwh_th.iloc[position]
             ),
             "electricity_trading_benchmark_EUR_per_MWh_el": benchmark,
             **physical,
@@ -368,8 +392,8 @@ def _map_steam(
             "afrr_energy_activated_MWh": afrr_activation,
             "afrr_energy_price_EUR_per_MWh": afrr_price,
             "afrr_system_activation_MWh": (
-                float(afrr_signals.afrr_system_activation_mwh.iloc[position])
-                if afrr_signals is not None
+                float(activation.afrr_system_activation_mwh.iloc[position])
+                if activation is not None
                 else 0.0
             ),
             "afrr_energy_bid_price_EUR_per_MWh": afrr_bid_price,
@@ -387,23 +411,23 @@ def _map_steam(
             "afrr_headroom_binding": (
                 bool(
                     series_value(
-                        afrr_signals.afrr_headroom_binding,
+                        activation.afrr_headroom_binding,
                         timestamp,
                         False,
                     )
                 )
-                if afrr_signals is not None
+                if activation is not None
                 else False
             ),
             "afrr_curtailment_MWh": (
                 float(
                     series_value(
-                        afrr_signals.afrr_curtailment_mwh,
+                        activation.afrr_curtailment_mwh,
                         timestamp,
                         0.0,
                     )
                 )
-                if afrr_signals is not None
+                if activation is not None
                 else 0.0
             ),
             "electricity_market_cost_EUR": electricity_market_cost,
@@ -415,39 +439,39 @@ def _map_steam(
             "operating_cost_EUR": (electricity_cost + gas_cost + co2_cost + tax_cost),
             "charge_allowed_by_strategy": _charge_allowed_flag(
                 stage,
-                signals,
+                market_input,
                 position,
                 direct_route,
             ),
             "idc_buy_allowed_by_strategy": (
                 bool(
                     cast(
-                        IDCAdjustmentSignals,
-                        signals,
+                        IntradayAdjustment,
+                        market_input,
                     ).idc_buy_upper_bound_mwh.iloc[position]
                     > 1e-12
                 )
-                if stage == SteamMarketStage.INTRADAY
+                if stage == ElectricityMarketStage.INTRADAY
                 else False
             ),
             "idc_sell_allowed_by_strategy": (
                 bool(
                     cast(
-                        IDCAdjustmentSignals,
-                        signals,
+                        IntradayAdjustment,
+                        market_input,
                     ).idc_sell_upper_bound_mwh.iloc[position]
                     > 1e-12
                 )
-                if stage == SteamMarketStage.INTRADAY
+                if stage == ElectricityMarketStage.INTRADAY
                 else False
             ),
             "afrr_energy_bid_allowed_by_strategy": bool(afrr_bid > 1e-12),
             "solver": context.solver_name,
         }
+        row.update(capacity_market_fields)
         row.update(
-            route.capacity_result_fields(
-                signals,
-                timestamp,
+            route.capacity_physical_result_fields(
+                float(capacity_market_fields["afrr_capacity_reserved_MWh"]),
                 dt_hours,
                 final_planned,
                 physical,
@@ -471,18 +495,18 @@ def _map_steam(
 
 
 def _charge_allowed_flag(
-    stage: SteamMarketStage,
-    signals: SteamSignals,
+    stage: ElectricityMarketStage,
+    market_input: ElectricityMarketStageInput,
     position: int,
     direct_route: bool,
 ) -> bool:
-    if stage == SteamMarketStage.DAY_AHEAD:
-        return bool(cast(DispatchSignals, signals).charge_allowed.iloc[position])
-    if stage == SteamMarketStage.INTRADAY and not direct_route:
+    if stage == ElectricityMarketStage.DAY_AHEAD:
+        return bool(cast(DayAheadPosition, market_input).charge_allowed.iloc[position])
+    if stage == ElectricityMarketStage.INTRADAY and not direct_route:
         return bool(
             cast(
-                IDCAdjustmentSignals,
-                signals,
+                IntradayAdjustment,
+                market_input,
             ).idc_buy_upper_bound_mwh.iloc[position]
             > 1e-12
         )
@@ -491,14 +515,14 @@ def _charge_allowed_flag(
 
 def _preserve_legacy_stage_schema(
     row: dict[str, object],
-    stage: SteamMarketStage,
+    stage: ElectricityMarketStage,
     direct_route: bool,
 ) -> None:
-    if stage != SteamMarketStage.AFRR_ENERGY:
+    if stage != ElectricityMarketStage.AFRR_ENERGY:
         row.pop("afrr_energy_delivered_bid_price_EUR_per_MWh", None)
     if direct_route:
         return
-    if stage == SteamMarketStage.DAY_AHEAD:
+    if stage == ElectricityMarketStage.DAY_AHEAD:
         for column in (
             "IDC_price_signal",
             "IDC_delivered_price_EUR_per_MWh",
@@ -511,7 +535,7 @@ def _preserve_legacy_stage_schema(
             "afrr_curtailment_MWh",
         ):
             row.pop(column, None)
-    elif stage == SteamMarketStage.INTRADAY:
+    elif stage == ElectricityMarketStage.INTRADAY:
         for column in (
             "afrr_energy_delivered_price_EUR_per_MWh",
             "afrr_energy_bid_allowed_by_strategy",

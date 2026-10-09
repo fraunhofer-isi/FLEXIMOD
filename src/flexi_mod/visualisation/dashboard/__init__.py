@@ -2,4 +2,4 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Summary analytics and interactive dashboards for FlexIMOD case outputs."""
+"""Interactive Plotly dashboards for FLEXIMOD case outputs."""

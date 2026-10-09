@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -18,62 +17,6 @@ RESULT_FILES = {
     "afrr_energy_data_quality_summary": "afrr_energy_data_quality_summary.csv",
     "afrr_capacity_block_summary": "afrr_capacity_block_summary.csv",
 }
-
-
-@dataclass(frozen=True)
-class CaseResults:
-    """Loaded output tables for one FlexIMOD case."""
-
-    output_dir: Path
-    dispatch_results: pd.DataFrame
-    market_ledger: pd.DataFrame
-    storage_cost_ledger: pd.DataFrame
-    summary_indicators: pd.DataFrame
-    afrr_energy_data_quality_summary: pd.DataFrame
-    afrr_capacity_block_summary: pd.DataFrame
-
-
-def load_results(output_dir: str | Path) -> CaseResults:
-    """Load available output CSV files from a case output directory."""
-
-    output_dir = Path(output_dir)
-    dispatch = _load_csv(output_dir / RESULT_FILES["dispatch_results"], required=True)
-    market = _load_csv(output_dir / RESULT_FILES["market_ledger"], required=False)
-    storage = _load_csv(output_dir / RESULT_FILES["storage_cost_ledger"], required=False)
-    summary = _load_csv(
-        output_dir / RESULT_FILES["summary_indicators"],
-        required=False,
-        datetime_index=False,
-    )
-    afrr_quality = _load_csv(
-        output_dir / RESULT_FILES["afrr_energy_data_quality_summary"],
-        required=False,
-        datetime_index=False,
-    )
-    afrr_capacity = _load_csv(
-        output_dir / RESULT_FILES["afrr_capacity_block_summary"],
-        required=False,
-        datetime_index=False,
-    )
-    return CaseResults(
-        output_dir=output_dir,
-        dispatch_results=dispatch,
-        market_ledger=market,
-        storage_cost_ledger=storage,
-        summary_indicators=summary,
-        afrr_energy_data_quality_summary=afrr_quality,
-        afrr_capacity_block_summary=afrr_capacity,
-    )
-
-
-def save_summary_indicators(summary: pd.DataFrame, output_dir: str | Path) -> Path:
-    """Save analytics summary indicators to ``summary_indicators.csv``."""
-
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / RESULT_FILES["summary_indicators"]
-    summary.to_csv(path, index=False)
-    return path
 
 
 def calculate_summary_indicators(
@@ -176,20 +119,21 @@ def ensure_datetime_index(frame: pd.DataFrame | None) -> pd.DataFrame:
         warn_missing("datetime", "result table")
         return result
 
-    result["datetime"] = pd.to_datetime(result["datetime"], errors="raise")
+    result["datetime"] = parse_datetimes(result["datetime"])
     return result.set_index("datetime").sort_index()
 
 
-def require_columns(frame: pd.DataFrame, columns: list[str], context: str) -> list[str]:
-    """Return available required columns and warn for missing ones."""
+def parse_datetimes(values: pd.Series) -> pd.Series:
+    """Parse output timestamps as naive local time.
 
-    available = []
-    for column in columns:
-        if column in frame.columns:
-            available.append(column)
-        else:
-            warn_missing(column, context)
-    return available
+    Result files carry the local UTC offset, which changes across daylight-saving
+    transitions and cannot be parsed into a single dtype. The wall-clock part is kept.
+    """
+
+    if pd.api.types.is_datetime64_any_dtype(values):
+        return pd.to_datetime(values.dt.tz_localize(None) if values.dt.tz else values)
+    text = values.astype(str).str.slice(0, 19)
+    return pd.to_datetime(text, errors="raise")
 
 
 def warn_missing(column: str, context: str) -> None:
@@ -199,93 +143,13 @@ def warn_missing(column: str, context: str) -> None:
     )
 
 
-def create_output_dir(output_dir: str | Path, subdir: str = "plots") -> Path:
-    plot_dir = Path(output_dir) / subdir
-    plot_dir.mkdir(parents=True, exist_ok=True)
-    return plot_dir
+def resolve_table_path(path: Path) -> Path:
+    """Return ``path`` or its zstd-compressed ``.zst`` sibling, whichever exists."""
 
-
-def derive_gas_benchmark(dispatch_results: pd.DataFrame) -> pd.Series | None:
-    """Return a gas-based heat benchmark if it exists or can be approximated."""
-
-    dispatch = ensure_datetime_index(dispatch_results)
-    existing = _first_existing(
-        dispatch,
-        ["gas_based_heat_benchmark_EUR_per_MWh_th", "gas_based_heat_benchmark"],
-    )
-    if existing:
-        return dispatch[existing].astype(float)
-
-    required = {"gas_price_EUR_per_MWh", "gas_input_MWh", "gas_heat_MWh"}
-    if required.issubset(dispatch.columns):
-        denominator = dispatch["gas_heat_MWh"].replace(0, pd.NA).astype(float)
-        gas_input_per_heat = dispatch["gas_input_MWh"].astype(float) / denominator
-        benchmark = dispatch["gas_price_EUR_per_MWh"].astype(float) * gas_input_per_heat
-        benchmark.name = "gas_based_heat_benchmark_EUR_per_MWh_th"
-        return benchmark.ffill().bfill()
-
-    return None
-
-
-def storage_content_by_source(
-    storage_cost_ledger: pd.DataFrame,
-    dispatch_results: pd.DataFrame | None = None,
-) -> pd.DataFrame:
-    """Return storage content columns by source market.
-
-    Current ledgers include economics-oriented source inventory columns.
-    """
-
-    storage = ensure_datetime_index(storage_cost_ledger)
-    if storage.empty:
-        return pd.DataFrame()
-
-    source_columns = [
-        "thermal_inventory_day_ahead_MWh_th",
-        "thermal_inventory_intraday_continuous_MWh_th",
-        "thermal_inventory_afrr_energy_MWh_th",
-        "thermal_inventory_other_MWh_th",
-    ]
-    available = [column for column in source_columns if column in storage.columns]
-    if available:
-        return storage[available].rename(columns=_inventory_column_label).fillna(0.0)
-
-    if "thermal_inventory_MWh_th" not in storage.columns:
-        warn_missing("thermal_inventory_MWh_th", "storage source plot")
-        return pd.DataFrame()
-
-    procurement_market = ""
-    if "procurement_market" in storage.columns:
-        sources = sorted(
-            {
-                str(value)
-                for value in storage["procurement_market"].dropna().unique()
-                if str(value).strip()
-            }
-        )
-        if len(sources) == 1:
-            procurement_market = sources[0]
-
-    label = _market_label(procurement_market) if procurement_market else "Unknown or mixed source"
-    result = pd.DataFrame(index=storage.index)
-    result[label] = storage["thermal_inventory_MWh_th"].fillna(0.0).astype(float)
-
-    if dispatch_results is not None and not dispatch_results.empty:
-        dispatch = ensure_datetime_index(dispatch_results)
-        if "etes_soc_MWh" in dispatch.columns:
-            result["Total ETES SoC"] = dispatch.groupby(dispatch.index)["etes_soc_MWh"].sum()
-
-    return result
-
-
-def _load_csv(path: Path, required: bool, datetime_index: bool = True) -> pd.DataFrame:
-    if not path.exists():
-        if required:
-            raise FileNotFoundError(f"Required output file not found: {path}")
-        warnings.warn(f"Output file not found: {path}. Continuing without it.", stacklevel=2)
-        return pd.DataFrame()
-    frame = pd.read_csv(path)
-    return ensure_datetime_index(frame) if datetime_index else frame
+    if path.exists():
+        return path
+    compressed = path.with_name(path.name + ".zst")
+    return compressed if compressed.exists() else path
 
 
 def _operational_indicators(dispatch: pd.DataFrame) -> dict[str, float]:
@@ -675,25 +539,6 @@ def _infer_timestep_hours(index: pd.Index) -> float:
     if diffs.empty:
         return 0.0
     return float(diffs.mode().iloc[0])
-
-
-def _inventory_column_label(column: str) -> str:
-    labels = {
-        "thermal_inventory_day_ahead_MWh_th": "Day-ahead",
-        "thermal_inventory_intraday_continuous_MWh_th": "IDC",
-        "thermal_inventory_afrr_energy_MWh_th": "aFRR energy",
-        "thermal_inventory_other_MWh_th": "Other/unknown",
-    }
-    return labels[column]
-
-
-def _market_label(procurement_market: str) -> str:
-    labels = {
-        "day_ahead": "Day-ahead",
-        "intraday_continuous": "IDC",
-        "afrr_energy": "aFRR energy",
-    }
-    return labels.get(_normalise_procurement_market(procurement_market), "Other/unknown")
 
 
 def _normalise_procurement_market(procurement_market: str) -> str:

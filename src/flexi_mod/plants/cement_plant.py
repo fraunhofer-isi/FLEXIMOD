@@ -21,7 +21,7 @@ from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.data.data_loader import PlantDefinition
+from flexi_mod.data.data_loader import PlantInput
 from flexi_mod.modeling.pyomo_utils import (
     available_pyomo_solvers,
     is_infeasible_termination,
@@ -51,21 +51,23 @@ class CementPlant(BasePlant):
     components: dict[str, object] = field(default_factory=dict)
 
     @classmethod
-    def from_definition(cls, definition: PlantDefinition) -> CementPlant:
-        """Build from the common grouped input representation from ``DataLoader``."""
+    def create(cls, plant_input: PlantInput) -> CementPlant:
+        """Create a cement plant from the loader's parameters and components."""
 
-        if definition.unit_type != "cement_plant":
+        if plant_input.unit_type != "cement_plant":
             raise ValueError(
-                f"Plant '{definition.name}' has unit_type='{definition.unit_type}', "
+                f"Plant '{plant_input.name}' has unit_type='{plant_input.unit_type}', "
                 "not 'cement_plant'"
             )
-        return cls.from_rows(definition.name, definition.to_rows())
+        return cls._assemble(plant_input.name, plant_input.component_table())
 
     @classmethod
-    def from_rows(cls, plant_name: str, rows: pd.DataFrame) -> CementPlant:
-        if rows.empty:
+    def _assemble(cls, plant_name: str, component_table: pd.DataFrame) -> CementPlant:
+        """Create the physical cement model from one plant's component table."""
+
+        if component_table.empty:
             raise ValueError(f"Cement plant '{plant_name}' has no technology rows")
-        normalised = rows.copy()
+        normalised = component_table.copy()
         normalised["technology"] = (
             normalised["technology"]
             .astype(str)

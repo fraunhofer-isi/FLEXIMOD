@@ -19,27 +19,27 @@ class DataValidationError(ValueError):
 
 
 @dataclass(frozen=True)
-class PlantDefinition:
-    """One multi-component plant read from ``plants.csv``.
+class PlantInput:
+    """One multi-component plant input prepared from ``plants.csv``.
 
     ``plants.csv`` is intentionally denormalised for modellers: each row
     describes one technology and rows with the same ``name`` belong to one
-    plant.  This definition restores a model-friendly shape without imposing a
-    technology-specific schema.  Plant-level values live in ``metadata`` and
+    plant. This object restores a model-friendly shape without imposing a
+    technology-specific schema. Plant-level values live in ``parameters`` and
     each technology keeps its own parameter dictionary in ``components``.
     """
 
     name: str
     unit_type: str
-    metadata: dict[str, Any]
+    parameters: dict[str, Any]
     components: dict[str, dict[str, Any]]
 
-    def to_rows(self) -> pd.DataFrame:
-        """Return normalized technology rows for a typed plant constructor.
+    def component_table(self) -> pd.DataFrame:
+        """Return the component table needed to assemble a typed plant.
 
-        ``PlantDefinition`` is the common input contract between the loader and
-        plant factory. The dataframe view keeps existing ``from_rows`` APIs
-        available for direct model work and notebooks.
+        ``PlantInput`` is the common input contract between the loader and the
+        plant factory. This table view allows a plant to validate and assemble
+        its own technology components.
         Component ids remain map keys; the original technology name is retained
         in each component's data so a custom id never changes the physical type.
         """
@@ -51,7 +51,7 @@ class PlantDefinition:
                 {
                     "name": self.name,
                     "unit_type": self.unit_type,
-                    **self.metadata,
+                    **self.parameters,
                     **component,
                     "technology": technology,
                 }
@@ -61,18 +61,18 @@ class PlantDefinition:
 
 @dataclass(frozen=True)
 class CaseInputs:
-    """Structured plant definitions and their common, validated forecasts."""
+    """Structured plant inputs and their common, validated forecasts."""
 
-    plants_by_type: dict[str, list[PlantDefinition]]
+    plants_by_type: dict[str, list[PlantInput]]
     forecasts: pd.DataFrame
 
     @property
-    def plants(self) -> list[PlantDefinition]:
+    def plants(self) -> list[PlantInput]:
         """Return all plants in their order of appearance in ``plants.csv``."""
 
         return [plant for plants in self.plants_by_type.values() for plant in plants]
 
-    def forecast_for(self, plant: PlantDefinition | str, signal_name: str) -> pd.Series | None:
+    def forecast_for(self, plant: PlantInput | str, signal_name: str) -> pd.Series | None:
         """Return a plant-specific signal, falling back to a global signal.
 
         A request for ``steel_demand`` from plant ``steel_1`` resolves
@@ -81,16 +81,16 @@ class CaseInputs:
         shared price and fuel columns in one wide ``forecasts_df.csv``.
         """
 
-        plant_name = plant.name if isinstance(plant, PlantDefinition) else str(plant)
+        plant_name = plant.name if isinstance(plant, PlantInput) else str(plant)
         return get_plant_forecast_column(self.forecasts, plant_name, signal_name)
 
-    def require_forecast_for(self, plant: PlantDefinition | str, signal_name: str) -> pd.Series:
+    def require_forecast_for(self, plant: PlantInput | str, signal_name: str) -> pd.Series:
         """Return a required plant/global forecast or raise a clear input error."""
 
         series = self.forecast_for(plant, signal_name)
         if series is not None:
             return series
-        plant_name = plant.name if isinstance(plant, PlantDefinition) else str(plant)
+        plant_name = plant.name if isinstance(plant, PlantInput) else str(plant)
         raise DataValidationError(
             f"forecasts_df.csv is missing forecast '{signal_name}' for plant '{plant_name}'. "
             f"Expected '{plant_name}_{signal_name}' or '{signal_name}'."
@@ -172,11 +172,11 @@ class DataLoader:
         plants["technology"] = plants["technology"].astype(str).str.strip()
         return plants
 
-    def load_plant_definitions(
+    def load_plant_inputs(
         self,
         plants: pd.DataFrame | None = None,
-    ) -> dict[str, list[PlantDefinition]]:
-        """Group technology rows into generic plant/component definitions.
+    ) -> dict[str, list[PlantInput]]:
+        """Prepare plant parameters and components for the plant factory.
 
         The return value follows the same shape as ASSUME's DSM input loader:
         plants are grouped by ``unit_type`` and retain all technology-specific
@@ -190,7 +190,7 @@ class DataLoader:
         """
 
         frame = self.load_plants() if plants is None else plants.copy()
-        result: dict[str, list[PlantDefinition]] = {}
+        result: dict[str, list[PlantInput]] = {}
         component_id_column = "component_id" if "component_id" in frame.columns else None
 
         for plant_name, rows in frame.groupby("name", sort=False):
@@ -204,7 +204,7 @@ class DataLoader:
                     f"Plant '{plant_name}' must use exactly one non-empty unit_type"
                 )
             unit_type = unit_types.pop()
-            metadata = _plant_metadata(rows, str(plant_name), unit_type)
+            parameters = _plant_parameters(rows, str(plant_name), unit_type)
             components: dict[str, dict[str, Any]] = {}
 
             for _, row in rows.iterrows():
@@ -226,40 +226,38 @@ class DataLoader:
                 component["technology"] = technology
                 components[component_key] = component
 
-            definition = PlantDefinition(
+            plant_input = PlantInput(
                 name=str(plant_name),
                 unit_type=unit_type,
-                metadata=metadata,
+                parameters=parameters,
                 components=components,
             )
-            result.setdefault(unit_type, []).append(definition)
+            result.setdefault(unit_type, []).append(plant_input)
         return result
 
     def load_case_inputs(
         self,
         required_columns: set[str] | None = None,
         *,
-        plant_definitions: dict[str, list[PlantDefinition]] | None = None,
+        plant_inputs: dict[str, list[PlantInput]] | None = None,
     ) -> CaseInputs:
-        """Load grouped plant definitions and the validated forecast frame together.
+        """Load grouped plant inputs and the validated forecast frame together.
 
         Existing callers may continue using :meth:`load_plants` and
         :meth:`load_forecasts`.  New, generic plant models should use this
         method and resolve profiles via :meth:`CaseInputs.forecast_for`.
         """
 
-        definitions = (
-            self.load_plant_definitions() if plant_definitions is None else plant_definitions
-        )
+        inputs = self.load_plant_inputs() if plant_inputs is None else plant_inputs
         forecasts = self.load_forecasts(required_columns=required_columns)
         return CaseInputs(
-            plants_by_type=definitions,
+            plants_by_type=inputs,
             forecasts=forecasts,
         )
 
     def load_additional_charges(
         self,
-        plants: pd.DataFrame | Mapping[str, list[PlantDefinition]] | Iterable[PlantDefinition],
+        plants: pd.DataFrame | Mapping[str, list[PlantInput]] | Iterable[PlantInput],
     ) -> dict[str, pd.DataFrame]:
         """Load plant-specific network-tariff components.
 
@@ -357,7 +355,7 @@ class DataLoader:
     def required_forecast_columns(
         self,
         plants: (
-            pd.DataFrame | Mapping[str, list[PlantDefinition]] | Iterable[PlantDefinition] | None
+            pd.DataFrame | Mapping[str, list[PlantInput]] | Iterable[PlantInput] | None
         ) = None,
         extra_required_columns: set[str] | None = None,
     ) -> set[str]:
@@ -383,7 +381,7 @@ class DataLoader:
         if plants is None:
             return required
 
-        plants_frame = _plant_rows(plants)
+        plants_frame = _plant_component_table(plants)
         for plant_name, plant_rows in plants_frame.groupby("name"):
             unit_types = {
                 str(value).strip().lower() for value in plant_rows["unit_type"].dropna().tolist()
@@ -656,40 +654,40 @@ def _demand_column_for_plant(plant_name: str, plant_rows: pd.DataFrame) -> str:
     return f"{plant_name}_heat_demand"
 
 
-def _plant_rows(
-    plants: pd.DataFrame | Mapping[str, list[PlantDefinition]] | Iterable[PlantDefinition],
+def _plant_component_table(
+    plants: pd.DataFrame | Mapping[str, list[PlantInput]] | Iterable[PlantInput],
 ) -> pd.DataFrame:
     """Normalize a legacy dataframe or grouped loader output into CSV-style rows."""
 
     if isinstance(plants, pd.DataFrame):
         return plants.copy()
     if isinstance(plants, Mapping):
-        definitions = [plant for group in plants.values() for plant in group]
+        plant_inputs = [plant for group in plants.values() for plant in group]
     else:
-        definitions = list(plants)
-    if not definitions:
+        plant_inputs = list(plants)
+    if not plant_inputs:
         return pd.DataFrame(columns=["name", "unit_type", "technology"])
-    return pd.concat([plant.to_rows() for plant in definitions], ignore_index=True)
+    return pd.concat([plant.component_table() for plant in plant_inputs], ignore_index=True)
 
 
 def _plant_names(
-    plants: pd.DataFrame | Mapping[str, list[PlantDefinition]] | Iterable[PlantDefinition],
+    plants: pd.DataFrame | Mapping[str, list[PlantInput]] | Iterable[PlantInput],
 ) -> list[str]:
     """Return stable plant names from either supported input representation."""
 
     if isinstance(plants, pd.DataFrame):
         return sorted(str(name) for name in plants["name"].dropna().unique())
     if isinstance(plants, Mapping):
-        definitions = [plant for group in plants.values() for plant in group]
+        plant_inputs = [plant for group in plants.values() for plant in group]
     else:
-        definitions = list(plants)
-    return sorted({plant.name for plant in definitions})
+        plant_inputs = list(plants)
+    return sorted({plant.name for plant in plant_inputs})
 
 
-_PLANT_METADATA_COLUMNS = ("node", "objective", "demand", "steel_demand", "clinker_demand")
+_PLANT_PARAMETER_COLUMNS = ("node", "objective", "demand", "steel_demand", "clinker_demand")
 
 
-def _plant_metadata(
+def _plant_parameters(
     rows: pd.DataFrame,
     plant_name: str,
     unit_type: str,
@@ -702,8 +700,8 @@ def _plant_metadata(
     parameter's ownership.
     """
 
-    metadata: dict[str, Any] = {"name": plant_name, "unit_type": unit_type}
-    for column in _PLANT_METADATA_COLUMNS:
+    parameters: dict[str, Any] = {"name": plant_name, "unit_type": unit_type}
+    for column in _PLANT_PARAMETER_COLUMNS:
         if column not in rows.columns:
             continue
         values = [value for value in rows[column].tolist() if _has_value(value)]
@@ -714,8 +712,8 @@ def _plant_metadata(
             raise DataValidationError(
                 f"Plant '{plant_name}' has inconsistent plant-level '{column}' values"
             )
-        metadata[column] = values[0]
-    return metadata
+        parameters[column] = values[0]
+    return parameters
 
 
 def _component_parameters(
@@ -728,7 +726,7 @@ def _component_parameters(
         "name",
         "unit_type",
         "technology",
-        *_PLANT_METADATA_COLUMNS,
+        *_PLANT_PARAMETER_COLUMNS,
     }
     if component_id_column:
         excluded_columns.add(component_id_column)
