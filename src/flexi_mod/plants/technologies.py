@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any
 
 import pandas as pd
@@ -565,11 +566,17 @@ class Electrolyser:
 
     @classmethod
     def from_row(cls, row: pd.Series) -> Electrolyser:
-        return cls(
+        component = cls(
             max_power_mw=_as_float(row.get("max_power"), "max_power"),
             min_power_mw=_as_float(row.get("min_power"), "min_power", default=0.0),
             efficiency=_as_float(row.get("efficiency"), "efficiency"),
         )
+        _validate_positive(component.max_power_mw, "max_power")
+        _validate_non_negative(component.min_power_mw, "min_power")
+        if component.min_power_mw > component.max_power_mw:
+            raise ValueError("Plant parameter 'min_power' cannot exceed 'max_power'")
+        _validate_efficiency(component.efficiency, "efficiency")
+        return component
 
     def add_to_model(
         self,
@@ -635,7 +642,7 @@ class DRIPlant:
             raise ValueError("Hydrogen DRI requires positive specific_hydrogen_consumption")
         if fuel_type in {"natural_gas", "both"} and natural_gas <= 0.0:
             raise ValueError("Natural-gas DRI requires positive specific_natural_gas_consumption")
-        return cls(
+        component = cls(
             max_power_mw=_as_float(row.get("max_power"), "max_power"),
             specific_electricity_consumption=_as_float(
                 row.get("specific_electricity_consumption"),
@@ -654,6 +661,14 @@ class DRIPlant:
             ),
             fuel_type=fuel_type,
         )
+        _validate_positive(component.max_power_mw, "max_power")
+        _validate_non_negative(
+            component.specific_electricity_consumption,
+            "specific_electricity_consumption",
+        )
+        _validate_positive(component.specific_iron_ore_consumption, "specific_iron_ore_consumption")
+        _validate_non_negative(component.natural_gas_co2_factor, "natural_gas_co2_factor")
+        return component
 
     def add_to_model(
         self,
@@ -756,7 +771,7 @@ class ElectricArcFurnace:
 
     @classmethod
     def from_row(cls, row: pd.Series) -> ElectricArcFurnace:
-        return cls(
+        component = cls(
             max_power_mw=_as_float(row.get("max_power"), "max_power"),
             specific_dri_demand=_as_float(row.get("specific_dri_demand"), "specific_dri_demand"),
             specific_electricity_consumption=_as_float(
@@ -767,6 +782,14 @@ class ElectricArcFurnace:
                 row.get("specific_lime_demand"), "specific_lime_demand", default=0.0
             ),
         )
+        _validate_positive(component.max_power_mw, "max_power")
+        _validate_positive(component.specific_dri_demand, "specific_dri_demand")
+        _validate_non_negative(
+            component.specific_electricity_consumption,
+            "specific_electricity_consumption",
+        )
+        _validate_non_negative(component.specific_lime_demand, "specific_lime_demand")
+        return component
 
     def add_to_model(
         self,
@@ -834,7 +857,7 @@ class ThermalProcessStage:
 
     @classmethod
     def from_row(cls, row: pd.Series) -> ThermalProcessStage:
-        return cls(
+        component = cls(
             max_heat_output_mw=_as_float(row.get("max_heat_out"), "max_heat_out"),
             specific_heat_demand=_as_float(row.get("specific_heat_demand"), "specific_heat_demand"),
             specific_electricity_aux=_as_float(
@@ -851,6 +874,15 @@ class ThermalProcessStage:
             ),
             coal_co2_factor=_as_float(row.get("coal_co2_factor"), "coal_co2_factor", default=0.0),
         )
+        _validate_positive(component.max_heat_output_mw, "max_heat_out")
+        _validate_positive(component.specific_heat_demand, "specific_heat_demand")
+        _validate_non_negative(component.specific_electricity_aux, "specific_electricity_aux")
+        _validate_efficiency(component.eta_electric, "eta_electric")
+        _validate_efficiency(component.eta_fossil, "eta_fossil")
+        _validate_fraction(component.fossil_ng_share, "fossil_ng_share")
+        _validate_non_negative(component.natural_gas_co2_factor, "ng_co2_factor")
+        _validate_non_negative(component.coal_co2_factor, "coal_co2_factor")
+        return component
 
     def add_to_model(
         self,
@@ -981,7 +1013,7 @@ class Calciner(ThermalProcessStage):
     @classmethod
     def from_row(cls, row: pd.Series) -> Calciner:
         values = ThermalProcessStage.from_row(row)
-        return cls(
+        component = cls(
             **values.__dict__,
             calcination_emission_factor=_as_float(
                 row.get("calcination_emission_factor"),
@@ -989,6 +1021,8 @@ class Calciner(ThermalProcessStage):
                 default=0.525,
             ),
         )
+        _validate_non_negative(component.calcination_emission_factor, "calcination_emission_factor")
+        return component
 
     def add_to_model(
         self,
@@ -1071,7 +1105,13 @@ def _as_float(value: Any, label: str, default: float | None = None) -> float:
         if default is None:
             raise ValueError(f"Missing required numeric plant parameter '{label}'")
         return float(default)
-    return float(value)
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Plant parameter '{label}' must be a finite number") from exc
+    if not isfinite(number):
+        raise ValueError(f"Plant parameter '{label}' must be a finite number")
+    return number
 
 
 def _as_optional_float(value: Any) -> float | None:
@@ -1139,6 +1179,16 @@ def _validate_profile_range(
 def _validate_positive(value: float, label: str) -> None:
     if not 0.0 < value < float("inf"):
         raise ValueError(f"Plant parameter '{label}' must be finite and positive")
+
+
+def _validate_non_negative(value: float, label: str) -> None:
+    if not 0.0 <= value < float("inf"):
+        raise ValueError(f"Plant parameter '{label}' must be finite and non-negative")
+
+
+def _validate_fraction(value: float, label: str) -> None:
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"Plant parameter '{label}' must be between zero and one")
 
 
 def _validate_efficiency(value: float, label: str) -> None:

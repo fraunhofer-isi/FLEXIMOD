@@ -168,6 +168,8 @@ src/flexi_mod/markets/intraday_continuous.py
 src/flexi_mod/markets/afrr_energy.py
 src/flexi_mod/plants/technologies.py
 src/flexi_mod/plants/steam_generation_plant.py
+src/flexi_mod/plants/steel_plant.py
+src/flexi_mod/plants/cement_plant.py
 src/flexi_mod/strategies/base_strategy.py
 src/flexi_mod/strategies/hybrid_etes_gas_strategy.py
 src/flexi_mod/ledgers/market_ledger.py

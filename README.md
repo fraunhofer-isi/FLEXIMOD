@@ -233,6 +233,7 @@ The configured hooks run REUSE SPDX annotation, Ruff linting and formatting, bas
 Additional documentation is available in:
 
 - [Modeling Philosophy And Architecture](docs/modeling_philosophy_and_architecture.md)
+- [Plant Input Reference](docs/plant_inputs.md)
 - [Strategy Documentation](docs/strategies.md)
 
 ## Market Layer

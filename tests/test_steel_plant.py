@@ -63,6 +63,28 @@ def test_steel_plant_requires_dri_and_eaf() -> None:
         SteelPlant.from_rows("steel_1", rows)
 
 
+def test_steel_plant_parameter_errors_identify_plant_and_technology() -> None:
+    rows = _steel_rows()
+    rows.loc[0, "max_power"] = float("inf")
+
+    with pytest.raises(
+        ValueError,
+        match="Steel plant 'steel_1', technology 'dri_plant'.*max_power",
+    ):
+        SteelPlant.from_rows("steel_1", rows)
+
+
+def test_steel_plant_forecast_errors_name_the_missing_input() -> None:
+    plant = SteelPlant.from_rows("steel_1", _steel_rows())
+    forecasts = _forecasts().drop(columns="iron_ore_price")
+
+    with pytest.raises(
+        ValueError,
+        match="Steel plant 'steel_1'.*forecasts_df.csv.*iron_ore_price",
+    ):
+        plant.build_model(_config(), forecasts, electricity_price_column="DE_DA_price")
+
+
 def _config() -> SimpleNamespace:
     return SimpleNamespace(
         timestep_minutes=60,

@@ -12,6 +12,7 @@ without changing FLEXIMOD's market runner.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -70,9 +71,24 @@ class CementPlant(BasePlant):
                 )
 
         component_rows = normalised.set_index("technology", drop=False)
-        preheater = Preheater.from_row(component_rows.loc["preheater"])
-        calciner = Calciner.from_row(component_rows.loc["calciner"])
-        kiln = Kiln.from_row(component_rows.loc["kiln"])
+        preheater = _component_from_row(
+            plant_name,
+            "preheater",
+            Preheater.from_row,
+            component_rows.loc["preheater"],
+        )
+        calciner = _component_from_row(
+            plant_name,
+            "calciner",
+            Calciner.from_row,
+            component_rows.loc["calciner"],
+        )
+        kiln = _component_from_row(
+            plant_name,
+            "kiln",
+            Kiln.from_row,
+            component_rows.loc["kiln"],
+        )
         demand_column = first_non_empty(normalised, "clinker_demand", default="")
         if not demand_column:
             demand_column = first_non_empty(normalised, "demand", default="")
@@ -136,8 +152,7 @@ class CementPlant(BasePlant):
         forecasts: pd.DataFrame,
         electricity_price_column: str,
     ) -> pyo.ConcreteModel:
-        required = self.required_forecast_columns() | {electricity_price_column}
-        _check_forecasts(forecasts, required)
+        self.validate_inputs(forecasts, electricity_price_column)
         model = pyo.ConcreteModel(name=f"{self.name}_cement_dispatch")
         model.T = pyo.Set(initialize=range(len(forecasts)), ordered=True)
         self.define_parameters(model, config, forecasts, electricity_price_column)
@@ -146,6 +161,23 @@ class CementPlant(BasePlant):
         self.define_constraints(model)
         self.define_objective(model)
         return model
+
+    def validate_inputs(
+        self,
+        forecasts: pd.DataFrame,
+        electricity_price_column: str,
+    ) -> None:
+        """Validate this plant's forecast contract before building Pyomo objects."""
+
+        required = self.required_forecast_columns() | {electricity_price_column}
+        _check_forecasts(forecasts, required, self.name)
+        for column in sorted(required):
+            _numeric_forecast(
+                forecasts,
+                column,
+                self.name,
+                require_non_negative=column == self.clinker_demand_column,
+            )
 
     def define_parameters(
         self,
@@ -260,10 +292,31 @@ def _numeric_forecast(
     return values.astype(float)
 
 
-def _check_forecasts(forecasts: pd.DataFrame, required_columns: set[str]) -> None:
+def _check_forecasts(
+    forecasts: pd.DataFrame,
+    required_columns: set[str],
+    plant_name: str,
+) -> None:
     missing = sorted(required_columns - set(forecasts.columns))
     if missing:
-        raise ValueError("Cement dispatch is missing forecast columns: " + ", ".join(missing))
+        raise ValueError(
+            f"Cement plant '{plant_name}' cannot build dispatch: forecasts_df.csv is missing "
+            "required column(s): " + ", ".join(missing)
+        )
+
+
+def _component_from_row[T](
+    plant_name: str,
+    technology: str,
+    factory: Callable[[pd.Series], T],
+    row: pd.Series,
+) -> T:
+    """Add plant and technology context to component-row validation errors."""
+
+    try:
+        return factory(row)
+    except ValueError as exc:
+        raise ValueError(f"Cement plant '{plant_name}', technology '{technology}': {exc}") from exc
 
 
 def _solve_model(plant_name: str, model: pyo.ConcreteModel, config: CaseConfig) -> str:

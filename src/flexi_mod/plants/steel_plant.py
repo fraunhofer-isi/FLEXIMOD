@@ -13,6 +13,7 @@ the physical model without duplicating its equations.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -71,11 +72,26 @@ class SteelPlant(BasePlant):
             raise ValueError(f"Steel plant '{plant_name}' can define at most one electrolyser")
 
         component_rows = normalised.set_index("technology", drop=False)
-        dri = DRIPlant.from_row(component_rows.loc["dri_plant"])
-        eaf = ElectricArcFurnace.from_row(component_rows.loc["eaf"])
+        dri = _component_from_row(
+            plant_name,
+            "dri_plant",
+            DRIPlant.from_row,
+            component_rows.loc["dri_plant"],
+        )
+        eaf = _component_from_row(
+            plant_name,
+            "eaf",
+            ElectricArcFurnace.from_row,
+            component_rows.loc["eaf"],
+        )
         components: dict[str, object] = {"dri_plant": dri, "eaf": eaf}
         if "electrolyser" in component_rows.index:
-            components["electrolyser"] = Electrolyser.from_row(component_rows.loc["electrolyser"])
+            components["electrolyser"] = _component_from_row(
+                plant_name,
+                "electrolyser",
+                Electrolyser.from_row,
+                component_rows.loc["electrolyser"],
+            )
 
         demand_column = first_non_empty(normalised, "steel_demand", default="")
         if not demand_column:
@@ -147,8 +163,7 @@ class SteelPlant(BasePlant):
     ) -> pyo.ConcreteModel:
         """Build the Pyomo model without solving it."""
 
-        required = self.required_forecast_columns() | {electricity_price_column}
-        _check_forecasts(forecasts, required)
+        self.validate_inputs(forecasts, electricity_price_column)
         model = pyo.ConcreteModel(name=f"{self.name}_steel_dispatch")
         model.T = pyo.Set(initialize=range(len(forecasts)), ordered=True)
         self.define_parameters(model, config, forecasts, electricity_price_column)
@@ -157,6 +172,23 @@ class SteelPlant(BasePlant):
         self.define_constraints(model)
         self.define_objective(model)
         return model
+
+    def validate_inputs(
+        self,
+        forecasts: pd.DataFrame,
+        electricity_price_column: str,
+    ) -> None:
+        """Validate this plant's forecast contract before building Pyomo objects."""
+
+        required = self.required_forecast_columns() | {electricity_price_column}
+        _check_forecasts(forecasts, required, self.name)
+        for column in sorted(required):
+            _numeric_forecast(
+                forecasts,
+                column,
+                self.name,
+                require_non_negative=column == self.steel_demand_column,
+            )
 
     # ------------------------------------------------------------------
     # Parameters -> components -> variables -> plant balances -> objective
@@ -278,10 +310,31 @@ def _numeric_forecast(
     return values.astype(float)
 
 
-def _check_forecasts(forecasts: pd.DataFrame, required_columns: set[str]) -> None:
+def _check_forecasts(
+    forecasts: pd.DataFrame,
+    required_columns: set[str],
+    plant_name: str,
+) -> None:
     missing = sorted(required_columns - set(forecasts.columns))
     if missing:
-        raise ValueError("Steel dispatch is missing forecast columns: " + ", ".join(missing))
+        raise ValueError(
+            f"Steel plant '{plant_name}' cannot build dispatch: forecasts_df.csv is missing "
+            "required column(s): " + ", ".join(missing)
+        )
+
+
+def _component_from_row[T](
+    plant_name: str,
+    technology: str,
+    factory: Callable[[pd.Series], T],
+    row: pd.Series,
+) -> T:
+    """Add plant and technology context to component-row validation errors."""
+
+    try:
+        return factory(row)
+    except ValueError as exc:
+        raise ValueError(f"Steel plant '{plant_name}', technology '{technology}': {exc}") from exc
 
 
 def _solve_model(plant_name: str, model: pyo.ConcreteModel, config: CaseConfig) -> str:

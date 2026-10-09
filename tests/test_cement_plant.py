@@ -33,6 +33,28 @@ def test_cement_plant_rejects_missing_kiln() -> None:
         CementPlant.from_rows("cement_1", rows)
 
 
+def test_cement_parameter_errors_identify_plant_and_technology() -> None:
+    rows = _cement_rows()
+    rows.loc[1, "eta_fossil"] = 1.2
+
+    with pytest.raises(
+        ValueError,
+        match="Cement plant 'cement_1', technology 'calciner'.*eta_fossil",
+    ):
+        CementPlant.from_rows("cement_1", rows)
+
+
+def test_cement_forecast_errors_name_the_missing_input() -> None:
+    plant = CementPlant.from_rows("cement_1", _cement_rows())
+    forecasts = _forecasts().drop(columns="coal_price")
+
+    with pytest.raises(
+        ValueError,
+        match="Cement plant 'cement_1'.*forecasts_df.csv.*coal_price",
+    ):
+        plant.build_model(_config(), forecasts, electricity_price_column="DE_DA_price")
+
+
 def _config() -> SimpleNamespace:
     return SimpleNamespace(
         timestep_minutes=60,
