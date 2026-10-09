@@ -14,6 +14,7 @@ from flexi_mod.plants.steam_generation_plant import (
     DispatchSignals,
     IDCAdjustmentSignals,
     SteamGenerationPlant,
+    SteamMarketStage,
 )
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 
@@ -29,6 +30,41 @@ def test_steam_generation_plant_builds_from_plants_csv() -> None:
     assert set(plants[0].components) == {"thermal_storage", "boiler"}
     assert plants[0].etes.max_capacity_mwh > 0
     assert plants[0].gas_boiler.efficiency == 0.85
+
+
+def test_steam_generation_plant_exposes_modeler_facing_build_sequence() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    plant = SteamGenerationPlant.from_plants_dataframe(
+        DataLoader(config, input_dir=CASE_DIR).load_plants()
+    )[0]
+    strategy = HybridETESGasStrategy(config)
+    index = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
+    forecasts = pd.DataFrame(
+        {
+            "plant_1_heat_demand": [2.0] * 4,
+            "DE_DA_price": [120.0] * 4,
+            "natural_gas_price": [80.0] * 4,
+            "co2_price": [0.0] * 4,
+        },
+        index=index,
+    )
+    signals = DispatchSignals(
+        electricity_price_col="DE_DA_price",
+        gas_price_col="natural_gas_price",
+        co2_price_col="co2_price",
+        gas_benchmark_eur_per_mwh_th=strategy.calculate_gas_based_heat_cost(
+            plant,
+            forecasts,
+        ),
+        charge_allowed=pd.Series(False, index=index),
+    )
+
+    model = plant.build_model(SteamMarketStage.DAY_AHEAD, config, forecasts, signals)
+
+    assert list(model.T) == [0, 1, 2, 3]
+    assert set(model.technology_blocks) == {"thermal_storage", "boiler"}
+    assert hasattr(model, "market_position_matches_physical_consumption")
+    assert hasattr(model, "objective")
 
 
 def test_steam_generation_plant_short_horizon_solves() -> None:

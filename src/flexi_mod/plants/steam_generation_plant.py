@@ -321,7 +321,7 @@ class SteamGenerationPlant(BasePlant):
         initial_soc_mwh: float | None,
     ) -> pd.DataFrame:
         route = self.route_process
-        model = self._build_stage_model(
+        model = self.build_model(
             stage,
             config,
             forecasts,
@@ -369,36 +369,54 @@ class SteamGenerationPlant(BasePlant):
 
     # --- Shared physical and market model --------------------------------
 
-    def _build_stage_model(
+    def build_model(
         self,
         stage: SteamMarketStage,
         config: CaseConfig,
         forecasts: pd.DataFrame,
         signals: SteamSignals,
-        initial_soc_mwh: float | None,
+        initial_soc_mwh: float | None = None,
     ) -> pyo.ConcreteModel:
+        """Build one market-stage model without solving it.
+
+        The method follows the common plant-modelling sequence: define inputs,
+        add market-stage terms, initialise technology blocks, then add the
+        physical balance and objective.  Route classes retain the technology-
+        specific equations so that this orchestration stays readable.
+        """
         _validate_stage_signal_type(stage, signals)
-        dt_hours = config.timestep_minutes / 60.0
-        steps = list(range(len(forecasts)))
-        heat_demand = forecasts[self.heat_demand_column].astype(float).to_numpy() * dt_hours
+        model = pyo.ConcreteModel(name=f"{self.name}_{stage.value}")
+        model.T = pyo.Set(initialize=range(len(forecasts)), ordered=True)
+        heat_demand = self.define_parameters(model, config, forecasts, signals)
+        self.initialize_market_stage(model, stage, forecasts, signals)
+        self.initialize_components(model, config, initial_soc_mwh)
+        self.define_variables(model)
+        self.define_constraints(model, stage, config, heat_demand)
+        self.define_objective(model)
+        return model
+
+    def define_parameters(
+        self,
+        model: pyo.ConcreteModel,
+        config: CaseConfig,
+        forecasts: pd.DataFrame,
+        signals: SteamSignals,
+    ) -> list[float]:
+        """Attach time-series inputs common to every steam market stage."""
+        steps = list(model.T)
+        heat_demand = (
+            forecasts[self.heat_demand_column].astype(float).to_numpy()
+            * (config.timestep_minutes / 60.0)
+        )
         additional_charge = series_or_zero(
             signals.additional_electricity_charge_eur_per_mwh,
             forecasts.index,
         ).to_numpy()
         gas_price = forecasts[signals.gas_price_col].astype(float).to_numpy()
-        co2_price = forecast_values_or_zero(
-            forecasts,
-            signals.co2_price_col,
-        )
-        reserved_capacity = series_or_zero(
-            signals.reserved_capacity_mwh,
-            forecasts.index,
-        )
-        route = self.route_process
-        route.validate_capacity_reservation(reserved_capacity)
+        co2_price = forecast_values_or_zero(forecasts, signals.co2_price_col)
+        reserved_capacity = series_or_zero(signals.reserved_capacity_mwh, forecasts.index)
+        self.route_process.validate_capacity_reservation(reserved_capacity)
 
-        model = pyo.ConcreteModel(name=f"{self.name}_{stage.value}")
-        model.T = pyo.Set(initialize=steps, ordered=True)
         model.heat_demand = pyo.Param(
             model.T,
             initialize={t: float(heat_demand[t]) for t in steps},
@@ -423,7 +441,16 @@ class SteamGenerationPlant(BasePlant):
             initialize=float(signals.co2_emission_factor_t_per_mwh_fuel)
         )
         model.tax_rate = pyo.Param(initialize=float(signals.tax_rate))
+        return [float(value) for value in heat_demand]
 
+    def initialize_market_stage(
+        self,
+        model: pyo.ConcreteModel,
+        stage: SteamMarketStage,
+        forecasts: pd.DataFrame,
+        signals: SteamSignals,
+    ) -> None:
+        """Attach the variables and settlement terms for one market stage."""
         if stage == SteamMarketStage.DAY_AHEAD:
             _add_day_ahead_stage(
                 model,
@@ -443,22 +470,46 @@ class SteamGenerationPlant(BasePlant):
                 cast(AFRRDownSignals, signals),
             )
 
-        route.add_technology_blocks(
-            model,
+    def initialize_components(
+        self,
+        model: pyo.ConcreteModel,
+        config: CaseConfig,
+        initial_soc_mwh: float | None,
+    ) -> None:
+        """Add the configured steam-route technology blocks."""
+        resolved_initial_soc_mwh = self.route_process.initial_soc(
             self.components,
-            dt_hours,
             initial_soc_mwh,
         )
+        self.route_process.add_technology_blocks(
+            model,
+            self.components,
+            config.timestep_minutes / 60.0,
+            resolved_initial_soc_mwh,
+        )
+
+    @staticmethod
+    def define_variables(model: pyo.ConcreteModel) -> None:
+        """Add route-independent physical decision variables."""
         model.electricity_consumption = pyo.Var(
             model.T,
             within=pyo.NonNegativeReals,
         )
-        route.add_process_constraints(
+
+    def define_constraints(
+        self,
+        model: pyo.ConcreteModel,
+        stage: SteamMarketStage,
+        config: CaseConfig,
+        heat_demand_mwh: list[float],
+    ) -> None:
+        """Connect route physics to the market-stage electricity position."""
+        self.route_process.add_process_constraints(
             model,
             self.components,
             stage,
-            dt_hours,
-            [float(value) for value in heat_demand],
+            config.timestep_minutes / 60.0,
+            heat_demand_mwh,
         )
         model.market_position_matches_physical_consumption = pyo.Constraint(
             model.T,
@@ -466,8 +517,21 @@ class SteamGenerationPlant(BasePlant):
                 mm.electricity_consumption[t] == mm.required_electricity_consumption_mwh[t]
             ),
         )
-        _add_common_costs_and_objective(model, route)
-        return model
+
+    def define_objective(self, model: pyo.ConcreteModel) -> None:
+        """Add costs and the route-specific market settlement objective."""
+        _add_common_costs_and_objective(model, self.route_process)
+
+    def _build_stage_model(
+        self,
+        stage: SteamMarketStage,
+        config: CaseConfig,
+        forecasts: pd.DataFrame,
+        signals: SteamSignals,
+        initial_soc_mwh: float | None,
+    ) -> pyo.ConcreteModel:
+        """Compatibility wrapper for callers using the previous private API."""
+        return self.build_model(stage, config, forecasts, signals, initial_soc_mwh)
 
 
 # ---------------------------------------------------------------------------
