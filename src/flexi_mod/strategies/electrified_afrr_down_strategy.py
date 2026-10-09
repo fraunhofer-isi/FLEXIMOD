@@ -34,8 +34,9 @@ _AFRR_CAPACITY_BLOCK_DURATION = "__afrr_capacity_block_duration_h"
 _AFRR_CAPACITY_PRICE = "__afrr_capacity_price_EUR_per_MW_h"
 _AFRR_CAPACITY_MISSING_PRICE = "__afrr_capacity_missing_price"
 
-#: Markets an electrified aFRR-down case must enable, in this exact sequence.
+#: Markets an electrified aFRR-down capacity-participating case must enable.
 REQUIRED_MARKET_SEQUENCE = ("afrr_capacity", "day_ahead", "afrr_energy")
+ENERGY_ONLY_MARKET_SEQUENCE = ("day_ahead", "afrr_energy")
 
 
 class ElectrifiedAFRRDownStrategy:
@@ -78,6 +79,7 @@ class ElectrifiedAFRRDownStrategy:
         """Prepare the three markets, then let the plant roll its own horizon."""
         timestep_hours = self.config.timestep_minutes / 60.0
         day_ahead = DayAheadMarket("day_ahead", self.config.market("day_ahead"))
+        capacity_enabled = bool(self.config.market("afrr_capacity").get("enabled", False))
         capacity = AFRRCapacityMarket("afrr_capacity", self.config.market("afrr_capacity"))
         energy = AFRRDownEnergyMarket("afrr_energy", self.config.market("afrr_energy"))
 
@@ -114,6 +116,7 @@ class ElectrifiedAFRRDownStrategy:
             afrr_capacity_min_bid_mw=float(capacity_rules.get("min_bid_mw", 1.0)),
             afrr_capacity_bid_increment_mw=float(capacity_rules.get("bid_increment_mw", 1.0)),
             afrr_capacity_product_duration_h=duration_hours(capacity.product_length),
+            afrr_capacity_enabled=capacity_enabled,
         )
         signals = self._build_signals(plant, market)
 
@@ -131,25 +134,33 @@ class ElectrifiedAFRRDownStrategy:
         case_name = self.config.strategy_name
         if self.config.country != "DE":
             raise ValueError(f"{case_name} requires country='DE'")
-        if tuple(self.config.case.get("market_sequence", ())) != REQUIRED_MARKET_SEQUENCE:
+        capacity_enabled = bool(self.config.market("afrr_capacity").get("enabled", False))
+        expected_sequence = (
+            REQUIRED_MARKET_SEQUENCE if capacity_enabled else ENERGY_ONLY_MARKET_SEQUENCE
+        )
+        if tuple(self.config.case.get("market_sequence", ())) != expected_sequence:
             raise ValueError(
-                f"{case_name} requires market_sequence == {list(REQUIRED_MARKET_SEQUENCE)}"
+                f"{case_name} requires market_sequence == {list(expected_sequence)}"
             )
         if not self.config.dispatch_setting("rolling_horizon_enabled", False):
             raise ValueError(f"{case_name} requires strategy.dispatch.rolling_horizon_enabled")
-        for market_name in REQUIRED_MARKET_SEQUENCE:
+        for market_name in expected_sequence:
             market = self.config.market(market_name)
             if not market.get("enabled", False):
                 raise ValueError(f"{case_name} requires markets.{market_name}.enabled = true")
-        for market_name in ("afrr_capacity", "afrr_energy"):
+        direction_markets = (
+            ("afrr_capacity", "afrr_energy") if capacity_enabled else ("afrr_energy",)
+        )
+        for market_name in direction_markets:
             direction = self.config.market(market_name).get("direction")
             if direction != "down":
                 raise ValueError(f"{case_name} requires markets.{market_name}.direction = 'down'")
-        capacity_gates = self.config.market("afrr_capacity")
-        if "gate_open" not in capacity_gates or "gate_close" not in capacity_gates:
-            raise ValueError(
-                f"{case_name} requires markets.afrr_capacity.gate_open and .gate_close"
-            )
+        if capacity_enabled:
+            capacity_gates = self.config.market("afrr_capacity")
+            if "gate_open" not in capacity_gates or "gate_close" not in capacity_gates:
+                raise ValueError(
+                    f"{case_name} requires markets.afrr_capacity.gate_open and .gate_close"
+                )
         for market_name in ("day_ahead", "afrr_energy"):
             if "gate_close" not in self.config.market(market_name):
                 raise ValueError(f"{case_name} requires markets.{market_name}.gate_close")

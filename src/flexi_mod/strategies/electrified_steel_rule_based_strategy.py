@@ -104,11 +104,11 @@ class ElectrifiedSteelRuleBasedStrategy(ElectrifiedSteelStrategy):
     ) -> pd.DataFrame:
         timestep_hours = self.config.timestep_minutes / 60.0
         day_ahead = DayAheadMarket("day_ahead", self.config.market("day_ahead"))
+        capacity_enabled = bool(self.config.market("afrr_capacity").get("enabled", False))
         capacity = AFRRCapacityMarket("afrr_capacity", self.config.market("afrr_capacity"))
         energy = AFRRDownEnergyMarket("afrr_energy", self.config.market("afrr_energy"))
 
         day_ahead.prepare_market_data(forecasts)
-        capacity_data = capacity.prepare_market_data(forecasts, timestep_hours=timestep_hours)
         energy_data = energy.prepare_market_data(forecasts, timestep_hours=timestep_hours)
         self.afrr_energy_data_quality_summary = energy_data.quality_summary.copy()
 
@@ -127,10 +127,23 @@ class ElectrifiedSteelRuleBasedStrategy(ElectrifiedSteelStrategy):
         afrr_price = energy_data.frame["afrr_energy_down_price_EUR_per_MWh"].astype(float)
         afrr_available = energy_data.frame["afrr_price_available"].astype(bool)
         afrr_system_activation = energy_data.frame["afrr_system_activation_MWh"].astype(float)
-        capacity_block_id = capacity_data.frame["afrr_capacity_block_id"]
-        capacity_block_duration = capacity_data.frame["block_duration_h"].astype(float)
-        capacity_price = capacity_data.frame["capacity_price_EUR_per_MW_h"].astype(float)
-        capacity_missing_price = capacity_data.frame["missing_capacity_price_flag"].astype(bool)
+        if capacity_enabled:
+            capacity_data = capacity.prepare_market_data(forecasts, timestep_hours=timestep_hours)
+            capacity_block_id = capacity_data.frame["afrr_capacity_block_id"]
+            capacity_block_duration = capacity_data.frame["block_duration_h"].astype(float)
+            capacity_price = capacity_data.frame["capacity_price_EUR_per_MW_h"].astype(float)
+            capacity_missing_price = capacity_data.frame["missing_capacity_price_flag"].astype(bool)
+        else:
+            # Preserve the common output schema without creating a capacity market.
+            # These zero-valued fields cannot produce a capacity-backed energy bid.
+            block_steps = max(1, int(round(capacity_product_duration_h / timestep_hours)))
+            capacity_block_id = pd.Series(
+                [f"energy_only_{step // block_steps}" for step in range(len(forecasts))],
+                index=forecasts.index,
+            )
+            capacity_block_duration = pd.Series(capacity_product_duration_h, index=forecasts.index)
+            capacity_price = pd.Series(0.0, index=forecasts.index)
+            capacity_missing_price = pd.Series(True, index=forecasts.index)
 
         additional_charge = float(plant.additional_electricity_charge_eur_per_mwh)
         delivered_da_price = da_price + additional_charge
@@ -187,6 +200,7 @@ class ElectrifiedSteelRuleBasedStrategy(ElectrifiedSteelStrategy):
             energy_bid_increment_mw=energy_bid_increment_mw,
             capacity_min_bid_mw=capacity_min_bid_mw,
             capacity_bid_increment_mw=capacity_bid_increment_mw,
+            capacity_enabled=capacity_enabled,
             case_a=case_a,
             benchmark=benchmark.reindex(physical.index),
             gated_load_column=(
@@ -296,6 +310,7 @@ def _apply_market_timing_rules(
     energy_bid_increment_mw: float,
     capacity_min_bid_mw: float,
     capacity_bid_increment_mw: float,
+    capacity_enabled: bool,
     case_a: bool,
     benchmark: pd.Series,
     gated_load_column: str | None = None,
@@ -317,19 +332,22 @@ def _apply_market_timing_rules(
     # energy wherever it beats day-ahead, regardless of what produced the load.
     afrr_cheaper_than_da = afrr_available & (afrr_price < da_price)
 
-    reserved_mw_by_block = _capacity_reserved_mw_by_block(
-        capacity_block_id=capacity_block_id,
-        total=total,
-        afrr_cheaper_than_da=afrr_cheaper_than_da,
-        afrr_system_activation=afrr_system_activation,
-        capacity_price=capacity_price,
-        capacity_missing_price=capacity_missing_price,
-        capacity_product_duration_h=capacity_product_duration_h,
-        timestep_hours=timestep_hours,
-        capacity_min_bid_mw=capacity_min_bid_mw,
-        capacity_bid_increment_mw=capacity_bid_increment_mw,
-    )
-    reserved_mw = capacity_block_id.map(reserved_mw_by_block).astype(float)
+    if capacity_enabled:
+        reserved_mw_by_block = _capacity_reserved_mw_by_block(
+            capacity_block_id=capacity_block_id,
+            total=total,
+            afrr_cheaper_than_da=afrr_cheaper_than_da,
+            afrr_system_activation=afrr_system_activation,
+            capacity_price=capacity_price,
+            capacity_missing_price=capacity_missing_price,
+            capacity_product_duration_h=capacity_product_duration_h,
+            timestep_hours=timestep_hours,
+            capacity_min_bid_mw=capacity_min_bid_mw,
+            capacity_bid_increment_mw=capacity_bid_increment_mw,
+        )
+        reserved_mw = capacity_block_id.map(reserved_mw_by_block).astype(float)
+    else:
+        reserved_mw = pd.Series(0.0, index=index)
     reserved_mwh = reserved_mw * timestep_hours
 
     # Energy sourcing: the capacity-backed portion is mandatory (once reserved, it must

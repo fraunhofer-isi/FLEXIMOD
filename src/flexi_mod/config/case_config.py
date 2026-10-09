@@ -252,7 +252,19 @@ class CaseConfig:
         }:
             if str(self.case["country"]).upper() != "DE":
                 raise ConfigError(f"{strategy_name} currently requires country='DE'")
-            expected_sequence = ["afrr_capacity", "day_ahead", "afrr_energy"]
+            capacity_enabled = bool(
+                self.case["markets"].get("afrr_capacity", {}).get("enabled", False)
+            )
+            energy_only_cement_strategy = strategy_name in {
+                "electrified_cement",
+                "hybrid_strategy_cement",
+                "electrified_cement_rule_based",
+            }
+            expected_sequence = (
+                ["day_ahead", "afrr_energy"]
+                if energy_only_cement_strategy and not capacity_enabled
+                else ["afrr_capacity", "day_ahead", "afrr_energy"]
+            )
             enabled_sequence = [
                 name
                 for name in self.market_sequence
@@ -261,17 +273,18 @@ class CaseConfig:
             if enabled_sequence != expected_sequence:
                 raise ConfigError(
                     f"{strategy_name} market_sequence must contain enabled markets in this "
-                    "order: afrr_capacity, day_ahead, afrr_energy"
+                    f"order: {', '.join(expected_sequence)}"
                 )
-            product_length = str(
-                self.case["markets"].get("afrr_capacity", {}).get("product_length", "4h")
-            )
-            product_hours = _duration_hours(product_length)
-            if horizon_hours + 1e-9 < step_hours + product_hours:
-                raise ConfigError(
-                    f"{strategy_name} dispatch_horizon_hours must cover rolling_step_hours "
-                    "plus one complete aFRR capacity product"
+            if capacity_enabled:
+                product_length = str(
+                    self.case["markets"].get("afrr_capacity", {}).get("product_length", "4h")
                 )
+                product_hours = _duration_hours(product_length)
+                if horizon_hours + 1e-9 < step_hours + product_hours:
+                    raise ConfigError(
+                        f"{strategy_name} dispatch_horizon_hours must cover rolling_step_hours "
+                        "plus one complete aFRR capacity product"
+                    )
 
         markets = self.case["markets"]
         for market_name in self.market_sequence:

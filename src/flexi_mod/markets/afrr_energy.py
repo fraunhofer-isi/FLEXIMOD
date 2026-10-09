@@ -360,6 +360,9 @@ class AFRRDownMarketSignals:
     afrr_capacity_min_bid_mw: float = 1.0
     afrr_capacity_bid_increment_mw: float = 1.0
     afrr_capacity_product_duration_h: float = 4.0
+    #: Capacity participation reserves four-hour headroom and earns capacity revenue.
+    #: When disabled, energy-only aFRR bids remain available through the free-bid leg.
+    afrr_capacity_enabled: bool = True
 
 
 # --------------------------------------------------------------------------------------

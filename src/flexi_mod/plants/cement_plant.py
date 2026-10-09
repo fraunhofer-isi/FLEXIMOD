@@ -440,9 +440,9 @@ class CementPlant(DispatchPlant):
     ) -> pd.DataFrame:
         """Roll through the horizon bidding day-ahead against aFRR down.
 
-        Each window is solved twice: once with capacity bidding disabled, to price what
-        committing capacity actually costs, and once for real. Simpler than the steel
-        equivalent because a per-timestep demand band leaves no backlog to carry.
+        Capacity-participating cases solve each window twice: once without capacity to
+        price the commitment opportunity cost, and once with capacity. Energy-only
+        cases solve only the capacity-disabled model and retain its free energy bids.
         """
         if forecasts.empty:
             raise ValueError("Cement aFRR dispatch requires at least one timestep")
@@ -503,17 +503,21 @@ class CementPlant(DispatchPlant):
                 return self._solve_model(config, window.horizon, model)
 
             try:
-                # The capacity-disabled twin prices what committing capacity costs.
-                baseline_result = solve(False)
-                horizon_result = solve(True)
+                if signals.market.afrr_capacity_enabled:
+                    # The capacity-disabled twin prices what committing capacity costs.
+                    baseline_result = solve(False)
+                    horizon_result = solve(True)
+                    horizon_result = attach_capacity_opportunity_cost(
+                        horizon_result, baseline_result, commit_steps=commit_count
+                    )
+                else:
+                    # Free aFRR energy bids remain enabled; capacity bids and all
+                    # capacity settlement terms are fixed to zero in this solve.
+                    horizon_result = solve(False)
             except RuntimeError as exc:
                 raise RuntimeError(
                     f"Cement aFRR window {window_number} starting {horizon.index[0]} is infeasible"
                 ) from exc
-
-            horizon_result = attach_capacity_opportunity_cost(
-                horizon_result, baseline_result, commit_steps=commit_count
-            )
             implemented = horizon_result.iloc[:commit_count].copy()
             produced_before = state.cumulative_clinker_output_t
             produced_by_row = implemented["clinker_output_t"].cumsum()
