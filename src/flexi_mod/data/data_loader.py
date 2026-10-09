@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -15,8 +17,90 @@ class DataValidationError(ValueError):
     """Raised when input data does not satisfy the configured case requirements."""
 
 
+@dataclass(frozen=True)
+class PlantDefinition:
+    """One multi-component plant read from ``plants.csv``.
+
+    ``plants.csv`` is intentionally denormalised for modellers: each row
+    describes one technology and rows with the same ``name`` belong to one
+    plant.  This definition restores a model-friendly shape without imposing a
+    technology-specific schema.  Plant-level values live in ``metadata`` and
+    each technology keeps its own parameter dictionary in ``components``.
+    """
+
+    name: str
+    unit_type: str
+    metadata: dict[str, Any]
+    components: dict[str, dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class CaseInputs:
+    """Structured plant definitions and their common, validated forecasts."""
+
+    plants_by_type: dict[str, list[PlantDefinition]]
+    forecasts: pd.DataFrame
+
+    @property
+    def plants(self) -> list[PlantDefinition]:
+        """Return all plants in their order of appearance in ``plants.csv``."""
+
+        return [plant for plants in self.plants_by_type.values() for plant in plants]
+
+    def forecast_for(self, plant: PlantDefinition | str, signal_name: str) -> pd.Series | None:
+        """Return a plant-specific signal, falling back to a global signal.
+
+        A request for ``steel_demand`` from plant ``steel_1`` resolves
+        ``steel_1_steel_demand`` first and then the global ``steel_demand``
+        column.  This mirrors ASSUME's input convention while also allowing
+        shared price and fuel columns in one wide ``forecasts_df.csv``.
+        """
+
+        plant_name = plant.name if isinstance(plant, PlantDefinition) else str(plant)
+        return get_plant_forecast_column(self.forecasts, plant_name, signal_name)
+
+    def require_forecast_for(self, plant: PlantDefinition | str, signal_name: str) -> pd.Series:
+        """Return a required plant/global forecast or raise a clear input error."""
+
+        series = self.forecast_for(plant, signal_name)
+        if series is not None:
+            return series
+        plant_name = plant.name if isinstance(plant, PlantDefinition) else str(plant)
+        raise DataValidationError(
+            f"forecasts_df.csv is missing forecast '{signal_name}' for plant '{plant_name}'. "
+            f"Expected '{plant_name}_{signal_name}' or '{signal_name}'."
+        )
+
+
+def get_plant_forecast_column(
+    forecasts: pd.DataFrame | None,
+    plant_name: str,
+    signal_name: str,
+) -> pd.Series | None:
+    """Return a plant-specific forecast column, falling back to a global one.
+
+    Plant-specific columns take precedence over shared columns.  Passing an
+    already-prefixed signal name is supported and does not duplicate the plant
+    prefix.  This helper is deliberately technology-agnostic so new plant
+    models can request their own profiles without changes to :class:`DataLoader`.
+    """
+
+    if forecasts is None:
+        return None
+    prefix = f"{plant_name}_"
+    candidates = (
+        (signal_name,)
+        if signal_name.startswith(prefix)
+        else (f"{prefix}{signal_name}", signal_name)
+    )
+    for column in candidates:
+        if column in forecasts.columns:
+            return forecasts[column]
+    return None
+
+
 class DataLoader:
-    """Load and validate the three input files used by a case study."""
+    """Load flat case files and expose structured, multi-component plant inputs."""
 
     def __init__(
         self,
@@ -62,6 +146,85 @@ class DataLoader:
         plants["name"] = plants["name"].astype(str).str.strip()
         plants["technology"] = plants["technology"].astype(str).str.strip()
         return plants
+
+    def load_plant_definitions(
+        self,
+        plants: pd.DataFrame | None = None,
+    ) -> dict[str, list[PlantDefinition]]:
+        """Group technology rows into generic plant/component definitions.
+
+        The return value follows the same shape as ASSUME's DSM input loader:
+        plants are grouped by ``unit_type`` and retain all technology-specific
+        values in a ``components`` mapping.  This method only understands the
+        input grammar; it deliberately does not validate a plant's physical
+        topology.  That validation belongs to the registered plant model.
+
+        ``component_id`` may be supplied to distinguish multiple components of
+        the same technology.  If omitted, the technology name is used as the
+        component key and therefore must be unique within a plant.
+        """
+
+        frame = self.load_plants() if plants is None else plants.copy()
+        result: dict[str, list[PlantDefinition]] = {}
+        component_id_column = "component_id" if "component_id" in frame.columns else None
+
+        for plant_name, rows in frame.groupby("name", sort=False):
+            unit_types = {
+                str(value).strip().lower()
+                for value in rows["unit_type"].dropna().tolist()
+                if str(value).strip()
+            }
+            if len(unit_types) != 1:
+                raise DataValidationError(
+                    f"Plant '{plant_name}' must use exactly one non-empty unit_type"
+                )
+            unit_type = unit_types.pop()
+            metadata = _plant_metadata(rows, str(plant_name), unit_type)
+            components: dict[str, dict[str, Any]] = {}
+
+            for _, row in rows.iterrows():
+                technology = str(row["technology"]).strip().lower()
+                if not technology:
+                    raise DataValidationError(f"Plant '{plant_name}' has an empty technology name")
+                component_key = technology
+                if component_id_column and _has_value(row[component_id_column]):
+                    component_key = str(row[component_id_column]).strip()
+                if component_key in components:
+                    raise DataValidationError(
+                        f"Plant '{plant_name}' defines duplicate component '{component_key}'. "
+                        "Use a unique component_id when a technology occurs more than once."
+                    )
+                components[component_key] = _component_parameters(
+                    row=row,
+                    component_id_column=component_id_column,
+                )
+
+            definition = PlantDefinition(
+                name=str(plant_name),
+                unit_type=unit_type,
+                metadata=metadata,
+                components=components,
+            )
+            result.setdefault(unit_type, []).append(definition)
+        return result
+
+    def load_case_inputs(
+        self,
+        required_columns: set[str] | None = None,
+    ) -> CaseInputs:
+        """Load grouped plant definitions and the validated forecast frame together.
+
+        Existing callers may continue using :meth:`load_plants` and
+        :meth:`load_forecasts`.  New, generic plant models should use this
+        method and resolve profiles via :meth:`CaseInputs.forecast_for`.
+        """
+
+        plants = self.load_plants()
+        forecasts = self.load_forecasts(required_columns=required_columns)
+        return CaseInputs(
+            plants_by_type=self.load_plant_definitions(plants),
+            forecasts=forecasts,
+        )
 
     def load_additional_charges(self, plants: pd.DataFrame) -> dict[str, pd.DataFrame]:
         """Load plant-specific network-tariff components.
@@ -441,3 +604,68 @@ def _demand_column_for_plant(plant_name: str, plant_rows: pd.DataFrame) -> str:
         if values:
             return values[0]
     return f"{plant_name}_heat_demand"
+
+
+_PLANT_METADATA_COLUMNS = ("node", "objective", "demand")
+
+
+def _plant_metadata(
+    rows: pd.DataFrame,
+    plant_name: str,
+    unit_type: str,
+) -> dict[str, Any]:
+    """Extract values shared by a plant's technology rows.
+
+    Only universally understood plant fields are lifted out of component
+    dictionaries.  Everything else remains component-specific, even when it
+    happens to be repeated in a CSV, so the loader never guesses a physical
+    parameter's ownership.
+    """
+
+    metadata: dict[str, Any] = {"name": plant_name, "unit_type": unit_type}
+    for column in _PLANT_METADATA_COLUMNS:
+        if column not in rows.columns:
+            continue
+        values = [value for value in rows[column].tolist() if _has_value(value)]
+        if not values:
+            continue
+        unique_values = {_comparison_value(value) for value in values}
+        if len(unique_values) != 1:
+            raise DataValidationError(
+                f"Plant '{plant_name}' has inconsistent plant-level '{column}' values"
+            )
+        metadata[column] = values[0]
+    return metadata
+
+
+def _component_parameters(
+    row: pd.Series,
+    component_id_column: str | None,
+) -> dict[str, Any]:
+    """Return populated technology-specific fields from one plant CSV row."""
+
+    excluded_columns = {
+        "name",
+        "unit_type",
+        "technology",
+        *_PLANT_METADATA_COLUMNS,
+    }
+    if component_id_column:
+        excluded_columns.add(component_id_column)
+    return {
+        column: value
+        for column, value in row.items()
+        if column not in excluded_columns and _has_value(value)
+    }
+
+
+def _has_value(value: Any) -> bool:
+    """Return whether a CSV cell carries a meaningful value."""
+
+    return not pd.isna(value) and str(value).strip() != ""
+
+
+def _comparison_value(value: Any) -> str:
+    """Normalise a scalar only for cross-row consistency checks."""
+
+    return str(value).strip()

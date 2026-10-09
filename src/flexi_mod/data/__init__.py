@@ -2,6 +2,18 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-from flexi_mod.data.data_loader import DataLoader
+from flexi_mod.data.data_loader import (
+    CaseInputs,
+    DataLoader,
+    DataValidationError,
+    PlantDefinition,
+    get_plant_forecast_column,
+)
 
-__all__ = ["DataLoader"]
+__all__ = [
+    "CaseInputs",
+    "DataLoader",
+    "DataValidationError",
+    "PlantDefinition",
+    "get_plant_forecast_column",
+]
