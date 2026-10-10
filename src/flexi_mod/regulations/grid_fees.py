@@ -472,9 +472,10 @@ class SpanishGridFeeRegulation(GridFeeRegulation):
         """Per-MWh adder for the Pyomo objective.
 
         For Spain, the dynamic peajes are passed as a time-series directly into
-        the Pyomo model via DispatchSignals. Only static EUR/MWh levies (if any)
-        enter here. The capacity charge is non-marginal (peak-based) and settled
-        ex-post only.
+        the Pyomo model via the applicable electricity-market stage input (for
+        example, :class:`~flexi_mod.markets.day_ahead.DayAheadPosition`). Only
+        static EUR/MWh levies (if any) enter here. The capacity charge is
+        non-marginal (peak-based) and settled ex-post only.
         """
         return self._levies_eur_per_mwh
 
@@ -622,9 +623,10 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
     def marginal_charge_eur_per_mwh(self) -> float:
         """Per-MWh adder for the Pyomo objective.
 
-        Dynamic charges (TURPE + accise) are passed as a time-series via
-        DispatchSignals. Static EUR/MWh levies (if any) enter here as a scalar.
-        The capacity obligation is non-marginal and settled ex-post only.
+        Dynamic charges (TURPE + accise) are passed as a time series via the
+        applicable electricity-market stage input. Static EUR/MWh levies (if
+        any) enter here as a scalar. The capacity obligation is non-marginal
+        and settled ex-post only.
         """
         return self._levies_eur_per_mwh
 

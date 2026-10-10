@@ -12,15 +12,471 @@ forecast datetime index, anchored at midnight.
 
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import dataclass
+from typing import Final
 
 import pandas as pd
 
-from flexi_mod.markets.base_market import BaseMarket, MarketConfigError
+from flexi_mod.markets.base_market import BaseMarket, MarketConfigError, MarketResultKind
 
 PRICE_CONSISTENCY_TOLERANCE = 1e-6
 SUPPORTED_PRICE_UNITS = {"EUR_per_MW_per_h", "EUR_per_MW_per_product"}
+
+
+AFRR_CAPACITY_AWARD_RESULT_COLUMNS: Final[tuple[str, ...]] = (
+    "afrr_capacity_block_id",
+    "afrr_capacity_block_duration_h",
+    "afrr_capacity_pricing_rule",
+    "afrr_capacity_bid_price_EUR_per_MW_h",
+    "afrr_capacity_clearing_price_EUR_per_MW_h",
+    "afrr_capacity_settlement_price_EUR_per_MW_h",
+    "afrr_capacity_down_price_EUR_per_MW_h",
+    "afrr_capacity_reserved_MW",
+    "afrr_capacity_reserved_MWh",
+    "afrr_capacity_revenue_EUR",
+    "afrr_capacity_opportunity_cost_EUR",
+    "afrr_capacity_market_surplus_EUR",
+    "afrr_capacity_net_value_EUR",
+)
+
+
+@dataclass(frozen=True)
+class BalancingCapacityAward:
+    """A time-aligned balancing-capacity award and its settlement accounting.
+
+    This is a market outcome, rather than a plant or technology object.  It
+    deliberately contains no information about storage, boilers, heat demand,
+    or another plant's physical feasibility.  A plant may consume
+    :meth:`reserved_energy_mwh` to enforce delivery capability, while output
+    code may use :meth:`result_frame` to append the common market fields.
+
+    ``reserved_mw`` is the awarded capacity magnitude.  The corresponding
+    timestep energy is derived from it, rather than stored independently, so
+    MW and MWh cannot become inconsistent.  All optional series are aligned
+    by timestamp when read; missing accounting values use the conventional
+    settlement identities documented in :meth:`result_frame`.
+    """
+
+    reserved_mw: pd.Series
+    block_id: pd.Series | None = None
+    block_duration_h: pd.Series | None = None
+    pricing_rule: pd.Series | None = None
+    bid_price_eur_per_mw_h: pd.Series | None = None
+    clearing_price_eur_per_mw_h: pd.Series | None = None
+    settlement_price_eur_per_mw_h: pd.Series | None = None
+    revenue_eur: pd.Series | None = None
+    opportunity_cost_eur: pd.Series | None = None
+    market_surplus_eur: pd.Series | None = None
+    net_value_eur: pd.Series | None = None
+
+    def __post_init__(self) -> None:
+        """Reject malformed market data at the boundary of the domain object."""
+
+        _validate_numeric_series(self.reserved_mw, "reserved_mw", non_negative=True)
+        for name, values in (
+            ("block_id", self.block_id),
+            ("block_duration_h", self.block_duration_h),
+            ("pricing_rule", self.pricing_rule),
+            ("bid_price_eur_per_mw_h", self.bid_price_eur_per_mw_h),
+            ("clearing_price_eur_per_mw_h", self.clearing_price_eur_per_mw_h),
+            ("settlement_price_eur_per_mw_h", self.settlement_price_eur_per_mw_h),
+            ("revenue_eur", self.revenue_eur),
+            ("opportunity_cost_eur", self.opportunity_cost_eur),
+            ("market_surplus_eur", self.market_surplus_eur),
+            ("net_value_eur", self.net_value_eur),
+        ):
+            if values is not None and not isinstance(values, pd.Series):
+                raise TypeError(f"BalancingCapacityAward.{name} must be a pandas Series")
+
+        _validate_optional_numeric_series(
+            self.block_duration_h,
+            "block_duration_h",
+            non_negative=True,
+        )
+        for name, values in (
+            ("bid_price_eur_per_mw_h", self.bid_price_eur_per_mw_h),
+            ("clearing_price_eur_per_mw_h", self.clearing_price_eur_per_mw_h),
+            ("settlement_price_eur_per_mw_h", self.settlement_price_eur_per_mw_h),
+            ("revenue_eur", self.revenue_eur),
+            ("opportunity_cost_eur", self.opportunity_cost_eur),
+            ("market_surplus_eur", self.market_surplus_eur),
+            ("net_value_eur", self.net_value_eur),
+        ):
+            _validate_optional_numeric_series(values, name)
+
+    @classmethod
+    def empty(cls, index: pd.Index) -> BalancingCapacityAward:
+        """Return an explicit no-award object for a delivery index."""
+
+        return cls(reserved_mw=pd.Series(0.0, index=index, dtype=float))
+
+    def reserved_energy_mwh(
+        self,
+        index: pd.Index,
+        timestep_hours: float,
+    ) -> pd.Series:
+        """Return the awarded capacity expressed as energy in each timestep."""
+
+        _validate_timestep_hours(timestep_hours)
+        return (
+            _aligned_numeric_series(
+                self.reserved_mw,
+                index,
+                "reserved_mw",
+                default=0.0,
+            )
+            * timestep_hours
+        )
+
+    def result_frame(
+        self,
+        index: pd.Index,
+        timestep_hours: float,
+    ) -> pd.DataFrame:
+        """Return stable aFRR-capacity output fields for each delivery timestamp.
+
+        When an accounting series is absent, this method derives it using the
+        standard timestep settlement identities:
+
+        * revenue = awarded MW × settlement price × timestep hours;
+        * market surplus = awarded MW × (settlement - bid price) × timestep
+          hours; and
+        * net value = revenue - opportunity cost.
+
+        Explicit accounting series override the derived values.  This supports
+        external market-clearing data while preserving a single, reusable
+        output schema for strategies and plant result mappers.
+        """
+
+        _validate_timestep_hours(timestep_hours)
+        reserved_mw = _aligned_numeric_series(
+            self.reserved_mw,
+            index,
+            "reserved_mw",
+            default=0.0,
+        )
+        reserved_mwh = reserved_mw * timestep_hours
+        block_duration_h = _aligned_numeric_series(
+            self.block_duration_h,
+            index,
+            "block_duration_h",
+            default=0.0,
+        )
+        bid_price = _aligned_numeric_series(
+            self.bid_price_eur_per_mw_h,
+            index,
+            "bid_price_eur_per_mw_h",
+            default=0.0,
+        )
+        clearing_price = _aligned_numeric_series(
+            self.clearing_price_eur_per_mw_h,
+            index,
+            "clearing_price_eur_per_mw_h",
+            default=0.0,
+        )
+        settlement_price = _aligned_numeric_series(
+            self.settlement_price_eur_per_mw_h,
+            index,
+            "settlement_price_eur_per_mw_h",
+            default=float("nan"),
+        ).fillna(clearing_price)
+
+        derived_revenue = reserved_mw * settlement_price * timestep_hours
+        revenue = _aligned_numeric_series(
+            self.revenue_eur,
+            index,
+            "revenue_eur",
+            default=float("nan"),
+        ).fillna(derived_revenue)
+        opportunity_cost = _aligned_numeric_series(
+            self.opportunity_cost_eur,
+            index,
+            "opportunity_cost_eur",
+            default=0.0,
+        )
+        derived_surplus = reserved_mw * (settlement_price - bid_price) * timestep_hours
+        market_surplus = _aligned_numeric_series(
+            self.market_surplus_eur,
+            index,
+            "market_surplus_eur",
+            default=float("nan"),
+        ).fillna(derived_surplus)
+        net_value = _aligned_numeric_series(
+            self.net_value_eur,
+            index,
+            "net_value_eur",
+            default=float("nan"),
+        ).fillna(revenue - opportunity_cost)
+
+        return pd.DataFrame(
+            {
+                "afrr_capacity_block_id": _aligned_text_series(
+                    self.block_id,
+                    index,
+                    default="",
+                ),
+                "afrr_capacity_block_duration_h": block_duration_h,
+                "afrr_capacity_pricing_rule": _aligned_text_series(
+                    self.pricing_rule,
+                    index,
+                    default="",
+                ),
+                "afrr_capacity_bid_price_EUR_per_MW_h": bid_price,
+                "afrr_capacity_clearing_price_EUR_per_MW_h": clearing_price,
+                "afrr_capacity_settlement_price_EUR_per_MW_h": settlement_price,
+                # Retained for the established output schema. The clearing
+                # price is the market reference price for the down product.
+                "afrr_capacity_down_price_EUR_per_MW_h": clearing_price,
+                "afrr_capacity_reserved_MW": reserved_mw,
+                "afrr_capacity_reserved_MWh": reserved_mwh,
+                "afrr_capacity_revenue_EUR": revenue,
+                "afrr_capacity_opportunity_cost_EUR": opportunity_cost,
+                "afrr_capacity_market_surplus_EUR": market_surplus,
+                "afrr_capacity_net_value_EUR": net_value,
+            },
+            index=index,
+        )
+
+    def result_fields(
+        self,
+        timestamp: pd.Timestamp,
+        timestep_hours: float,
+    ) -> dict[str, object]:
+        """Return this award's standard output fields for one timestamp."""
+
+        return self.result_frame(pd.Index([timestamp]), timestep_hours).iloc[0].to_dict()
+
+
+def capacity_award_result_frame(
+    award: BalancingCapacityAward | None,
+    index: pd.Index,
+    timestep_hours: float,
+) -> pd.DataFrame:
+    """Return common aFRR-capacity output fields, including the no-award case.
+
+    Result mappers can call this helper without special-casing plants that do
+    not participate in the capacity product.
+    """
+
+    if award is None:
+        award = BalancingCapacityAward.empty(index)
+    return award.result_frame(index, timestep_hours)
+
+
+def capacity_award_result_fields(
+    award: BalancingCapacityAward | None,
+    timestamp: pd.Timestamp,
+    timestep_hours: float,
+) -> dict[str, object]:
+    """Return common aFRR-capacity output fields for one timestamp."""
+
+    return (
+        capacity_award_result_frame(
+            award,
+            pd.Index([timestamp]),
+            timestep_hours,
+        )
+        .iloc[0]
+        .to_dict()
+    )
+
+
+def capacity_award_from_result_frame(
+    values: pd.DataFrame | None,
+    index: pd.Index,
+    timestep_hours: float,
+) -> BalancingCapacityAward | None:
+    """Translate a capacity-stage result table into its market outcome object.
+
+    The capacity strategy currently publishes a table because the sequential
+    runner also writes that table to outputs.  This adapter keeps that file
+    format at the system boundary while giving plant execution a typed market
+    outcome.  It accepts both the established public column names and the
+    shorter internal block columns used while preparing an award.
+    """
+
+    if values is None or values.empty:
+        return None
+    _validate_timestep_hours(timestep_hours)
+    aligned = values.reindex(index)
+    reserved_mw_columns = (
+        "afrr_capacity_reserved_MW",
+        "reserved_capacity_MW",
+    )
+    reserved_mw = _frame_numeric_column(aligned, index, *reserved_mw_columns)
+    if not any(column in aligned for column in reserved_mw_columns) and any(
+        column in aligned
+        for column in (
+            "afrr_capacity_reserved_MWh",
+            "reserved_capacity_MWh",
+        )
+    ):
+        reserved_mw = (
+            _frame_numeric_column(
+                aligned,
+                index,
+                "afrr_capacity_reserved_MWh",
+                "reserved_capacity_MWh",
+            )
+            / timestep_hours
+        )
+
+    return BalancingCapacityAward(
+        reserved_mw=reserved_mw,
+        block_id=_frame_text_column(
+            aligned,
+            index,
+            "afrr_capacity_block_id",
+            "block_id",
+            default="",
+        ),
+        block_duration_h=_frame_numeric_column(
+            aligned,
+            index,
+            "afrr_capacity_block_duration_h",
+            "block_duration_h",
+        ),
+        pricing_rule=_frame_text_column(
+            aligned,
+            index,
+            "afrr_capacity_pricing_rule",
+            "capacity_pricing_rule",
+            default="",
+        ),
+        bid_price_eur_per_mw_h=_frame_numeric_column(
+            aligned,
+            index,
+            "afrr_capacity_bid_price_EUR_per_MW_h",
+            "capacity_bid_price_EUR_per_MW_h",
+        ),
+        clearing_price_eur_per_mw_h=_frame_numeric_column(
+            aligned,
+            index,
+            "afrr_capacity_clearing_price_EUR_per_MW_h",
+            "capacity_clearing_price_EUR_per_MW_h",
+            "afrr_capacity_down_price_EUR_per_MW_h",
+        ),
+        settlement_price_eur_per_mw_h=_frame_numeric_column(
+            aligned,
+            index,
+            "afrr_capacity_settlement_price_EUR_per_MW_h",
+            "capacity_settlement_price_EUR_per_MW_h",
+        ),
+        revenue_eur=_frame_numeric_column(
+            aligned,
+            index,
+            "afrr_capacity_revenue_EUR",
+            "capacity_revenue_EUR",
+        ),
+        opportunity_cost_eur=_frame_numeric_column(
+            aligned,
+            index,
+            "afrr_capacity_opportunity_cost_EUR",
+            "capacity_opportunity_cost_EUR",
+        ),
+        market_surplus_eur=_frame_numeric_column(
+            aligned,
+            index,
+            "afrr_capacity_market_surplus_EUR",
+            "capacity_market_surplus_EUR",
+        ),
+        net_value_eur=_frame_numeric_column(
+            aligned,
+            index,
+            "afrr_capacity_net_value_EUR",
+            "capacity_net_value_EUR",
+        ),
+    )
+
+
+def _validate_timestep_hours(timestep_hours: float) -> None:
+    if isinstance(timestep_hours, bool):
+        raise ValueError("timestep_hours must be a positive number")
+    try:
+        numeric_timestep_hours = float(timestep_hours)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("timestep_hours must be a positive number") from exc
+    if not math.isfinite(numeric_timestep_hours) or numeric_timestep_hours <= 0.0:
+        raise ValueError("timestep_hours must be a positive number")
+
+
+def _validate_numeric_series(
+    values: pd.Series,
+    field_name: str,
+    *,
+    non_negative: bool = False,
+) -> None:
+    if not isinstance(values, pd.Series):
+        raise TypeError(f"BalancingCapacityAward.{field_name} must be a pandas Series")
+    numeric = pd.to_numeric(values, errors="coerce")
+    invalid = values.notna() & numeric.isna()
+    if invalid.any():
+        raise ValueError(f"BalancingCapacityAward.{field_name} must contain numeric values")
+    if not numeric.dropna().map(math.isfinite).all():
+        raise ValueError(f"BalancingCapacityAward.{field_name} must contain finite values")
+    if non_negative and (numeric.dropna() < -1e-9).any():
+        raise ValueError(f"BalancingCapacityAward.{field_name} must be non-negative")
+
+
+def _validate_optional_numeric_series(
+    values: pd.Series | None,
+    field_name: str,
+    *,
+    non_negative: bool = False,
+) -> None:
+    if values is not None:
+        _validate_numeric_series(values, field_name, non_negative=non_negative)
+
+
+def _aligned_numeric_series(
+    values: pd.Series | None,
+    index: pd.Index,
+    field_name: str,
+    *,
+    default: float,
+) -> pd.Series:
+    if values is None:
+        return pd.Series(default, index=index, dtype=float)
+    _validate_numeric_series(values, field_name)
+    numeric = pd.to_numeric(values.reindex(index), errors="coerce")
+    return numeric.fillna(default).astype(float)
+
+
+def _aligned_text_series(
+    values: pd.Series | None,
+    index: pd.Index,
+    *,
+    default: str,
+) -> pd.Series:
+    if values is None:
+        return pd.Series(default, index=index, dtype=object)
+    return values.reindex(index).fillna(default).astype(str)
+
+
+def _frame_numeric_column(
+    frame: pd.DataFrame,
+    index: pd.Index,
+    *columns: str,
+) -> pd.Series:
+    for column in columns:
+        if column in frame:
+            values = pd.to_numeric(frame[column], errors="coerce").reindex(index)
+            return values.fillna(0.0).astype(float)
+    return pd.Series(0.0, index=index, dtype=float)
+
+
+def _frame_text_column(
+    frame: pd.DataFrame,
+    index: pd.Index,
+    *columns: str,
+    default: str,
+) -> pd.Series:
+    for column in columns:
+        if column in frame:
+            return frame[column].reindex(index).fillna(default).astype(str)
+    return pd.Series(default, index=index, dtype=object)
 
 
 @dataclass(frozen=True)
@@ -39,6 +495,7 @@ class AFRRCapacityMarket(BaseMarket):
     """
 
     REQUIRED_SIGNALS = ("price", "quantity")
+    RESULT_KIND = MarketResultKind.CAPACITY_AWARD
 
     @property
     def price_unit(self) -> str:

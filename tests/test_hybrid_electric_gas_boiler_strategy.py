@@ -9,6 +9,7 @@ import pytest
 from conftest import case_config_text
 
 from flexi_mod.config.case_config import CaseConfig, ConfigError
+from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 from flexi_mod.regulations import GermanGridFeeRegulation, SpanishGridFeeRegulation
 from flexi_mod.strategies import build_strategy
@@ -393,7 +394,7 @@ def test_direct_intraday_can_buy_or_sell_against_gas_benchmark(
 def test_direct_strategy_rejects_etes_route() -> None:
     config = CaseConfig.from_case_dir(ETES_CASE_DIR)
     rows = pd.read_csv(ETES_CASE_DIR / "plants.csv")
-    plant = SteamGenerationPlant.from_plants_dataframe(rows)[0]
+    plant = build_plants(rows)[0]
     strategy = HybridElectricGasBoilerStrategy(config)
     forecasts = pd.DataFrame(
         {
@@ -616,7 +617,7 @@ def _direct_plant() -> SteamGenerationPlant:
             },
         ]
     )
-    return SteamGenerationPlant.from_rows("direct_1", rows)
+    return build_plants(rows)[0]
 
 
 def _forecasts(

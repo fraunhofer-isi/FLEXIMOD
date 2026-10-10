@@ -140,10 +140,10 @@ The current algorithm uses this clock as follows:
 4. Read each market's `gate_open`, `gate_close`, product length, product
    resolution and signal mapping from the selected `cases.<case_name>` entry.
 5. Run each enabled market stage on the same delivery-window forecast slice.
-6. Pass fixed outputs forward: capacity reservation constrains DA and IDC,
+6. Pass fixed outputs forward: a capacity award constrains DA and IDC,
    DA becomes the IDC baseline, IDC creates scheduled electricity, and aFRR
    energy creates actual electricity consumption.
-7. Commit the accepted rows from the rolling window and carry the final ETES
+7. Retain the accepted delivery rows from the rolling window and carry the final ETES
    state of charge to the next decision window.
 
 `market_sequence` remains the authoritative execution order. Gate times explain
@@ -157,6 +157,23 @@ The canonical Python import package is `flexi_mod`. Model configuration, data
 loading, plant components, strategies, ledgers, simulation orchestration, and
 visualisation utilities all live under this namespace.
 
+The package root contains only package metadata. Every implementation module
+belongs to one responsibility-specific subpackage:
+
+- `config/`: case schema and configuration loading;
+- `data/`: external input-file loading and normalization;
+- `modeling/`: shared Pyomo construction, solved-value, and input-validation
+  helpers;
+- `plants/`: physical plant and technology equations;
+- `markets/` and `strategies/`: market rules and operator decisions;
+- `regulations/`: country-specific tariff and settlement rules;
+- `outputs/` and `ledgers/`: solved-model result mapping and economic records;
+- `simulation/`: orchestration and command-line entry points; and
+- `visualisation/`: analytics and the interactive Plotly dashboards.
+
+New modules should be placed by this responsibility, rather than added directly
+under `flexi_mod`.
+
 Important modules:
 
 ```text
@@ -167,14 +184,20 @@ src/flexi_mod/markets/day_ahead.py
 src/flexi_mod/markets/intraday_continuous.py
 src/flexi_mod/markets/afrr_energy.py
 src/flexi_mod/plants/technologies.py
+src/flexi_mod/modeling/validation.py
+src/flexi_mod/modeling/pyomo_utils.py
 src/flexi_mod/plants/steam_generation_plant.py
+src/flexi_mod/plants/steel_plant.py
+src/flexi_mod/plants/cement_plant.py
+src/flexi_mod/outputs/result_mappers.py
+src/flexi_mod/regulations/grid_fees.py
 src/flexi_mod/strategies/base_strategy.py
 src/flexi_mod/strategies/hybrid_etes_gas_strategy.py
 src/flexi_mod/ledgers/market_ledger.py
 src/flexi_mod/ledgers/storage_cost_ledger.py
 src/flexi_mod/simulation/simulation_runner.py
 src/flexi_mod/visualisation/analytics.py
-src/flexi_mod/visualisation/plots.py
+src/flexi_mod/visualisation/dashboard/
 ```
 
 ## Configuration Layer
@@ -208,13 +231,33 @@ The current market classes are:
   day-ahead;
 - `AFRRDownEnergyMarket`, an activated down-balancing energy product with
   system-level proxy activation;
+- `AFRRCapacityMarket`, a forward capacity-award product;
 - `AFRRUpEnergyMarket`, a documented placeholder for later upward balancing
   energy modelling;
-- `AFRRCapacityMarket`, a down-reserve capacity product that generates internal
-  4-hour blocks and prepares block prices for pre-DA headroom reservation.
 
+Product-specific position objects live alongside these market classes. The
+shared `markets/electricity_settlement.py` module translates a selected
+electricity product into common Pyomo position and settlement expressions; it
+does not contain any steam, storage, or boiler equations.
 Market classes do not decide whether the plant operator buys, sells or bids.
 Those decisions stay in the strategy layer.
+
+For every configured stage, the runner passes a typed `MarketStageContext`: the
+market rules, forecast slice, plant, earlier market results, and the rolling
+state. `MarketStageState` stores those results explicitly: an
+`operating_schedule` and a `capacity_award`. For a physical dispatch stage, the
+strategy first returns a `MarketStageInstruction`; the plant executes its typed
+payload through its own Pyomo interface; then the strategy wraps the solved
+values in a `MarketStageResult`. Day-ahead, intraday, and aFRR-energy results
+replace the current operating schedule. aFRR-capacity is intentionally
+different: it produces a capacity award, which later stages receive through the
+capacity-award state. This keeps stage sequencing in the runner, commercial
+rules in strategies, and physical feasibility in plants.
+
+These hand-off objects live in `simulation/market_stages.py`, rather than the
+market package: they describe orchestration between the runner, strategy, and
+plant. `MarketResultKind` remains a market concern because each market declares
+whether it creates an operating schedule or a capacity award.
 
 ## Input Data Layer
 
@@ -230,6 +273,13 @@ additional_charges.csv  # optional
 `plants.csv` defines industrial plants and their connected technologies. Rows
 with the same `name` belong to one plant. Different `technology` values define
 connected components.
+
+`DataLoader.load_plant_inputs()` groups those rows into one `PlantInput` per
+plant, with plant parameters and named technology components. The plant factory
+selects the typed Building, Cement, Steel, or Steam model from `unit_type` and
+creates it. This follows ASSUME's intent: the loader prepares unit parameters,
+the factory creates the selected unit, and the physical model owns only its
+technology/topology validation and Pyomo formulation.
 
 `forecasts_df.csv` contains all time series. For the current day-ahead MVP the
 minimum required time-series columns are:
@@ -247,7 +297,7 @@ the current MVP.
 
 If the selected `cases.<case_name>` entry sets `additional_charges: true`,
 `additional_charges.csv` is interpreted by the network-tariff regulation selected
-from `case.country` (`src/flexi_mod/regulations.py`). The regulation is the single
+from `case.country` (`src/flexi_mod/regulations/grid_fees.py`). The regulation is the single
 seam between national network rules and the engine, exposing a small
 country-agnostic interface:
 
@@ -262,7 +312,7 @@ country-agnostic interface:
 For Germany the regulation implements full-load-hour tiers, the special network
 use A/B split, and §19(2) StromNEV atypical grid use (capacity billed on the
 high-load-window peak). These charges apply only to consumed electricity, not to
-aFRR capacity reservation revenue. Adding a country is one `GridFeeRegulation`
+aFRR capacity-award revenue. Adding a country is one `GridFeeRegulation`
 subclass plus one registry entry.
 
 ## Plant And Technology Layer
@@ -271,8 +321,16 @@ The plant model follows a reference-style split:
 
 - `technologies.py` defines technology classes, attributes, Pyomo variables,
   parameters, and component-level constraints.
+- `modeling/validation.py` provides the shared mechanics for component-row
+  context, forecast-column checks, numeric profiles, profile ranges, and
+  time-indexed Pyomo parameters.
 - `steam_generation_plant.py` connects those technologies into one plant-level
   Pyomo model.
+
+Plant and technology modules retain rules that depend on their physical
+meaning: supported topologies, fuel modes, component limits, and market-stage
+semantics. This is the same separation used by ASSUME's units: shared mechanics
+are reusable, while a component validates the inputs only it can interpret.
 
 For the first case, the plant contains:
 
@@ -290,6 +348,15 @@ Electricity consumption is currently equal to ETES electric charging:
 ```text
 electricity consumption = electric charge to storage
 ```
+
+For an electricity market stage, the strategy supplies the commercial position
+(price gates, position limits, bid and activation limits) as an
+`ElectricityMarketRequest` inside the generic `MarketStageInstruction`.
+`SteamGenerationPlant` accepts that request through
+`solve_market_instruction()`, then uses its physical model to check feasibility
+and find the least-cost operation. A future plant family can introduce another
+typed market request without changing the runner's stage sequence. Strategies
+do not own physical equations; markets do not own operator rules.
 
 ## Objective Function
 
@@ -311,6 +378,12 @@ case as infeasible.
 
 ## Output Layer
 
+`outputs/result_mappers.py` is the synchronous output boundary.  A mapper reads
+the solved Pyomo model for a supported plant type and returns the stable
+dispatch-result table used by ledgers, analytics, the dashboards, and file output.  The
+plant module owns the physical model; the mapper owns table assembly.  The
+simulation runner still owns when and where result tables are persisted.
+
 The main output files are:
 
 ```text
@@ -318,7 +391,7 @@ dispatch_results.csv
 market_ledger.csv
 storage_cost_ledger.csv
 summary_indicators.csv
-plots/
+dashboard.html
 ```
 
 `dispatch_results.csv` contains physical plant operation and costs.
@@ -337,21 +410,36 @@ shares by procurement market.
 
 ## Visualisation And Analytics Layer
 
-The generic plotting and analytics code lives in:
+`visualisation/analytics.py` calculates the summary indicators and loads result tables
+(plain `.csv` or zstd-compressed `.csv.zst`). The interactive dashboards live in:
 
 ```text
-src/flexi_mod/visualisation/analytics.py
-src/flexi_mod/visualisation/plots.py
+src/flexi_mod/visualisation/dashboard/
+|-- data.py         load a case folder, detect the plant family, aggregate and resample
+|-- charts.py       Plotly figure builders (one function per chart, no secondary axes)
+|-- steam_charts.py steam/ETES analyses of the report notebook (benchmark, waterfall, grid fees)
+|-- sections.py     one dashboard class per plant type (PlantDashboard and subclasses)
+|-- theme.py        validated palette, fixed entity colours, chart template, page CSS
+|-- static_html.py  self-contained dashboard.html (no server)
+|-- dash_app.py     live Dash app (fleximod-dashboard)
+`-- comparison.py   ranking, trade-off and table across many cases
 ```
 
-The plotting script reads the selected study case, locates the output folder
-using `<case_name>_<strategy_name>`, refreshes analytics, and writes
-report-ready figures to:
+Each plant type is a class in `sections.py` that inherits from the generic `PlantDashboard` and
+overrides only its tabs, charts and tiles. Both front ends render the same `Tab`/`Block` objects
+built by these classes, so a chart added once appears in the static file and in the Dash app. The runner calls
+`write_case_dashboard()` after saving results; a failed dashboard produces a warning and never
+discards the simulation.
 
-```text
-data/output/<case_name>_<strategy_name>/plots/
-```
+The plant family is detected from the dispatch columns (`heat_demand_MWh` steam,
+`building_demand_MWh` building, `clinker_output_t` cement, `steel_output_t` steel). Charts
+return `None` when the columns they need are absent, for example IDC or aFRR series in a
+day-ahead-only run, and are skipped. To add a chart, write a builder in `charts.py`, add it to
+the `builders` of the relevant dashboard class and list it as a `ChartSpec` on one of its tabs.
+A new plant type is a new subclass (see [dashboard.md](dashboard.md#extending-the-dashboard)).
 
-Plots are designed to handle missing future-market columns gracefully. For
-example, if IDC or aFRR columns are absent in a day-ahead-only simulation, the
-plotting module warns and skips only those series.
+See [dashboard.md](dashboard.md) for how to use the dashboards.
+
+Colours are assigned to entities (day-ahead, intraday, aFRR, gas, storage, ...) in a fixed
+order so an entity keeps its colour on every chart. Dark mode uses its own selected steps of
+the same hues rather than an inversion.

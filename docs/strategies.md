@@ -67,7 +67,7 @@ The responsibility split is:
 ```text
 BuildingStrategy: select the configured import and export price signals
 Building: enforce demand, charger, trip, availability, and battery constraints
-SimulationRunner: create rolling windows, commit each step, and carry bus SOC
+SimulationRunner: create rolling windows, retain each delivery slice, and carry bus SOC
 ```
 
 The current strategy supports the day-ahead market only. The complete example

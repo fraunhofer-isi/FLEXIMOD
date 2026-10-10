@@ -9,7 +9,7 @@ import pytest
 
 from flexi_mod.config.case_config import CaseConfig
 from flexi_mod.data.data_loader import DataLoader
-from flexi_mod.plants.building import Building
+from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.technologies import ChargingStation, ElectricVehicle
 
 CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_DA_ID_buy"
@@ -53,8 +53,8 @@ def _depot_rows(directionality: str = "bidirectional") -> pd.DataFrame:
     )
 
 
-def test_building_constructs_fleet_and_chargers_from_rows() -> None:
-    building = Building.from_rows("bangkok_depot", _depot_rows())
+def test_building_constructs_fleet_and_chargers_from_component_table() -> None:
+    building = build_plants(_depot_rows())[0]
 
     assert isinstance(building.electric_vehicle, ElectricVehicle)
     assert isinstance(building.charging_station, ChargingStation)
@@ -70,7 +70,7 @@ def test_building_constructs_fleet_and_chargers_from_rows() -> None:
 
 def test_bidirectional_depot_uses_low_price_energy_for_v2g() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
-    building = Building.from_rows("bangkok_depot", _depot_rows())
+    building = build_plants(_depot_rows())[0]
     index = pd.date_range("2025-01-01", periods=8, freq="15min")
     forecasts = pd.DataFrame(
         {
@@ -103,7 +103,7 @@ def test_bidirectional_depot_uses_low_price_energy_for_v2g() -> None:
 
 def test_unidirectional_depot_cannot_export() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
-    building = Building.from_rows("bangkok_depot", _depot_rows("unidirectional"))
+    building = build_plants(_depot_rows("unidirectional"))[0]
     index = pd.date_range("2025-01-01", periods=4, freq="15min")
     forecasts = pd.DataFrame(
         {
@@ -123,7 +123,7 @@ def test_unidirectional_depot_cannot_export() -> None:
 
 def test_bus_trip_uses_battery_energy_and_blocks_grid_exchange_while_away() -> None:
     config = CaseConfig.from_case_dir(CASE_DIR)
-    building = Building.from_rows("bangkok_depot", _depot_rows())
+    building = build_plants(_depot_rows())[0]
     index = pd.date_range("2025-01-01", periods=8, freq="15min")
     forecasts = pd.DataFrame(
         {
@@ -148,3 +148,34 @@ def test_data_loader_resolves_bus_depot_profiles() -> None:
     required = DataLoader(config).required_forecast_columns(_depot_rows())
 
     assert {"depot_demand", "bus_availability", "bus_trip_energy"}.issubset(required)
+
+
+def test_building_parameter_errors_identify_building_and_technology() -> None:
+    rows = _depot_rows()
+    rows.loc[0, "max_power_charge"] = float("inf")
+
+    with pytest.raises(
+        ValueError,
+        match="Building 'bangkok_depot', technology 'electric_vehicle'.*max_power_charge",
+    ):
+        build_plants(rows)
+
+
+def test_building_forecast_errors_name_the_missing_input() -> None:
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    building = build_plants(_depot_rows())[0]
+    index = pd.date_range("2025-01-01", periods=2, freq="15min")
+    forecasts = pd.DataFrame(
+        {
+            "depot_demand": [0.0, 0.0],
+            "bus_availability": [1.0, 1.0],
+            "import_price": [10.0, 10.0],
+        },
+        index=index,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Building 'bangkok_depot'.*forecasts_df.csv.*bus_trip_energy",
+    ):
+        building.build_model(config, forecasts, electricity_price_column="import_price")

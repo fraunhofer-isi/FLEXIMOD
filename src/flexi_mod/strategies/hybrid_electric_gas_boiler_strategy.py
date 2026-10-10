@@ -12,16 +12,19 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket
-from flexi_mod.markets.day_ahead import DayAheadMarket
-from flexi_mod.markets.intraday_continuous import IntradayContinuousMarket
+from flexi_mod.markets.afrr_capacity import AFRRCapacityMarket
+from flexi_mod.markets.afrr_energy import AFRRDownEnergyMarket, BalancingEnergyActivation
+from flexi_mod.markets.day_ahead import DayAheadMarket, DayAheadPosition
+from flexi_mod.markets.electricity_settlement import ElectricityMarketStage
+from flexi_mod.markets.intraday_continuous import (
+    IntradayAdjustment,
+    IntradayContinuousMarket,
+)
 from flexi_mod.plants.steam_generation_plant import (
     DIRECT_ELECTRIC_GAS_BOILER_ROUTE,
-    AFRRDownSignals,
-    DispatchSignals,
-    IDCAdjustmentSignals,
     SteamGenerationPlant,
 )
+from flexi_mod.simulation.market_stages import MarketStageInstruction
 from flexi_mod.strategies.hybrid_etes_gas_strategy import (
     ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH,
     GAS_PRICE_SIGNAL,
@@ -47,18 +50,19 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
     def required_forecast_columns(self) -> set[str]:
         return super().required_forecast_columns() | {CO2_PRICE_SIGNAL}
 
-    def decide_day_ahead(
+    def prepare_day_ahead_instruction(
         self,
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
         capacity_reservation: pd.DataFrame | None = None,
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
-    ) -> pd.DataFrame:
+        market: DayAheadMarket | None = None,
+    ) -> MarketStageInstruction:
         self._validate_direct_route(plant)
         self._reject_capacity_reservation(capacity_reservation)
 
-        market = DayAheadMarket("day_ahead", self.config.market("day_ahead"))
+        market = market or DayAheadMarket("day_ahead", self.config.market("day_ahead"))
         market_data = market.prepare_market_data(forecasts)
         price_col = market.signal_column("price")
         tax_rate = self._get_tax_rate(plant)
@@ -77,7 +81,7 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
             delivered_price <= electricity_benchmark - ELECTRICITY_PRICE_SAFETY_MARGIN_EUR_PER_MWH
         ) & ~self._grid_charging_block(plant, forecasts)
 
-        signals = DispatchSignals(
+        position = DayAheadPosition(
             electricity_price_col=price_col,
             gas_price_col=GAS_PRICE_SIGNAL,
             gas_benchmark_eur_per_mwh_th=gas_benchmark,
@@ -87,21 +91,17 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
             co2_price_col=CO2_PRICE_SIGNAL,
             co2_emission_factor_t_per_mwh_fuel=self._gas_emission_factor(plant),
         )
-        if rolling:
-            return plant.solve_rolling(
-                self.config,
-                forecasts,
-                signals,
-                initial_soc_mwh=initial_soc_mwh,
-            )
-        return plant.solve_horizon(
-            self.config,
-            forecasts,
-            signals,
+        return self._electricity_instruction(
+            market_name=market.name,
+            stage=ElectricityMarketStage.DAY_AHEAD,
+            position=position,
+            forecasts=forecasts,
+            capacity_reservation=capacity_reservation,
             initial_soc_mwh=initial_soc_mwh,
+            rolling=rolling,
         )
 
-    def decide_intraday_continuous(
+    def prepare_intraday_continuous_instruction(
         self,
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
@@ -109,11 +109,12 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
         capacity_reservation: pd.DataFrame | None = None,
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
-    ) -> pd.DataFrame:
+        market: IntradayContinuousMarket | None = None,
+    ) -> MarketStageInstruction:
         self._validate_direct_route(plant)
         self._reject_capacity_reservation(capacity_reservation)
 
-        market = IntradayContinuousMarket(
+        market = market or IntradayContinuousMarket(
             "intraday_continuous",
             self.config.market("intraday_continuous"),
         )
@@ -170,7 +171,7 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
             )
         )
         sell_upper_bound = da_position.clip(lower=0.0).where(sell_allowed, 0.0)
-        signals = IDCAdjustmentSignals(
+        position = IntradayAdjustment(
             da_price_col=da_price_col,
             idc_price_col=idc_price_col,
             gas_price_col=GAS_PRICE_SIGNAL,
@@ -184,21 +185,17 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
             co2_price_col=CO2_PRICE_SIGNAL,
             co2_emission_factor_t_per_mwh_fuel=self._gas_emission_factor(plant),
         )
-        if rolling:
-            return plant.solve_intraday_adjustment_rolling(
-                self.config,
-                forecasts,
-                signals,
-                initial_soc_mwh=initial_soc_mwh,
-            )
-        return plant.solve_intraday_adjustment_horizon(
-            self.config,
-            forecasts,
-            signals,
+        return self._electricity_instruction(
+            market_name=market.name,
+            stage=ElectricityMarketStage.INTRADAY,
+            position=position,
+            forecasts=forecasts,
+            capacity_reservation=capacity_reservation,
             initial_soc_mwh=initial_soc_mwh,
+            rolling=rolling,
         )
 
-    def decide_afrr_energy(
+    def prepare_afrr_energy_instruction(
         self,
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
@@ -206,7 +203,8 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
         capacity_reservation: pd.DataFrame | None = None,
         initial_soc_mwh: float | None = None,
         rolling: bool = True,
-    ) -> pd.DataFrame:
+        market: AFRRDownEnergyMarket | None = None,
+    ) -> MarketStageInstruction:
         self._validate_direct_route(plant)
         self._reject_capacity_reservation(capacity_reservation)
 
@@ -219,7 +217,10 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
             forecasts[idc_price_col] = 0.0
 
         timestep_hours = self.config.timestep_minutes / 60.0
-        market = AFRRDownEnergyMarket("afrr_energy", self.config.market("afrr_energy"))
+        market = market or AFRRDownEnergyMarket(
+            "afrr_energy",
+            self.config.market("afrr_energy"),
+        )
         min_bid_mw = float(market.product_rules.get("min_bid_mw", 0.0))
         bid_increment_mw = float(market.product_rules.get("bid_increment_mw", 1.0))
         _validate_bid_rules("afrr_energy", min_bid_mw, bid_increment_mw)
@@ -229,6 +230,7 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
         clean_afrr = self._prepare_afrr_down_energy_data(
             forecasts,
             timestep_hours,
+            market=market,
         ).frame
         da_position = self._required_fixed_series(
             fixed_positions,
@@ -312,7 +314,7 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
         ).min(axis=1)
         zero = pd.Series(0.0, index=forecasts.index)
 
-        signals = AFRRDownSignals(
+        position = BalancingEnergyActivation(
             da_price_col=da_price_col,
             idc_price_col=idc_price_col,
             gas_price_col=GAS_PRICE_SIGNAL,
@@ -339,18 +341,14 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
             co2_price_col=CO2_PRICE_SIGNAL,
             co2_emission_factor_t_per_mwh_fuel=self._gas_emission_factor(plant),
         )
-        if rolling:
-            return plant.solve_afrr_down_rolling(
-                self.config,
-                forecasts,
-                signals,
-                initial_soc_mwh=initial_soc_mwh,
-            )
-        return plant.solve_afrr_down_horizon(
-            self.config,
-            forecasts,
-            signals,
+        return self._electricity_instruction(
+            market_name=market.name,
+            stage=ElectricityMarketStage.AFRR_ENERGY,
+            position=position,
+            forecasts=forecasts,
+            capacity_reservation=capacity_reservation,
             initial_soc_mwh=initial_soc_mwh,
+            rolling=rolling,
         )
 
     def decide_afrr_capacity(
@@ -358,8 +356,9 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
         plant: SteamGenerationPlant,
         forecasts: pd.DataFrame,
         initial_soc_mwh: float | None = None,
+        market: AFRRCapacityMarket | None = None,
     ) -> pd.DataFrame:
-        del forecasts, initial_soc_mwh
+        del forecasts, initial_soc_mwh, market
         self._validate_direct_route(plant)
         raise ValueError(
             "Strategy 'hybrid_electric_gas_boiler' does not support aFRR capacity; "

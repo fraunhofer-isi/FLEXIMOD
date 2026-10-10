@@ -179,6 +179,7 @@ class CaseConfig:
             "hybrid_electric_gas_boiler",
             "hybrid_etes_gas",
             "hybrid_etes_gas_pay_as_cleared_capacity",
+            "industrial_day_ahead_cost_minimisation",
         }
         strategy_name = str(self.case["strategy"].get("name", ""))
         if strategy_name not in supported_strategies:
@@ -238,6 +239,8 @@ class CaseConfig:
             self._validate_direct_boiler_markets()
         if strategy_name == "building_v2g":
             self._validate_building_markets()
+        if strategy_name == "industrial_day_ahead_cost_minimisation":
+            self._validate_industrial_day_ahead_markets()
 
     @staticmethod
     def _finite_number(value: Any, setting: str) -> float:
@@ -321,6 +324,15 @@ class CaseConfig:
         if enabled != ["day_ahead"]:
             raise ConfigError(
                 "Strategy 'building_v2g' currently requires only the day_ahead market"
+            )
+
+    def _validate_industrial_day_ahead_markets(self) -> None:
+        """Keep the first cement/steel runner path deliberately DA-only."""
+
+        if self.enabled_markets != ["day_ahead"]:
+            raise ConfigError(
+                "Strategy 'industrial_day_ahead_cost_minimisation' currently requires "
+                "only the day_ahead market"
             )
 
     def _validate_market_order(self) -> None:

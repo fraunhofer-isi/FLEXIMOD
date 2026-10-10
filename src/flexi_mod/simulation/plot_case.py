@@ -2,12 +2,13 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Command-line entry point for plotting FLEXIMOD case outputs."""
+"""Command-line entry point for building the interactive dashboard of case outputs."""
 
 from __future__ import annotations
 
 import argparse
 import sys
+import webbrowser
 from pathlib import Path
 
 
@@ -24,17 +25,44 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 
-def main() -> None:
-    from flexi_mod.config.case_config import CaseConfig
-    from flexi_mod.simulation.cli_logging import CliLogger
-    from flexi_mod.simulation.run_case import available_examples
-    from flexi_mod.visualisation.analytics import RESULT_FILES
-    from flexi_mod.visualisation.plots import create_all_plots_from_output
+# Optional: set a case output folder here to build its dashboard when the script is run
+# without arguments (for example with the editor's play button). If left as None, the most
+# recently written result folder under data/output is used.
+DEFAULT_OUTPUT_DIR: str | None = None
 
-    parser = argparse.ArgumentParser(description="Create FlexIMOD report plots for one case.")
+
+def main() -> None:
+    from flexi_mod.simulation.cli_logging import CliLogger
+    from flexi_mod.visualisation.dashboard.comparison import (
+        COMPARISON_FILENAME,
+        write_comparison_dashboard,
+    )
+    from flexi_mod.visualisation.dashboard.data import load_case
+    from flexi_mod.visualisation.dashboard.static_html import (
+        DASHBOARD_FILENAME,
+        write_case_dashboard,
+    )
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Build the interactive FLEXIMOD dashboard (a self-contained HTML file) from the "
+            "output of one case, or a comparison page for many cases."
+        )
+    )
+    parser.add_argument(
+        "--output-dir",
+        help="Case output folder with dispatch_results.csv. Defaults to the folder of --case.",
+    )
+    parser.add_argument(
+        "--input-dir",
+        help=(
+            "Case input folder (plants.csv, additional_charges.csv) for the system-setup tab. "
+            "Found automatically from the output folder name or --case when omitted."
+        ),
+    )
     parser.add_argument(
         "--case",
-        help="Path to a case input folder containing config.yaml.",
+        help="Path to a case input folder containing config.yaml (locates the output folder).",
     )
     parser.add_argument(
         "--study-case",
@@ -42,100 +70,116 @@ def main() -> None:
         dest="study_case",
         help="Study-case key inside config.yaml cases: mapping.",
     )
+    parser.add_argument("--example", help="Named example from the run_case registry.")
     parser.add_argument(
-        "--example",
-        default="hybrid_ETES_ID_buy",
-        choices=sorted(available_examples),
-        help="Named example used when --case is not provided.",
+        "--compare",
+        nargs="+",
+        metavar="FOLDER",
+        help="Build a comparison page for the cases found in these folders instead.",
     )
     parser.add_argument(
-        "--format",
-        default="png",
-        choices=["png", "pdf", "both"],
-        help="Figure output format.",
+        "--max-plants",
+        type=int,
+        default=12,
+        help="Plants shown individually (largest electricity users); all are aggregated.",
     )
     parser.add_argument(
-        "--output-dir",
-        help="Optional output directory. Defaults to data/output/<case_name>_<strategy_name>.",
+        "--plotly-js",
+        choices=["embed", "cdn"],
+        default="embed",
+        help="Embed plotly.js (works offline, ~5 MB) or load it from the CDN (smaller file).",
     )
+    parser.add_argument("--start", help="First day to show, e.g. 2025-01-01.")
+    parser.add_argument("--end", help="Last day to show, e.g. 2025-01-31.")
     parser.add_argument(
-        "--show",
+        "--resolution",
+        default="auto",
+        choices=["auto", "native", "1h", "6h", "1D", "1W"],
+        help="Time resolution of the charts. 'auto' keeps each chart readable.",
+    )
+    parser.add_argument("--open", action="store_true", help="Open the dashboard in a browser.")
+    parser.add_argument(
+        "--no-open",
         action="store_true",
-        help="Display plots interactively after saving them.",
+        help="Do not open the browser when the script is run without arguments.",
     )
-    parser.add_argument(
-        "--sample-day",
-        help="Optional sample day for the detailed operation plot, e.g. 2025-01-03.",
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Print detailed plot file paths.",
-    )
+    parser.add_argument("--verbose", action="store_true", help="Print the written file path.")
+    no_arguments = len(sys.argv) == 1
     args = parser.parse_args()
     logger = CliLogger(verbose=args.verbose)
+    if no_arguments:
+        # Play-button use: pick a sensible default and show the result.
+        args.output_dir = DEFAULT_OUTPUT_DIR or str(_latest_output_dir())
+        args.open = True
 
-    paths = _resolve_case_paths(args.case, args.example, args.study_case)
-    case_dir = paths["case_dir"]
-    config = CaseConfig.from_case_dir(case_dir, study_case=paths["study_case"])
-    output_dir = (
-        Path(args.output_dir).resolve()
-        if args.output_dir
-        else PROJECT_ROOT / "data" / "output" / config.output_folder_name
-    )
-    plot_dir = output_dir / "plots"
+    if args.compare:
+        target = Path(args.output_dir) if args.output_dir else Path(args.compare[0])
+        path = (target / COMPARISON_FILENAME) if target.is_dir() else target
+        logger.info(f"Comparison started for {', '.join(args.compare)}")
+        with logger.capture_warnings():
+            written = write_comparison_dashboard(args.compare, path, plotly_js=args.plotly_js)
+        logger.success(f"Comparison dashboard created: {written}")
+    else:
+        output_dir = _resolve_output_dir(args)
+        logger.info(f"Dashboard creation started for {output_dir}")
+        input_dir = args.input_dir or (args.case if args.case else None)
+        if input_dir is None and args.example:
+            from flexi_mod.simulation.run_case import resolve_example_paths
 
-    logger.info(f"Plot creation started for case {config.case_name}")
-    logger.info(f"Study case: {config.study_case}")
-    logger.info(f"Strategy: {config.strategy_name}")
-    logger.info(f"Output folder: {output_dir}")
-    logger.info(f"Result tables found: {_available_result_tables(output_dir, RESULT_FILES)}")
-    with logger.capture_warnings():
-        created = create_all_plots_from_output(
-            output_dir=output_dir,
-            file_format=args.format,
-            show=args.show,
-            sample_day=args.sample_day,
+            input_dir = resolve_example_paths(args.example)["case_dir"]
+        with logger.capture_warnings():
+            case = load_case(output_dir, input_dir=input_dir)
+            written = write_case_dashboard(
+                case,
+                output_dir / DASHBOARD_FILENAME,
+                max_plants=args.max_plants,
+                plotly_js=args.plotly_js,
+                start=args.start,
+                end=args.end,
+                resolution=args.resolution,
+            )
+        logger.success(f"Dashboard created: {written}")
+
+    if args.open and not args.no_open:
+        webbrowser.open(written.resolve().as_uri())
+
+
+def _latest_output_dir() -> Path:
+    """Return the most recently written case output folder below data/output."""
+
+    from flexi_mod.visualisation.dashboard.data import discover_cases
+
+    folders = discover_cases(PROJECT_ROOT / "data" / "output")
+    if not folders:
+        raise SystemExit(
+            "No case results found under data/output. Run a case first with run_case.py, "
+            "or pass --output-dir."
         )
-    logger.success(f"Plots created: {len(created)} file(s).")
-    logger.info(f"Plot folder: {plot_dir}")
-    if args.verbose:
-        logger.detail("Created plot files:")
-        for path in created:
-            logger.detail(f"  {path}")
+
+    def written(folder: Path) -> float:
+        files = [*folder.glob("dispatch_results.csv*")]
+        return max(file.stat().st_mtime for file in files)
+
+    return max(folders, key=written)
 
 
-def _resolve_case_paths(
-    case: str | None,
-    example: str,
-    study_case: str | None,
-) -> dict[str, Path | str | None]:
+def _resolve_output_dir(args: argparse.Namespace) -> Path:
+    if args.output_dir:
+        return Path(args.output_dir).resolve()
+
+    from flexi_mod.config.case_config import CaseConfig
     from flexi_mod.simulation.run_case import resolve_example_paths
 
-    if case:
-        case_dir = Path(case).resolve()
-        return {
-            "case_dir": case_dir,
-            "study_case": study_case,
-        }
-    paths = resolve_example_paths(example)
-    if study_case:
-        paths["study_case"] = study_case
-    return {
-        "case_dir": paths["case_dir"],
-        "study_case": paths["study_case"],
-    }
-
-
-def _available_result_tables(output_dir: Path, result_files: dict[str, str]) -> str:
-    names = [
-        name
-        for name, filename in result_files.items()
-        if name != "summary_indicators" and (output_dir / filename).exists()
-    ]
-    if (output_dir / result_files["summary_indicators"]).exists():
-        names.append("summary_indicators")
-    return ", ".join(names) if names else "none"
+    if args.case:
+        case_dir, study_case = Path(args.case).resolve(), args.study_case
+    elif args.example:
+        paths = resolve_example_paths(args.example)
+        case_dir = paths["case_dir"]
+        study_case = args.study_case or paths["study_case"]
+    else:
+        raise SystemExit("Give --output-dir, --case or --example (or --compare FOLDER ...).")
+    config = CaseConfig.from_case_dir(case_dir, study_case=study_case)
+    return PROJECT_ROOT / "data" / "output" / config.output_folder_name
 
 
 if __name__ == "__main__":

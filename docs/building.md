@@ -22,7 +22,7 @@ The current building contains:
 
 The code in `plants/building.py` follows the physical model in this order:
 
-1. `from_rows()` reads the connected technologies from `plants.csv`.
+1. The plant factory creates the building from its configured technologies.
 2. `define_parameters()` adds demand, timestep, and electricity prices.
 3. `initialize_components()` adds vehicles and charging stations.
 4. `define_variables()` adds building grid import and export.
@@ -91,11 +91,12 @@ strategy:
 Run it through the normal FLEXIMOD command-line interface:
 
 ```powershell
-python -m flexi_mod.simulation.run_case --example building_v2g_example --no-plots
+python -m flexi_mod.simulation.run_case --example building_v2g_example
 ```
 
 The runner writes `dispatch_results.csv`, `market_ledger.csv`,
-`storage_cost_ledger.csv`, and `summary_indicators.csv`, using building-specific
+`storage_cost_ledger.csv`, `summary_indicators.csv` and an interactive `dashboard.html`
+(add `--no-plots` to skip the dashboard), using building-specific
 grid and bus-battery columns.
 
 The example uses a 12-hour look-ahead horizon and implements six

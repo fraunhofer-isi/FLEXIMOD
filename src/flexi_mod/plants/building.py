@@ -16,12 +16,19 @@ from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 from pyomo.opt import SolverStatus, TerminationCondition
 
 from flexi_mod.config.case_config import CaseConfig
-from flexi_mod.plants.base_plant import BasePlant
-from flexi_mod.plants.model_utils import (
+from flexi_mod.data.data_loader import PlantInput
+from flexi_mod.modeling.pyomo_utils import (
     available_pyomo_solvers,
     is_infeasible_termination,
-    pyomo_value,
 )
+from flexi_mod.modeling.validation import (
+    component_from_row,
+    numeric_forecast,
+    time_parameter,
+    validate_profile_range,
+    validate_required_forecasts,
+)
+from flexi_mod.plants.base_plant import BasePlant
 from flexi_mod.plants.technologies import ChargingStation, ElectricVehicle, first_non_empty
 
 
@@ -40,21 +47,46 @@ class Building(BasePlant):
     components: dict[str, object] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
-    # Read the two technology rows from plants.csv
+    # Assemble the two configured technologies
     # ------------------------------------------------------------------
     @classmethod
-    def from_rows(cls, building_name: str, rows: pd.DataFrame) -> Building:
-        if rows.empty:
+    def create(cls, plant_input: PlantInput) -> Building:
+        """Create a building model from the loader's parameters and components."""
+
+        if plant_input.unit_type not in {"building", "bus_depot", "electric_bus_depot"}:
+            raise ValueError(
+                f"Plant '{plant_input.name}' has unit_type='{plant_input.unit_type}', "
+                "not a supported building type"
+            )
+        return cls._assemble(plant_input.name, plant_input.component_table())
+
+    @classmethod
+    def _assemble(cls, building_name: str, component_table: pd.DataFrame) -> Building:
+        """Create the building model from one plant's component table."""
+
+        if component_table.empty:
             raise ValueError(f"Building '{building_name}' has no technology rows")
 
-        rows = rows.copy()
+        rows = component_table.copy()
         rows["technology"] = rows["technology"].astype(str).str.strip().str.lower()
         _check_technology_rows(building_name, rows)
 
         vehicle_row = rows.loc[rows["technology"] == "electric_vehicle"].iloc[0]
         station_row = rows.loc[rows["technology"] == "charging_station"].iloc[0]
-        vehicle = ElectricVehicle.from_row(vehicle_row)
-        station = ChargingStation.from_row(station_row)
+        vehicle = component_from_row(
+            "Building",
+            building_name,
+            "electric_vehicle",
+            ElectricVehicle.from_row,
+            vehicle_row,
+        )
+        station = component_from_row(
+            "Building",
+            building_name,
+            "charging_station",
+            ChargingStation.from_row,
+            station_row,
+        )
 
         _check_vehicle_and_station(building_name, vehicle, station)
 
@@ -85,10 +117,6 @@ class Building(BasePlant):
                 "charging_station": station,
             },
         )
-
-    @classmethod
-    def from_plants_dataframe(cls, plants: pd.DataFrame) -> list[Building]:
-        return [cls.from_rows(str(name), rows) for name, rows in plants.groupby("name", sort=False)]
 
     @property
     def electric_vehicle(self) -> ElectricVehicle:
@@ -135,7 +163,9 @@ class Building(BasePlant):
             initial_soc_mwh,
         )
         solver_name = _solve_model(self.name, model, config)
-        return _extract_results(self, model, forecasts, solver_name)
+        from flexi_mod.outputs.result_mappers import extract_dispatch_results
+
+        return extract_dispatch_results(self, model, forecasts, solver_name)
 
     def build_model(
         self,
@@ -148,9 +178,11 @@ class Building(BasePlant):
         """Create the Pyomo model without solving it."""
 
         export_price_column = export_price_column or electricity_price_column
-        required_columns = self.required_forecast_columns()
-        required_columns.update({electricity_price_column, export_price_column})
-        _check_forecasts(forecasts, required_columns)
+        self.validate_inputs(
+            forecasts,
+            electricity_price_column,
+            export_price_column,
+        )
 
         model = pyo.ConcreteModel(name=f"{self.name}_building_dispatch")
         model.T = pyo.Set(initialize=range(len(forecasts)), ordered=True)
@@ -167,6 +199,84 @@ class Building(BasePlant):
         self.define_constraints(model)
         self.define_objective(model)
         return model
+
+    def validate_inputs(
+        self,
+        forecasts: pd.DataFrame,
+        electricity_price_column: str,
+        export_price_column: str | None = None,
+    ) -> None:
+        """Validate profiles and prices before creating building Pyomo objects."""
+
+        export_price_column = export_price_column or electricity_price_column
+        required_columns = self.required_forecast_columns()
+        required_columns.update({electricity_price_column, export_price_column})
+        validate_required_forecasts(forecasts, required_columns, f"Building '{self.name}'")
+
+        numeric_forecast(
+            forecasts,
+            self.electric_demand_column,
+            f"Building '{self.name}'",
+            description="electricity demand",
+            require_non_negative=True,
+        )
+        numeric_forecast(
+            forecasts,
+            electricity_price_column,
+            f"Building '{self.name}'",
+            description="import price",
+        )
+        numeric_forecast(
+            forecasts,
+            export_price_column,
+            f"Building '{self.name}'",
+            description="export price",
+        )
+
+        vehicle = self.electric_vehicle
+        availability = numeric_forecast(
+            forecasts,
+            vehicle.availability_column,
+            f"Building '{self.name}'",
+            description="vehicle availability",
+        )
+        validate_profile_range(
+            availability,
+            f"Building '{self.name}'",
+            "vehicle availability",
+            0.0,
+            1.0,
+        )
+        if vehicle.trip_energy_column:
+            numeric_forecast(
+                forecasts,
+                vehicle.trip_energy_column,
+                f"Building '{self.name}'",
+                description="vehicle trip energy",
+                require_non_negative=True,
+            )
+        if vehicle.trip_distance_column:
+            numeric_forecast(
+                forecasts,
+                vehicle.trip_distance_column,
+                f"Building '{self.name}'",
+                description="vehicle trip distance",
+                require_non_negative=True,
+            )
+        if self.charging_station.availability_column:
+            station_availability = numeric_forecast(
+                forecasts,
+                self.charging_station.availability_column,
+                f"Building '{self.name}'",
+                description="charging-station availability",
+            )
+            validate_profile_range(
+                station_availability,
+                f"Building '{self.name}'",
+                "charging-station availability",
+                0.0,
+                1.0,
+            )
 
     # ------------------------------------------------------------------
     # Model definition: parameters -> components -> variables -> equations
@@ -192,9 +302,9 @@ class Building(BasePlant):
             raise ValueError("Building electricity prices must be finite")
 
         model.dt_hours = pyo.Param(initialize=dt_hours)
-        model.building_demand_mwh = _time_parameter(model, demand)
-        model.import_price = _time_parameter(model, import_price)
-        model.export_price = _time_parameter(model, export_price)
+        model.building_demand_mwh = time_parameter(model, demand)
+        model.import_price = time_parameter(model, import_price)
+        model.export_price = time_parameter(model, export_price)
         model.additional_import_charge = pyo.Param(
             initialize=self.additional_electricity_charge_eur_per_mwh
         )
@@ -339,23 +449,6 @@ def _check_vehicle_and_station(
         raise ValueError("Configure trip energy or trip distance, not both")
 
 
-def _check_forecasts(forecasts: pd.DataFrame, required_columns: set[str]) -> None:
-    if forecasts.empty:
-        raise ValueError("Building dispatch requires at least one forecast row")
-    if not forecasts.index.is_unique:
-        raise ValueError("Building dispatch forecast timestamps must be unique")
-    missing = sorted(required_columns - set(forecasts.columns))
-    if missing:
-        raise ValueError("Building dispatch is missing forecast columns: " + ", ".join(missing))
-
-
-def _time_parameter(model: pyo.ConcreteModel, values: pd.Series) -> pyo.Param:
-    return pyo.Param(
-        model.T,
-        initialize={t: float(values.iloc[t]) for t in model.T},
-    )
-
-
 def _optional_profile(forecasts: pd.DataFrame, column: str) -> np.ndarray | None:
     return forecasts[column].to_numpy() if column else None
 
@@ -396,53 +489,7 @@ def _infeasible_message(building_name: str, solver_name: str) -> str:
     )
 
 
-def _extract_results(
-    building: Building,
-    model: pyo.ConcreteModel,
-    forecasts: pd.DataFrame,
-    solver_name: str,
-) -> pd.DataFrame:
-    dt_hours = pyo.value(model.dt_hours)
-    rows: list[dict[str, object]] = []
-    for t, timestamp in enumerate(forecasts.index):
-        grid_import = pyomo_value(model.grid_import_mwh[t])
-        grid_export = pyomo_value(model.grid_export_mwh[t])
-        charge = pyomo_value(model.electric_vehicle.charge_mwh[t])
-        discharge = pyomo_value(model.electric_vehicle.discharge_mwh[t])
-        soc = pyomo_value(model.electric_vehicle.soc_mwh[t])
-        rows.append(
-            {
-                "datetime": timestamp,
-                "plant_name": building.name,
-                "building_demand_MWh": pyomo_value(model.building_demand_mwh[t]),
-                "bus_availability_fraction": pyomo_value(model.electric_vehicle.availability[t]),
-                "bus_trip_energy_MWh": pyomo_value(model.electric_vehicle.trip_energy_mwh[t]),
-                "bus_charge_MWh": charge,
-                "bus_discharge_MWh": discharge,
-                "bus_soc_MWh": soc,
-                "bus_soc_fraction": soc / building.electric_vehicle.total_capacity_mwh,
-                "grid_import_MWh": grid_import,
-                "grid_export_MWh": grid_export,
-                "net_grid_import_MWh": grid_import - grid_export,
-                "grid_import_MW": grid_import / dt_hours,
-                "grid_export_MW": grid_export / dt_hours,
-                "electricity_import_price_EUR_per_MWh": pyomo_value(model.import_price[t]),
-                "electricity_export_price_EUR_per_MWh": pyomo_value(model.export_price[t]),
-                "variable_cost_EUR": pyomo_value(model.variable_cost[t]),
-                "v2g_enabled": building.v2g_enabled,
-                "solver": solver_name,
-            }
-        )
+def building_profile_columns(plant_name: str, component_table: pd.DataFrame) -> set[str]:
+    """Return profile columns needed by a building component table."""
 
-    result = pd.DataFrame(rows).set_index("datetime")
-    numeric_columns = result.select_dtypes(include=["number"]).columns
-    result[numeric_columns] = result[numeric_columns].mask(
-        result[numeric_columns].abs() < 1e-9, 0.0
-    )
-    return result
-
-
-def building_profile_columns(plant_name: str, rows: pd.DataFrame) -> set[str]:
-    """Return profile columns needed by a building in ``plants.csv``."""
-
-    return Building.from_rows(str(plant_name).strip(), rows).required_forecast_columns()
+    return Building._assemble(str(plant_name).strip(), component_table).required_forecast_columns()

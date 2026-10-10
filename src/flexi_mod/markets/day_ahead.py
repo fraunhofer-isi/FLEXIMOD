@@ -13,9 +13,29 @@ use for a specific plant.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pandas as pd
 
 from flexi_mod.markets.base_market import BaseMarket
+
+
+@dataclass
+class DayAheadPosition:
+    """Day-ahead electricity position and inputs needed for plant delivery.
+
+    The strategy prepares this product-specific position. A participating
+    plant then connects it to its own physical feasibility formulation.
+    """
+
+    electricity_price_col: str
+    gas_price_col: str
+    gas_benchmark_eur_per_mwh_th: pd.Series
+    charge_allowed: pd.Series
+    additional_electricity_charge_eur_per_mwh: pd.Series | None = None
+    tax_rate: float = 0.0
+    co2_price_col: str | None = None
+    co2_emission_factor_t_per_mwh_fuel: float = 0.0
 
 
 class DayAheadMarket(BaseMarket):

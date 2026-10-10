@@ -326,7 +326,7 @@ markets:
         CaseConfig.from_case_dir(case_dir)
 
 
-def test_rolling_step_defines_market_commit_window(tmp_path: Path) -> None:
+def test_rolling_step_defines_market_delivery_window(tmp_path: Path) -> None:
     case_dir = tmp_path / "window_case"
     case_dir.mkdir()
     _write_window_config(case_dir / "config.yaml", dispatch_horizon_hours=24)
@@ -336,10 +336,10 @@ def test_rolling_step_defines_market_commit_window(tmp_path: Path) -> None:
     windows = _decision_windows(config, forecasts)
 
     assert len(windows) == 3
-    assert all(len(window.commit_index) == 96 for window in windows)
+    assert all(len(window.delivery_index) == 96 for window in windows)
 
 
-def test_larger_dispatch_horizon_keeps_daily_commit_windows(tmp_path: Path) -> None:
+def test_larger_dispatch_horizon_keeps_daily_delivery_windows(tmp_path: Path) -> None:
     case_dir = tmp_path / "two_day_window_case"
     case_dir.mkdir()
     _write_window_config(
@@ -353,7 +353,7 @@ def test_larger_dispatch_horizon_keeps_daily_commit_windows(tmp_path: Path) -> N
     windows = _decision_windows(config, forecasts)
 
     assert len(windows) == 4
-    assert all(len(window.commit_index) == 96 for window in windows)
+    assert all(len(window.delivery_index) == 96 for window in windows)
     assert len(windows[0].forecasts) == 192
 
 
