@@ -37,6 +37,7 @@ def main() -> None:
         COMPARISON_FILENAME,
         write_comparison_dashboard,
     )
+    from flexi_mod.visualisation.dashboard.data import load_case
     from flexi_mod.visualisation.dashboard.static_html import (
         DASHBOARD_FILENAME,
         write_case_dashboard,
@@ -51,6 +52,13 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         help="Case output folder with dispatch_results.csv. Defaults to the folder of --case.",
+    )
+    parser.add_argument(
+        "--input-dir",
+        help=(
+            "Case input folder (plants.csv, additional_charges.csv) for the system-setup tab. "
+            "Found automatically from the output folder name or --case when omitted."
+        ),
     )
     parser.add_argument(
         "--case",
@@ -114,9 +122,15 @@ def main() -> None:
     else:
         output_dir = _resolve_output_dir(args)
         logger.info(f"Dashboard creation started for {output_dir}")
+        input_dir = args.input_dir or (args.case if args.case else None)
+        if input_dir is None and args.example:
+            from flexi_mod.simulation.run_case import resolve_example_paths
+
+            input_dir = resolve_example_paths(args.example)["case_dir"]
         with logger.capture_warnings():
+            case = load_case(output_dir, input_dir=input_dir)
             written = write_case_dashboard(
-                output_dir,
+                case,
                 output_dir / DASHBOARD_FILENAME,
                 max_plants=args.max_plants,
                 plotly_js=args.plotly_js,

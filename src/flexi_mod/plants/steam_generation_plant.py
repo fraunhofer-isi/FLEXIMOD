@@ -804,7 +804,7 @@ class SteamRouteProcess:
         if (reserved_capacity_mwh.abs() > 1e-9).any():
             raise ValueError(f"Route '{self.name}' does not support aFRR-capacity reservations")
 
-    def next_soc(self, committed_row: pd.Series) -> float | None:
+    def next_soc(self, delivered_row: pd.Series) -> float | None:
         """Return the next rolling state; direct routes stay stateless."""
 
         return None
@@ -989,8 +989,8 @@ class ThermalStorageGasBoilerProcess(SteamRouteProcess):
             ),
         }
 
-    def next_soc(self, committed_row: pd.Series) -> float:
-        return float(committed_row["etes_soc_MWh"])
+    def next_soc(self, delivered_row: pd.Series) -> float:
+        return float(delivered_row["etes_soc_MWh"])
 
     def objective_penalty(
         self,

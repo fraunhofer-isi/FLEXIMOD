@@ -178,7 +178,7 @@ def _new_figure(
         rows=rows,
         cols=1,
         shared_xaxes=shared_x,
-        vertical_spacing=0.09 if titles else 0.05,
+        vertical_spacing=(0.09 if titles else 0.05) + (0 if shared_x else 0.08),
         row_heights=heights,
         subplot_titles=titles,
     )
@@ -226,6 +226,7 @@ def _add_line(
     frame: pd.DataFrame | None = None,
     shape: str | None = None,
     fill: bool = False,
+    markers: bool = False,
 ) -> bool:
     frame = ctx.df if frame is None else frame
     values = series if series is not None else (frame[column] if column in frame else None)
@@ -236,7 +237,8 @@ def _add_line(
             **_time_axis(values.index),
             y=_f32(values),
             name=name,
-            mode="lines",
+            mode="lines+markers" if markers else "lines",
+            marker={"size": 7, "color": color} if markers else None,
             line={"color": color, "width": width, "dash": dash, "shape": shape or ctx.line_shape},
             fill="tozeroy" if fill else None,
             fillcolor=with_alpha(color, 0.25) if fill else None,
@@ -1365,8 +1367,9 @@ def sample_window(ctx: ChartContext) -> go.Figure | None:
     return fig
 
 
-# Builders that need a particular plant family.
-BUILDERS: dict[str, FigureBuilder] = {
+# Chart builders grouped by who needs them. Each plant dashboard class (see sections.py) starts
+# from the generic set and adds its own group, so a chart is registered exactly once.
+GENERIC_BUILDERS: dict[str, FigureBuilder] = {
     "markets_overview": markets_overview,
     "afrr_capacity": afrr_capacity,
     "price_response": price_response,
@@ -1376,17 +1379,34 @@ BUILDERS: dict[str, FigureBuilder] = {
     "cumulative_cost": cumulative_cost,
     "grid_fee_breakdown": grid_fee_breakdown,
     "emissions": emissions,
+    "sample_window": sample_window,
+}
+
+STEAM_CORE_BUILDERS: dict[str, FigureBuilder] = {
     "heat_and_storage": heat_and_storage,
     "storage_sources": storage_sources,
     "gas_replacement": gas_replacement,
+}
+
+INDUSTRIAL_BUILDERS: dict[str, FigureBuilder] = {
     "production": production,
     "energy_carriers": energy_carriers,
     "unit_electricity": unit_electricity,
     "unit_status": unit_status,
+}
+
+BUILDING_BUILDERS: dict[str, FigureBuilder] = {
     "building_balance": building_balance,
     "building_tariff": building_tariff,
     "ev_fleet": ev_fleet,
     "grid_stress": grid_stress,
     "pv_use": pv_use,
-    "sample_window": sample_window,
+}
+
+# Every builder of this module in one lookup (handy in notebooks and tests).
+BUILDERS: dict[str, FigureBuilder] = {
+    **GENERIC_BUILDERS,
+    **STEAM_CORE_BUILDERS,
+    **INDUSTRIAL_BUILDERS,
+    **BUILDING_BUILDERS,
 }

@@ -57,7 +57,10 @@ class CaseData:
     storage: pd.DataFrame = field(default_factory=pd.DataFrame)
     grid_fees: pd.DataFrame = field(default_factory=pd.DataFrame)
     afrr_blocks: pd.DataFrame = field(default_factory=pd.DataFrame)
+    plant_config: pd.DataFrame = field(default_factory=pd.DataFrame)
+    charges: pd.DataFrame = field(default_factory=pd.DataFrame)
     output_dir: Path | None = None
+    input_dir: Path | None = None
     family: str = "generic"
     step_hours: float = 0.25
     currency: str = "EUR"
@@ -121,8 +124,13 @@ class CaseData:
         return frame[frame["plant_name"] == plant]
 
 
-def load_case(output_dir: str | Path) -> CaseData:
-    """Load a case output folder (``.csv`` or ``.csv.zst`` tables)."""
+def load_case(output_dir: str | Path, input_dir: str | Path | None = None) -> CaseData:
+    """Load a case output folder (``.csv`` or ``.csv.zst`` tables).
+
+    ``input_dir`` is the case input folder (``plants.csv``, ``additional_charges.csv``). It is
+    optional and enables the system-setup and investment views. When omitted it is looked up
+    from the output folder name.
+    """
 
     output_dir = Path(output_dir)
     dispatch_path = resolve_table_path(output_dir / RESULT_FILES["dispatch_results"])
@@ -139,6 +147,7 @@ def load_case(output_dir: str | Path) -> CaseData:
         grid_fees=_read_small(output_dir / "grid_fee_summary.csv"),
         afrr_blocks=_read_small(output_dir / RESULT_FILES["afrr_capacity_block_summary"]),
         output_dir=output_dir,
+        input_dir=Path(input_dir) if input_dir else guess_input_dir(output_dir),
     )
 
 
@@ -150,6 +159,7 @@ def build_case(
     grid_fees: pd.DataFrame | None = None,
     afrr_blocks: pd.DataFrame | None = None,
     output_dir: Path | None = None,
+    input_dir: Path | None = None,
 ) -> CaseData:
     """Build a :class:`CaseData` from in-memory tables (as produced by the runner)."""
 
@@ -168,12 +178,80 @@ def build_case(
         storage=_normalise_ledger(storage),
         grid_fees=grid_fees if grid_fees is not None else pd.DataFrame(),
         afrr_blocks=afrr_blocks if afrr_blocks is not None else pd.DataFrame(),
+        plant_config=_read_small(input_dir / "plants.csv") if input_dir else pd.DataFrame(),
+        charges=_read_small(input_dir / "additional_charges.csv") if input_dir else pd.DataFrame(),
         output_dir=output_dir,
+        input_dir=input_dir,
         family=detect_family(dispatch.columns),
         step_hours=infer_step_hours(dispatch.index),
         currency=currency,
         plants=plants,
     )
+
+
+def guess_input_dir(output_dir: Path) -> Path | None:
+    """Find ``data/input/<case>`` for an output folder named ``<case>_<strategy>``."""
+
+    for parent in Path(output_dir).resolve().parents:
+        input_root = parent / "data" / "input"
+        if (parent / "pyproject.toml").exists() and input_root.is_dir():
+            matches = [
+                folder
+                for folder in input_root.iterdir()
+                if (folder / "plants.csv").exists()
+                and (
+                    output_dir.name == folder.name or output_dir.name.startswith(folder.name + "_")
+                )
+            ]
+            return max(matches, key=lambda folder: len(folder.name)) if matches else None
+    return None
+
+
+# Investment assumptions used for the CAPEX/OPEX view. They are placeholders: replace them
+# with project data. Cost per unit of the capacity column (EUR per MWh of storage, EUR per MW
+# of heater power), OPEX as % of CAPEX per year, depreciation period and WACC.
+INVESTMENT_ASSUMPTIONS = {
+    "thermal_storage": {"cost_per_unit": 20000.0, "opex_pct": 2.0, "years": 15, "wacc": 0.08},
+    "e_heater": {"cost_per_unit": 200000.0, "opex_pct": 2.0, "years": 15, "wacc": 0.08},
+}
+
+
+def _annuity(capex: float, wacc: float, years: int) -> float:
+    if years <= 0:
+        return 0.0
+    if wacc <= 0:
+        return capex / years
+    return capex * (wacc * (1 + wacc) ** years) / ((1 + wacc) ** years - 1)
+
+
+def investment_costs(plant_config: pd.DataFrame) -> dict[str, float] | None:
+    """Annual CAPEX annuity and OPEX of the plants in ``plants.csv`` (``None`` without data).
+
+    The existing gas boiler carries no investment cost.
+    """
+
+    if plant_config.empty or "technology" not in plant_config:
+        return None
+    totals = {"capex": 0.0, "opex_annual": 0.0, "annuity": 0.0}
+
+    def add(kind: str, size: object) -> None:
+        params = INVESTMENT_ASSUMPTIONS[kind]
+        capex = params["cost_per_unit"] * float(pd.to_numeric(size, errors="coerce") or 0.0)
+        totals["capex"] += capex
+        totals["opex_annual"] += capex * params["opex_pct"] / 100.0
+        totals["annuity"] += _annuity(capex, params["wacc"], int(params["years"]))
+
+    found = False
+    for _, plant in plant_config.iterrows():
+        technology = str(plant.get("technology", "")).lower()
+        if "storage" in technology:
+            add("thermal_storage", plant.get("max_capacity"))
+            add("e_heater", plant.get("max_power_charge"))
+            found = True
+        elif technology == "electric_boiler":
+            add("e_heater", plant.get("max_power"))
+            found = True
+    return totals if found else None
 
 
 def discover_cases(

@@ -23,10 +23,12 @@ from flexi_mod.visualisation.dashboard.comparison import (
     available_metrics,
     comparison_kpis,
     comparison_table,
+    cost_stack_chart,
     group_columns,
     load_case_summaries,
     ranking_chart,
     tradeoff_chart,
+    volume_chart,
 )
 from flexi_mod.visualisation.dashboard.data import (
     ALL_PLANTS,
@@ -580,6 +582,13 @@ def _register_callbacks(app, root: Path, initial: str | None) -> None:
                     )
                 )
             )
+        for key, title, caption, builder in (
+            ("costs", "Cost components", "diamonds are the net cost", cost_stack_chart),
+            ("volumes", "Trade activity", "traded volumes and reserved capacity", volume_chart),
+        ):
+            figure = builder(frame, top, theme)
+            if figure is not None:
+                cards.append(_card(Block(key, title, caption=caption, figure=figure, wide=True)))
         cards.append(
             _card(
                 Block(

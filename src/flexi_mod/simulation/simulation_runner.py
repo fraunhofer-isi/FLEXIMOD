@@ -60,11 +60,11 @@ class OutputOptions:
 
 @dataclass(frozen=True)
 class DecisionWindow:
-    """One market-calendar decision window and its committed output slice."""
+    """One market-calendar decision window and its delivered output slice."""
 
     number: int
     forecasts: pd.DataFrame
-    commit_index: pd.DatetimeIndex
+    delivery_index: pd.DatetimeIndex
 
 
 class SimulationRunner:
@@ -317,7 +317,10 @@ class SimulationRunner:
         grid_fees: pd.DataFrame | None = None,
         afrr_blocks: pd.DataFrame | None = None,
     ) -> Path | None:
-        """Write ``dashboard.html``; a failed report never discards a finished simulation."""
+        """Write ``dashboard.html``; a failed report never discards a finished simulation.
+
+        The case input folder is passed along so the dashboard can show the system setup.
+        """
 
         self._progress("Dashboard creation started")
         try:
@@ -329,6 +332,7 @@ class SimulationRunner:
                 grid_fees=grid_fees,
                 afrr_blocks=afrr_blocks,
                 output_dir=output_dir,
+                input_dir=self.input_dir,
             )
             path = write_case_dashboard(case)
         except Exception as error:
@@ -412,8 +416,8 @@ class SimulationRunner:
                         current=completed_windows + 1,
                         total=total_windows,
                         plant_name=building.name,
-                        window_start=pd.Timestamp(window.commit_index[0]),
-                        window_end=pd.Timestamp(window.commit_index[-1]),
+                        window_start=pd.Timestamp(window.delivery_index[0]),
+                        window_end=pd.Timestamp(window.delivery_index[-1]),
                     )
                 )
                 stage_result = strategy.decide_market_stage(
@@ -426,10 +430,10 @@ class SimulationRunner:
                     )
                 )
                 optimized = stage_result.values
-                committed = optimized.reindex(window.commit_index).copy()
-                committed["rolling_window"] = window.number
-                dispatch_parts.append(committed)
-                current_soc = float(committed["bus_soc_MWh"].iloc[-1])
+                implemented = optimized.reindex(window.delivery_index).copy()
+                implemented["rolling_window"] = window.number
+                dispatch_parts.append(implemented)
+                current_soc = float(implemented["bus_soc_MWh"].iloc[-1])
                 completed_windows += 1
                 self._progress(
                     f"Window {window.number} completed for {building.name}; "
@@ -497,7 +501,7 @@ class SimulationRunner:
         forecasts: pd.DataFrame,
         strategy: IndustrialDayAheadCostMinimisationStrategy,
     ) -> pd.DataFrame:
-        """Solve and commit DA-only industrial dispatch for each decision window."""
+        """Solve DA-only industrial dispatch for each delivery window."""
 
         windows = _decision_windows(self.config, forecasts)
         self._report_market_calendar_notices()
@@ -513,8 +517,8 @@ class SimulationRunner:
                         current=completed_windows + 1,
                         total=total_windows,
                         plant_name=plant.name,
-                        window_start=pd.Timestamp(window.commit_index[0]),
-                        window_end=pd.Timestamp(window.commit_index[-1]),
+                        window_start=pd.Timestamp(window.delivery_index[0]),
+                        window_end=pd.Timestamp(window.delivery_index[-1]),
                     )
                 )
                 stage_result = strategy.decide_market_stage(
@@ -534,9 +538,9 @@ class SimulationRunner:
                     raise ValueError(
                         "Industrial day-ahead strategy must return an operating schedule"
                     )
-                committed = stage_result.values.reindex(window.commit_index).copy()
-                committed["rolling_window"] = window.number
-                dispatch_parts.append(committed)
+                implemented = stage_result.values.reindex(window.delivery_index).copy()
+                implemented["rolling_window"] = window.number
+                dispatch_parts.append(implemented)
                 completed_windows += 1
                 self._progress(f"Delivery window {window.number} completed for {plant.name}")
 
@@ -598,9 +602,9 @@ class SimulationRunner:
             for window in windows:
                 progress_counter += 1
                 window_forecasts = window.forecasts
-                commit_index = window.commit_index
-                window_start = pd.Timestamp(commit_index[0])
-                window_end = pd.Timestamp(commit_index[-1])
+                delivery_index = window.delivery_index
+                window_start = pd.Timestamp(delivery_index[0])
+                window_end = pd.Timestamp(delivery_index[-1])
                 self._progress(
                     _window_progress_message(
                         current=progress_counter,
@@ -660,7 +664,7 @@ class SimulationRunner:
                             _capacity_summaries_for_window(
                                 strategy.afrr_capacity_block_summary,
                                 stage_state.capacity_award,
-                                commit_index,
+                                delivery_index,
                             )
                         )
                     else:
@@ -685,11 +689,11 @@ class SimulationRunner:
                         capacity_award=stage_state.capacity_award,
                     )
 
-                committed = stage_state.operating_schedule.reindex(commit_index).copy()
-                committed = _add_stage_dispatch_columns(committed, stage_outputs)
-                dispatch_parts.append(committed)
+                implemented = stage_state.operating_schedule.reindex(delivery_index).copy()
+                implemented = _add_stage_dispatch_columns(implemented, stage_outputs)
+                dispatch_parts.append(implemented)
                 if has_storage:
-                    current_soc = float(committed["etes_soc_MWh"].iloc[-1])
+                    current_soc = float(implemented["etes_soc_MWh"].iloc[-1])
                     self._progress(
                         f"Delivery window {window.number} completed for {plant.name}; "
                         f"final ETES SoC = {current_soc:.3f} MWh_th"
@@ -754,7 +758,7 @@ class SimulationRunner:
         rolling = bool(self.config.dispatch_setting("rolling_horizon_enabled", True))
         if rolling:
             self._progress(
-                f"Market calendar: {step:g} h commit window, {horizon:g} h optimisation horizon"
+                f"Market calendar: {step:g} h delivery window, {horizon:g} h optimisation horizon"
             )
         else:
             self._progress("Market calendar: single full-period decision window")
@@ -905,7 +909,7 @@ def _decision_windows(config: CaseConfig, forecasts: pd.DataFrame) -> list[Decis
     rolling_enabled = bool(config.dispatch_setting("rolling_horizon_enabled", True))
     if not rolling_enabled:
         index = pd.DatetimeIndex(forecasts.index)
-        return [DecisionWindow(number=1, forecasts=forecasts.copy(), commit_index=index)]
+        return [DecisionWindow(number=1, forecasts=forecasts.copy(), delivery_index=index)]
 
     horizon_hours = float(config.dispatch_setting("dispatch_horizon_hours", 24))
     step_hours = float(config.dispatch_setting("rolling_step_hours", horizon_hours))
@@ -917,16 +921,16 @@ def _decision_windows(config: CaseConfig, forecasts: pd.DataFrame) -> list[Decis
     number = 1
     while position < len(forecasts):
         horizon = forecasts.iloc[position : position + horizon_steps].copy()
-        commit_count = min(step_steps, len(forecasts) - position, len(horizon))
-        commit_index = pd.DatetimeIndex(horizon.iloc[:commit_count].index)
+        delivery_count = min(step_steps, len(forecasts) - position, len(horizon))
+        delivery_index = pd.DatetimeIndex(horizon.iloc[:delivery_count].index)
         windows.append(
             DecisionWindow(
                 number=number,
                 forecasts=horizon,
-                commit_index=commit_index,
+                delivery_index=delivery_index,
             )
         )
-        position += commit_count
+        position += delivery_count
         number += 1
     return windows
 
@@ -1012,14 +1016,14 @@ def _run_zero_electricity_dispatch(
 def _capacity_summaries_for_window(
     block_summary: pd.DataFrame,
     capacity_award: pd.DataFrame,
-    commit_index: pd.DatetimeIndex,
+    delivery_index: pd.DatetimeIndex,
 ) -> list[pd.DataFrame]:
     if block_summary.empty or capacity_award.empty:
         return []
     if "afrr_capacity_block_id" not in capacity_award.columns:
         return []
     block_ids = (
-        capacity_award.reindex(commit_index)["afrr_capacity_block_id"]
+        capacity_award.reindex(delivery_index)["afrr_capacity_block_id"]
         .dropna()
         .astype(str)
         .unique()

@@ -1063,10 +1063,10 @@ class HybridETESGasStrategy(BaseStrategy):
         # remains after the earlier reserved blocks are (worst-case) fully activated and the
         # process has drained the store. Sizing every block against the same day-start
         # snapshot instead lets consecutive reserved blocks each claim the one shared buffer
-        # in full, over-committing capacity the plant cannot sustain under continuous
+        # in full, over-awarding capacity the plant cannot sustain under continuous
         # activation (the store saturates and the surplus is curtailed).
         projected_soc = expected_soc
-        # Under atypical grid use, do not commit aFRR-down capacity in blocks that overlap a
+        # Under atypical grid use, do not offer aFRR-down capacity in blocks that overlap a
         # high-load window: a mandatory capacity-backed activation there would raise the billed
         # window peak and forfeit the §19(2) capacity-charge saving.
         grid_block = self._grid_charging_block(plant, forecasts)

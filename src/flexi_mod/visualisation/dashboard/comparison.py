@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from flexi_mod.visualisation.analytics import RESULT_FILES, resolve_table_path
 from flexi_mod.visualisation.dashboard.charts import money, number
@@ -153,6 +154,7 @@ def _summarise_case(folder: Path) -> dict[str, object] | None:
         value = totals[column] * scale
         row[key] = value / 1000.0 if column.endswith("_kg") else value
 
+    row.update(_component_totals(totals))
     production = row.get("production") or row.get("heat")
     if production and "net_cost" in row:
         row["specific_cost"] = float(row["net_cost"]) / float(production)  # type: ignore[arg-type]
@@ -162,6 +164,36 @@ def _summarise_case(folder: Path) -> dict[str, object] | None:
         if "electricity" in row:
             row["specific_electricity"] = float(row["electricity"]) / float(row["production"])  # type: ignore[arg-type]
     return row
+
+
+# Cost components and market volumes of steam cases (summary_indicators columns).
+def _component_totals(totals: dict[str, float]) -> dict[str, float]:
+    if "total_gas_cost_EUR" not in totals:
+        return {}
+
+    def get(column: str) -> float:
+        return totals.get(column, 0.0)
+
+    buy, sell = get("IDC_buy_cost_EUR"), get("IDC_sell_revenue_EUR")
+    afrr = get("afrr_energy_cost_EUR")
+    day_ahead = get("total_electricity_market_cost_EUR") - buy + sell - afrr
+    return {
+        "cost_gas": get("total_gas_cost_EUR"),
+        "cost_day_ahead": day_ahead,
+        "cost_idc_buy": buy,
+        "cost_idc_sell": -sell,
+        "cost_afrr_energy": afrr,
+        "cost_charges": get("total_additional_electricity_charges_cost_EUR")
+        + get("total_tax_cost_EUR"),
+        "cost_co2": get("total_co2_cost_EUR"),
+        "cost_afrr_capacity": -get("total_afrr_capacity_revenue_EUR"),
+        "cost_grid_fee_correction": get("grid_fee_ex_post_addition_EUR"),
+        "vol_day_ahead": get("total_DA_electricity_MWh"),
+        "vol_idc_buy": get("total_IDC_buy_MWh"),
+        "vol_idc_sell": get("total_IDC_sell_MWh"),
+        "vol_afrr_energy": get("total_afrr_energy_activated_MWh"),
+        "vol_afrr_capacity": get("total_afrr_capacity_reserved_MW_h"),
+    }
 
 
 def _name_parts(name: str) -> dict[str, object]:
@@ -293,6 +325,124 @@ def tradeoff_chart(
     return fig
 
 
+# (column, label, entity colour). Revenues are stored as negative values.
+_COST_STACK = [
+    ("cost_gas", "Gas", "gas"),
+    ("cost_day_ahead", "Day-ahead", "day_ahead"),
+    ("cost_idc_buy", "Intraday buy", "intraday"),
+    ("cost_idc_sell", "Intraday sell (revenue)", "intraday"),
+    ("cost_afrr_energy", "aFRR energy", "afrr_energy"),
+    ("cost_afrr_capacity", "aFRR capacity (revenue)", "afrr_capacity"),
+    ("cost_co2", "CO₂", "emissions"),
+    ("cost_charges", "Network charges and taxes", None),
+    ("cost_grid_fee_correction", "Grid fee correction", None),
+]
+
+
+def has_cost_components(frame: pd.DataFrame) -> bool:
+    return "cost_gas" in frame.columns and frame["cost_gas"].notna().any()
+
+
+def cost_stack_chart(frame: pd.DataFrame, top: int = 30, theme: Theme = LIGHT) -> go.Figure | None:
+    """Stacked cost components per case with the net cost as a marker (steam cases)."""
+
+    if not has_cost_components(frame):
+        return None
+    data = frame.dropna(subset=["cost_gas"]).copy()
+    data["net"] = data[[column for column, _, _ in _COST_STACK]].sum(axis=1)
+    data = data.sort_values("net").head(top)
+    fig = go.Figure()
+    neutral = [theme.neutral_fill, theme.neutral_series]
+    for column, label, entity in _COST_STACK:
+        if not data[column].abs().max() > 0:
+            continue
+        color = theme.entity(entity) if entity else neutral.pop(0)
+        fig.add_trace(
+            go.Bar(
+                x=data["case"],
+                y=(data[column] / 1000.0).to_numpy(dtype="float64"),
+                name=label,
+                marker={"color": color, "line": {"width": 0}},
+                hovertemplate="%{y:,.1f} kEUR<extra>" + label + "</extra>",
+            )
+        )
+    fig.add_trace(
+        go.Scatter(
+            x=data["case"],
+            y=(data["net"] / 1000.0).to_numpy(dtype="float64"),
+            mode="markers",
+            name="Net cost",
+            marker={
+                "symbol": "diamond",
+                "size": 10,
+                "color": theme.text_primary,
+                "line": {"width": 2, "color": theme.surface},
+            },
+            hovertemplate="%{y:,.1f} kEUR<extra>Net cost</extra>",
+        )
+    )
+    fig.update_layout(barmode="relative")
+    fig.update_yaxes(title_text="kEUR")
+    fig.update_xaxes(tickangle=-35, tickfont={"size": 10})
+    apply_layout(fig, theme, height=560)
+    fig.update_layout(hovermode="x unified", margin={"b": 110})
+    return fig
+
+
+def volume_chart(frame: pd.DataFrame, top: int = 30, theme: Theme = LIGHT) -> go.Figure | None:
+    """Traded energy volumes and reserved aFRR capacity per case (steam cases)."""
+
+    if not has_cost_components(frame) or "net_cost" not in frame:
+        return None
+    data = frame.dropna(subset=["cost_gas"]).sort_values("net_cost").head(top)
+    with_capacity = bool(data["vol_afrr_capacity"].abs().max() > 0)
+    fig = make_subplots(
+        rows=2 if with_capacity else 1,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.14,
+        row_heights=[0.65, 0.35] if with_capacity else None,
+        subplot_titles=("Traded energy", "aFRR capacity reserved") if with_capacity else None,
+    )
+    for column, label, entity in [
+        ("vol_day_ahead", "Day-ahead procured", "day_ahead"),
+        ("vol_idc_buy", "Intraday bought", "intraday"),
+        ("vol_idc_sell", "Day-ahead sold back in intraday", "export"),
+        ("vol_afrr_energy", "aFRR energy activated", "afrr_energy"),
+    ]:
+        fig.add_trace(
+            go.Bar(
+                x=data["case"],
+                y=data[column].to_numpy(dtype="float64"),
+                name=label,
+                marker={"color": theme.entity(entity), "line": {"width": 0}},
+                hovertemplate="%{y:,.0f} MWh<extra>" + label + "</extra>",
+            ),
+            row=1,
+            col=1,
+        )
+    if with_capacity:
+        fig.add_trace(
+            go.Bar(
+                x=data["case"],
+                y=data["vol_afrr_capacity"].to_numpy(dtype="float64"),
+                name="aFRR capacity reserved",
+                marker={"color": theme.entity("afrr_capacity"), "line": {"width": 0}},
+                hovertemplate="%{y:,.0f} MW·h<extra>aFRR capacity</extra>",
+            ),
+            row=2,
+            col=1,
+        )
+    fig.update_layout(barmode="group")
+    fig.update_yaxes(title_text="MWh el", row=1, col=1)
+    if with_capacity:
+        fig.update_yaxes(title_text="MW·h", row=2, col=1)
+    fig.update_xaxes(tickangle=-35, tickfont={"size": 10})
+    apply_layout(fig, theme, height=700 if with_capacity else 480)
+    fig.update_layout(hovermode="x unified", margin={"b": 110})
+    return fig
+
+
 def comparison_table(frame: pd.DataFrame) -> pd.DataFrame:
     columns = ["case", "family", "scenario", "year", "variant", "plants"]
     columns += [key for key in METRIC_LABELS if key in frame.columns]
@@ -375,6 +525,13 @@ def render_comparison_html(
                     wide=False,
                 )
             )
+    for title, caption, builder in (
+        ("Cost components", "stacked per case, diamonds are the net cost", cost_stack_chart),
+        ("Trade activity", "traded volumes and reserved capacity", volume_chart),
+    ):
+        fig = builder(frame, top)
+        if fig is not None:
+            scatter_cards.append(_card(title, caption, fig, wide=True))
     kpis = "".join(
         '<div class="kpi">'
         f'<div class="label">{html.escape(label)}</div>'

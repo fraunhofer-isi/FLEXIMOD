@@ -22,6 +22,7 @@ Both read the same files and use the same chart code, so a chart looks the same 
 Use the static file by default. Use the Dash app when you want to explore many results.
 
 - [Quick start](#quick-start)
+- [Step-by-step tutorial](#step-by-step-tutorial)
 - [Static HTML dashboard](#static-html-dashboard)
 - [Live Dash app](#live-dash-app)
 - [Working on a remote server](#working-on-a-remote-server)
@@ -53,6 +54,136 @@ dashboard of the most recently written result folder under `data/output`. To alw
 folder, set `DEFAULT_OUTPUT_DIR` near the top of
 [`plot_case.py`](../src/flexi_mod/simulation/plot_case.py).
 
+## Step-by-step tutorial
+
+Every step below shows the command to run. Run all commands from the project root.
+
+### A. Static dashboard (one file)
+
+**1. Open a terminal in the project and activate the environment.**
+
+```bash
+cd <path-to-your-FLEXIMOD-checkout>
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+```
+
+**2. Get a case output folder.** Either run a case, which also creates the dashboard...
+
+```bash
+python src/flexi_mod/simulation/run_case.py --example hybrid_ETES_DA
+```
+
+...or use result folders you already have. Any folder that contains `dispatch_results.csv` (or
+`dispatch_results.csv.zst`) works. To list them:
+
+```bash
+find data/output -name "dispatch_results.csv*"          # Windows PowerShell: Get-ChildItem data\output -Recurse -Filter "dispatch_results.csv*"
+```
+
+**3. Build the dashboard of that folder.**
+
+```bash
+python src/flexi_mod/simulation/plot_case.py --output-dir "data/output/<case_folder>"
+```
+
+For example:
+
+```bash
+python src/flexi_mod/simulation/plot_case.py --output-dir data/output/building_use_case_analysis/i07_reference
+```
+
+It prints the location of the file:
+
+```text
+Dashboard created: <path-to-your-FLEXIMOD-checkout>/data/output/building_use_case_analysis/i07_reference/dashboard.html
+```
+
+**4. Open the file.** On your own computer, double-click `dashboard.html`, or run:
+
+```bash
+python src/flexi_mod/simulation/plot_case.py --output-dir "data/output/<case_folder>" --open
+```
+
+On a server without a screen, download the file first, then open it on your computer. From your
+computer, with `scp`:
+
+```bash
+scp user@server:<path-to-your-FLEXIMOD-checkout>/data/output/<case_folder>/dashboard.html .
+```
+
+(In VS Code you can instead right-click the file in the Explorer and choose Download.)
+
+**5. Optional: change what is shown.** Add options to the step 3 command:
+
+```bash
+# one month only, every timestep
+python src/flexi_mod/simulation/plot_case.py --output-dir "data/output/<case_folder>" --start 2025-01-01 --end 2025-01-31 --resolution native
+
+# smaller file for a case with many plants
+python src/flexi_mod/simulation/plot_case.py --output-dir "data/output/<case_folder>" --max-plants 4
+```
+
+**6. Shortcut.** Running the script with no arguments (or pressing play on `plot_case.py`) builds
+the dashboard of the newest result folder:
+
+```bash
+python src/flexi_mod/simulation/plot_case.py
+```
+
+### B. Comparison page (many cases, one file)
+
+```bash
+python src/flexi_mod/simulation/plot_case.py --compare data/output/steel_results data/output/cement_results
+```
+
+It prints `Comparison dashboard created: <path>`. The file is `comparison.html` in the first
+folder you listed. Open it like the dashboard in step A4.
+
+### C. Live Dash app
+
+**1. Activate the environment and install Dash (once).**
+
+```bash
+cd <path-to-your-FLEXIMOD-checkout>
+source .venv/bin/activate
+pip install -e .[dashboard]
+```
+
+**2. Start the app.**
+
+```bash
+fleximod-dashboard --root data/output
+```
+
+If the command is not found, run the file directly (or press play on `dash_app.py`):
+
+```bash
+python src/flexi_mod/visualisation/dashboard/dash_app.py --root data/output
+```
+
+The terminal prints `Running on http://127.0.0.1:8050`. Leave it running.
+
+**3. Open it in a browser.** On your own computer, go to <http://127.0.0.1:8050>.
+
+On a remote server, forward the port first. Run this on your computer, then open
+<http://localhost:8050>, or use the Ports tab in VS Code (Forward a Port, `8050`):
+
+```bash
+ssh -L 8050:localhost:8050 user@server
+```
+
+**4. Use it.** Pick a **Case**, then optionally a **Plant**, **Period** and **Resolution**, and
+click through the tabs. The **Compare cases** tab at the top ranks many cases.
+
+**5. Optional: other start options.**
+
+```bash
+fleximod-dashboard --root data/output --case data/output/<case_folder>   # open a case first
+fleximod-dashboard --root data/output --port 8060                        # if 8050 is taken
+```
+
+**6. Stop it.** Press `Ctrl+C` in the terminal.
+
 ## Static HTML dashboard
 
 ### Where the file is written
@@ -75,6 +206,7 @@ warning; it never discards a finished simulation.
 |---|---|
 | `--output-dir FOLDER` | Case output folder that contains `dispatch_results.csv` (or `.csv.zst`). |
 | `--case FOLDER`, `--study-case NAME` | Locate the output folder from a case input folder and its `config.yaml`. |
+| `--input-dir FOLDER` | Case input folder (`plants.csv`, `additional_charges.csv`) for the System setup tab and CAPEX/OPEX. Found automatically from `--case`, `--example` or the output folder name when omitted. |
 | `--example NAME` | Same, for a named example of `run_case.py`. |
 | `--compare FOLDER ...` | Build a comparison page for the cases found below these folders instead. |
 | `--start DATE`, `--end DATE` | Show only this period, for example `--start 2025-01-01 --end 2025-01-31`. |
@@ -157,6 +289,9 @@ The page shows:
 - headline tiles: number of cases, lowest net cost, lowest CO₂;
 - a **ranking** bar chart of any metric, lowest first, coloured by plant family, scenario or year;
 - **trade-off** scatter plots, such as net cost against CO₂ (bottom-left is better);
+- for steam cases, a **cost components** chart (gas, day-ahead, intraday, aFRR, charges, CO₂, grid
+  fee correction, with the net cost as a diamond) and a **trade activity** chart (traded volumes
+  and reserved aFRR capacity);
 - a table of all cases that you can filter.
 
 Metrics are summed over the plants of a case: net operating cost, electricity use, CO₂, production,
@@ -173,13 +308,19 @@ case does not have, such as IDC or aFRR series in a day-ahead-only run, is simpl
 
 ### Steam, ETES and boiler plants
 
+These plants carry the analyses of the report notebook `notebooks/fleximod_report_analysis.ipynb`
+(see [Relation to the report notebook](#relation-to-the-report-notebook)).
+
 | Tab | Content |
 |---|---|
-| Overview | Tiles: net operating cost, cost of heat, heat demand, share of gas replaced, electricity used, emissions, aFRR capacity value. Heat supply and storage content. Prices and electricity procurement by market. |
-| Markets | aFRR capacity reserved and its price. Gas heat remaining after each market stage. Stored heat by the market it was procured on. |
-| Operation | A three-day window at full resolution around the most active day. |
-| Costs & emissions | Cost breakdown, cumulative cost, grid fees, emissions. |
-| Patterns | Load by hour of day, load response to price, load duration curve. |
+| Overview | Tiles: net operating cost, gas-only benchmark, savings against it, net savings after CAPEX and OPEX, cost of heat, heat demand, electrification rate, electricity used, emissions, CAPEX and OPEX, aFRR capacity value. Heat supply and storage content. Prices and electricity procurement by market. |
+| Heat & storage | Heat demand coverage (direct electric supply, storage discharge, gas boiler), monthly coverage and electrified share, gas heat remaining after each market stage, stored heat by procurement market, storage charging and discharging with state of charge. |
+| Markets | Monthly electricity procurement by market, monthly market value against the gas-based electricity benchmark, aFRR capacity reserved and its price, monthly day-ahead price, tables of the electricity balance by market channel and of price statistics. |
+| Operation | Sequential market profile of the most active week: day-ahead baseline, intraday adjustment, aFRR and final electricity, gas boiler heat, storage content. |
+| Costs & financials | Cashflow waterfall from the gas-only benchmark to the net cost, cost breakdown, cumulative cost, emissions. |
+| Grid fees | Tiles for the grid fee components and the full-load-hour tier, fee breakdown, the peak basis of the capacity charge, and the average weekday profile around the German high-load windows. Only for cases with a grid fee settlement. |
+| Patterns | Heat demand by hour of day, by weekday and hour, averages, heat load duration curve, electric load by hour, load response to price, electric load duration. |
+| System setup | Thermal profile type, installed e-heater power, storage size and efficiencies, plant configuration, additional charges, results per installed MW of e-heater. Only when the case input folder is found. |
 | Data | Summary indicators, aFRR capacity blocks, grid fee summary. |
 
 ### Cement and steel plants
@@ -210,8 +351,59 @@ case does not have, such as IDC or aFRR series in a day-ahead-only run, is simpl
   operating cost including the grid fee correction, which is shown in the heading.
 - **Load response to price.** Average load in each price decile. A flexible plant leans towards the
   cheap deciles on the left.
+- **Cashflow waterfall.** Starts at what the heat would cost with the gas boiler alone. Blue steps
+  add cost, green steps save money or earn revenue, and the last bar is the net cost (including
+  CAPEX and OPEX when the input folder is available). The caption gives the saving against the
+  benchmark.
+- **Heat demand coverage.** "Direct supply" is heat produced while the storage charges at the same
+  time, so the electricity passes straight through. "Storage discharge" is heat released from stored
+  energy alone.
+- **High-load windows.** Shaded bands are the DSO high-load windows of the German grid fee rules.
+  Grid draw falls to zero inside them while the gas boiler and stored heat supply the heat, which
+  keeps the billed capacity peak low.
 - **Process unit utilisation.** Share of each day in which a unit is running. Light gaps show when
   the plant used its flexibility.
+
+## Relation to the report notebook
+
+`notebooks/fleximod_report_analysis.ipynb` builds a report for one steam case. Its analyses are
+part of both dashboards now, so you no longer need to run the notebook for them:
+
+| Notebook section | Dashboard |
+|---|---|
+| Executive summary | Overview tiles |
+| System setup | System setup tab |
+| Input analysis (demand, prices, charges) | Patterns tab, price statistics and additional charges tables |
+| Operations: demand coverage, electricity balance, sequential profile, ETES operation, aFRR | Heat & storage, Markets and Operation tabs |
+| Financials: waterfall, monthly market value | Costs & financials and Markets tabs |
+| Grid fees and atypical grid use | Grid fees tab |
+| Scenario comparison | Comparison page (cost components, trade activity) |
+| Per-MW e-heater results | System setup tab |
+
+Differences to be aware of:
+
+- The dashboards add **plant selection, period filter, dark mode and hover** and work for building,
+  cement and steel cases as well.
+- Savings against the gas-only benchmark use the net cost **including the ex-post grid fee
+  correction**, so they are slightly more conservative than the notebook's.
+- Charts that used a second y-axis in the notebook (monthly coverage with the electrified share,
+  aFRR price with reserved capacity, trade volumes with capacity) are drawn on **stacked rows**
+  instead, so no chart has two scales.
+- The boiler efficiency for the benchmark comes from the dispatch (heat out divided by gas in),
+  falling back to `plants.csv`, then 90%.
+
+### Input folder and investment costs
+
+The System setup tab and the CAPEX/OPEX figures need the case **input** folder. The dashboard finds
+`data/input/<case>` when the output folder is called `<case>` or `<case>_<strategy>` (the default
+naming), and the runner and `plot_case.py --case/--example` pass it directly. Use `--input-dir` for
+anything else. Without it those parts are simply left out.
+
+CAPEX and OPEX use **placeholder assumptions** carried over from the notebook, not project data:
+20,000 EUR per MWh of thermal storage, 200,000 EUR per MW of e-heater, OPEX 2% of CAPEX per year,
+15 years and 8% WACC. Change them in `INVESTMENT_ASSUMPTIONS` in
+`src/flexi_mod/visualisation/dashboard/data.py`. For runs shorter than a year the annual costs are
+pro-rated to the simulated period.
 
 ## How the data is prepared
 
@@ -224,6 +416,7 @@ case does not have, such as IDC or aFRR series in a day-ahead-only run, is simpl
 | `storage_cost_ledger.csv` | Stored heat by procurement market (steam plants) |
 | `grid_fee_summary.csv` | Grid fee chart and table |
 | `afrr_capacity_block_summary.csv` | aFRR capacity block table |
+| `plants.csv`, `additional_charges.csv` (case **input** folder, optional) | System setup tab, CAPEX and OPEX |
 
 Each file may be plain `.csv` or zstd-compressed `.csv.zst`. Timestamps are read as local
 wall-clock time; the UTC offset in the files is ignored so daylight-saving changes do not matter.
@@ -292,19 +485,64 @@ The code is in `src/flexi_mod/visualisation/dashboard/`:
 | File | Job |
 |---|---|
 | `data.py` | Load a case folder, detect the plant type, aggregate and resample |
-| `charts.py` | The Plotly figures, one function per chart |
-| `sections.py` | Which charts go on which tab, per plant type, and the headline tiles |
+| `charts.py` | The generic Plotly figures, one function per chart, grouped by plant type |
+| `steam_charts.py` | The steam/ETES analyses of the report notebook (benchmark, waterfall, grid fees, tables) |
+| `sections.py` | One dashboard **class** per plant type: tabs, charts and headline tiles |
 | `theme.py` | Palette, chart template and page CSS |
 | `static_html.py` | Writes the single HTML file |
 | `dash_app.py` | The live app |
 | `comparison.py` | Case comparison, used by both front ends |
 
-**Add a chart.** Write a function `my_chart(ctx: ChartContext) -> go.Figure | None` in `charts.py`,
-add it to `BUILDERS`, and list it under the right plant type and tab in `_LAYOUT` in `sections.py`.
-It then appears in the static file and the Dash app. Add a test in `tests/test_dashboard.py`.
+### One class per plant type
 
-**Add a plant type.** Extend `detect_family` in `data.py`, add an entry to `_LAYOUT` and a KPI
-function in `sections.py`.
+A plant type is a class that inherits from the generic `PlantDashboard` and overrides only what
+differs:
+
+```text
+PlantDashboard                  generic: markets, costs, patterns
+|-- SteamDashboard              steam / ETES / boiler plants
+|-- IndustrialDashboard         production-based plants
+|   |-- CementDashboard
+|   `-- SteelDashboard
+`-- BuildingDashboard           buildings with EV fleet and PV
+```
+
+| A class defines | How |
+|---|---|
+| Its chart builders | `builders = {...}`. They are **merged with the parents' builders**, so a subclass keeps every parent chart and adds its own. Tables go in `tables = {...}`. |
+| The tabs | Override `overview_tab()`, `costs_tab()`, `patterns_tab()`, or `layout()` to add and reorder tabs. Each tab is a `TabSpec` listing `ChartSpec(key, title, description, wide)`. |
+| The headline tiles | Override `overview_kpis(ctx)` (and `tab_kpis` for other tabs). |
+| Which tabs appear | Override `tab_available(ctx, tab_id)`, for example to hide a tab whose inputs are missing. |
+| The plant type | Set `family = "..."`. Setting it registers the class for that detected type. |
+
+Both front ends call the same class, so a change shows up in the static file and in Dash.
+
+**Add a chart to an existing plant type.** Write `my_chart(ctx: ChartContext) -> go.Figure | None` in
+`charts.py` (or `steam_charts.py`), add it to the matching `builders` group, and add a
+`ChartSpec("my_chart", "Title", "What to read here")` to a tab of that class. Add a test in
+`tests/test_dashboard.py`.
+
+**Add a plant type.** Subclass `PlantDashboard` (or a closer relative) and extend `detect_family` in
+`data.py` so the new type is recognised:
+
+```python
+from flexi_mod.visualisation.dashboard.sections import ChartSpec, PlantDashboard, TabSpec
+
+
+def heat_pump_cop(ctx):  # returns a Plotly figure, or None when the data is missing
+    ...
+
+
+class HeatPumpDashboard(PlantDashboard):
+    family = "heat_pump"
+    builders = {"heat_pump_cop": heat_pump_cop}
+
+    def overview_tab(self) -> TabSpec:
+        return TabSpec("overview", "Overview", [ChartSpec("heat_pump_cop", "Coefficient of performance")])
+```
+
+The costs and patterns tabs, the Data tab, grid fees and the load charts come from the parent
+unchanged. A test checks that every chart named in any class exists, so typos are caught.
 
 **Design rules the charts follow:**
 

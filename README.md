@@ -218,6 +218,15 @@ python src/flexi_mod/simulation/plot_case.py --case data/input/<case> --start 20
 python src/flexi_mod/simulation/plot_case.py --compare data/output/steel_results data/output/cement_results
 ```
 
+Step by step, from a terminal in the project folder:
+
+```bash
+source .venv/bin/activate                                   # 1. activate the environment
+find data/output -name "dispatch_results.csv*"              # 2. find a result folder
+python src/flexi_mod/simulation/plot_case.py --output-dir "data/output/<case_folder>"   # 3. build
+# 4. open the printed dashboard.html in a browser (download it first on a remote server)
+```
+
 Running `plot_case.py` with no arguments (for example with the editor's play button) builds the
 dashboard of the most recently written result folder under `data/output`. The script prints
 `Dashboard created: <path>` when it is done.
@@ -239,6 +248,12 @@ Without the installed command: `python src/flexi_mod/visualisation/dashboard/das
 **On a remote server** there is no browser: download `dashboard.html` and open it on your own
 computer, or forward the Dash port (`ssh -L 8050:localhost:8050 user@server`, or the Ports tab in
 VS Code) and open <http://localhost:8050> locally.
+
+The dashboards include the analyses of `notebooks/fleximod_report_analysis.ipynb` for steam/ETES
+cases (savings against the gas-only benchmark, cashflow waterfall, demand coverage, market value,
+grid fees and atypical grid use, system setup). The system setup and the CAPEX/OPEX figures need
+the case input folder, which is found automatically for the default folder naming or given with
+`--input-dir`.
 
 The dashboard code lives in `src/flexi_mod/visualisation/dashboard/`. Charts that need
 columns a case does not have (for example IDC or aFRR in a day-ahead-only run) are skipped

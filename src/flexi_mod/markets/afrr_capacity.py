@@ -301,53 +301,93 @@ def capacity_award_from_result_frame(
         return None
     _validate_timestep_hours(timestep_hours)
     aligned = values.reindex(index)
-    reserved_mw = _frame_numeric_column(
-        aligned,
-        index,
+    reserved_mw_columns = (
         "afrr_capacity_reserved_MW",
+        "reserved_capacity_MW",
     )
-    if "afrr_capacity_reserved_MW" not in aligned and "afrr_capacity_reserved_MWh" in aligned:
+    reserved_mw = _frame_numeric_column(aligned, index, *reserved_mw_columns)
+    if not any(column in aligned for column in reserved_mw_columns) and any(
+        column in aligned
+        for column in (
+            "afrr_capacity_reserved_MWh",
+            "reserved_capacity_MWh",
+        )
+    ):
         reserved_mw = (
             _frame_numeric_column(
                 aligned,
                 index,
                 "afrr_capacity_reserved_MWh",
+                "reserved_capacity_MWh",
             )
             / timestep_hours
         )
 
     return BalancingCapacityAward(
         reserved_mw=reserved_mw,
-        block_id=_frame_text_column(aligned, index, "afrr_capacity_block_id", ""),
-        block_duration_h=_frame_numeric_column(aligned, index, "block_duration_h"),
-        pricing_rule=_frame_text_column(aligned, index, "capacity_pricing_rule", ""),
+        block_id=_frame_text_column(
+            aligned,
+            index,
+            "afrr_capacity_block_id",
+            "block_id",
+            default="",
+        ),
+        block_duration_h=_frame_numeric_column(
+            aligned,
+            index,
+            "afrr_capacity_block_duration_h",
+            "block_duration_h",
+        ),
+        pricing_rule=_frame_text_column(
+            aligned,
+            index,
+            "afrr_capacity_pricing_rule",
+            "capacity_pricing_rule",
+            default="",
+        ),
         bid_price_eur_per_mw_h=_frame_numeric_column(
             aligned,
             index,
+            "afrr_capacity_bid_price_EUR_per_MW_h",
             "capacity_bid_price_EUR_per_MW_h",
         ),
         clearing_price_eur_per_mw_h=_frame_numeric_column(
             aligned,
             index,
+            "afrr_capacity_clearing_price_EUR_per_MW_h",
             "capacity_clearing_price_EUR_per_MW_h",
+            "afrr_capacity_down_price_EUR_per_MW_h",
         ),
         settlement_price_eur_per_mw_h=_frame_numeric_column(
             aligned,
             index,
+            "afrr_capacity_settlement_price_EUR_per_MW_h",
             "capacity_settlement_price_EUR_per_MW_h",
         ),
-        revenue_eur=_frame_numeric_column(aligned, index, "afrr_capacity_revenue_EUR"),
+        revenue_eur=_frame_numeric_column(
+            aligned,
+            index,
+            "afrr_capacity_revenue_EUR",
+            "capacity_revenue_EUR",
+        ),
         opportunity_cost_eur=_frame_numeric_column(
             aligned,
             index,
             "afrr_capacity_opportunity_cost_EUR",
+            "capacity_opportunity_cost_EUR",
         ),
         market_surplus_eur=_frame_numeric_column(
             aligned,
             index,
             "afrr_capacity_market_surplus_EUR",
+            "capacity_market_surplus_EUR",
         ),
-        net_value_eur=_frame_numeric_column(aligned, index, "afrr_capacity_net_value_EUR"),
+        net_value_eur=_frame_numeric_column(
+            aligned,
+            index,
+            "afrr_capacity_net_value_EUR",
+            "capacity_net_value_EUR",
+        ),
     )
 
 
@@ -418,23 +458,25 @@ def _aligned_text_series(
 def _frame_numeric_column(
     frame: pd.DataFrame,
     index: pd.Index,
-    column: str,
+    *columns: str,
 ) -> pd.Series:
-    if column not in frame:
-        return pd.Series(0.0, index=index, dtype=float)
-    values = pd.to_numeric(frame[column], errors="coerce").reindex(index)
-    return values.fillna(0.0).astype(float)
+    for column in columns:
+        if column in frame:
+            values = pd.to_numeric(frame[column], errors="coerce").reindex(index)
+            return values.fillna(0.0).astype(float)
+    return pd.Series(0.0, index=index, dtype=float)
 
 
 def _frame_text_column(
     frame: pd.DataFrame,
     index: pd.Index,
-    column: str,
+    *columns: str,
     default: str,
 ) -> pd.Series:
-    if column not in frame:
-        return pd.Series(default, index=index, dtype=object)
-    return frame[column].reindex(index).fillna(default).astype(str)
+    for column in columns:
+        if column in frame:
+            return frame[column].reindex(index).fillna(default).astype(str)
+    return pd.Series(default, index=index, dtype=object)
 
 
 @dataclass(frozen=True)

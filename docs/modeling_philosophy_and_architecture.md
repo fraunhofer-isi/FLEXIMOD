@@ -143,7 +143,7 @@ The current algorithm uses this clock as follows:
 6. Pass fixed outputs forward: a capacity award constrains DA and IDC,
    DA becomes the IDC baseline, IDC creates scheduled electricity, and aFRR
    energy creates actual electricity consumption.
-7. Commit the accepted rows from the rolling window and carry the final ETES
+7. Retain the accepted delivery rows from the rolling window and carry the final ETES
    state of charge to the next decision window.
 
 `market_sequence` remains the authoritative execution order. Gate times explain
@@ -417,23 +417,26 @@ shares by procurement market.
 src/flexi_mod/visualisation/dashboard/
 |-- data.py         load a case folder, detect the plant family, aggregate and resample
 |-- charts.py       Plotly figure builders (one function per chart, no secondary axes)
-|-- sections.py     tabs, KPI tiles and chart/table blocks per plant family
+|-- steam_charts.py steam/ETES analyses of the report notebook (benchmark, waterfall, grid fees)
+|-- sections.py     one dashboard class per plant type (PlantDashboard and subclasses)
 |-- theme.py        validated palette, fixed entity colours, chart template, page CSS
 |-- static_html.py  self-contained dashboard.html (no server)
 |-- dash_app.py     live Dash app (fleximod-dashboard)
 `-- comparison.py   ranking, trade-off and table across many cases
 ```
 
-Both front ends render the same `Tab`/`Block` objects from `sections.py`, so a chart added
-once appears in the static file and in the Dash app. The runner calls
+Each plant type is a class in `sections.py` that inherits from the generic `PlantDashboard` and
+overrides only its tabs, charts and tiles. Both front ends render the same `Tab`/`Block` objects
+built by these classes, so a chart added once appears in the static file and in the Dash app. The runner calls
 `write_case_dashboard()` after saving results; a failed dashboard produces a warning and never
 discards the simulation.
 
 The plant family is detected from the dispatch columns (`heat_demand_MWh` steam,
 `building_demand_MWh` building, `clinker_output_t` cement, `steel_output_t` steel). Charts
 return `None` when the columns they need are absent, for example IDC or aFRR series in a
-day-ahead-only run, and are skipped. To add a chart, write a builder in `charts.py`,
-register it in `BUILDERS`, and list it under the relevant family in `sections.py`.
+day-ahead-only run, and are skipped. To add a chart, write a builder in `charts.py`, add it to
+the `builders` of the relevant dashboard class and list it as a `ChartSpec` on one of its tabs.
+A new plant type is a new subclass (see [dashboard.md](dashboard.md#extending-the-dashboard)).
 
 See [dashboard.md](dashboard.md) for how to use the dashboards.
 
