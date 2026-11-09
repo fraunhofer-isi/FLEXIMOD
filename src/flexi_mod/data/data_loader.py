@@ -133,13 +133,14 @@ class DataLoader:
         input_dir: str | Path | None = None,
         plants_file: str = "plants.csv",
         forecasts_file: str = "forecasts_df.csv",
-        additional_charges_file: str = "additional_charges.csv",
+        additional_charges_file: str | None = None,
     ):
         self.config = config
         self.input_dir = Path(input_dir).resolve() if input_dir else config.config_path.parent
         self.plants_file = plants_file
         self.forecasts_file = forecasts_file
-        self.additional_charges_file = additional_charges_file
+        # An explicit argument wins; otherwise the case config decides.
+        self.additional_charges_file = additional_charges_file or config.additional_charges_file
 
     @property
     def plants_path(self) -> Path:

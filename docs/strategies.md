@@ -185,7 +185,7 @@ delivered_price = market_price + marginal_network_charge
 ```
 
 The marginal charge is loaded from `additional_charges.csv` (interpreted per
-`case.country`; see `regulations.py`) only when `additional_charges: true`. For
+`case.grid_fee_regulation`, default `case.country`; see `regulations/grid_fees.py`) only when `additional_charges: true`. For
 Germany it is `flat levies + grid energy charge (assumed full-load-hour tier) +
 special network use group B`, applied to consumed electricity in the DA, IDC, and
 aFRR energy stages. The tiered capacity charge, group-A premium, and any tier

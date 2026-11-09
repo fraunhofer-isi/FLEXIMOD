@@ -198,6 +198,46 @@ def test_factory_unknown_country_raises():
         build_grid_fee_regulation("NL", full_charges())
 
 
+def test_factory_selects_regulation_by_name():
+    reg = build_grid_fee_regulation("de_atypical_grid_use", full_charges())
+    assert isinstance(reg, GermanGridFeeRegulation)
+    spain = build_grid_fee_regulation(
+        "es_peajes_6xtd",
+        pd.DataFrame(
+            {
+                "component": ["grid_capacity_charge"],
+                "unit": ["EUR/MW.a"],
+                "value": [19629.0],
+            }
+        ),
+    )
+    assert isinstance(spain, SpanishGridFeeRegulation)
+    france = build_grid_fee_regulation(
+        "fr_turpe",
+        pd.DataFrame(
+            {
+                "component": ["turpe_fix"],
+                "unit": ["EUR/MW.a"],
+                "value": [12948.94],
+            }
+        ),
+    )
+    assert isinstance(france, FrenchGridFeeRegulation)
+
+
+def test_factory_country_codes_resolve_to_the_same_regulation_as_the_name():
+    by_name = build_grid_fee_regulation("de_atypical_grid_use", full_charges())
+    for code in ("DE", "de", " De "):
+        by_code = build_grid_fee_regulation(code, full_charges())
+        assert type(by_code) is type(by_name)
+        assert by_code.marginal_charge_eur_per_mwh() == by_name.marginal_charge_eur_per_mwh()
+
+
+def test_factory_unknown_name_lists_available_regulations():
+    with pytest.raises(GridFeeConfigError, match="de_atypical_grid_use.*fr_turpe"):
+        build_grid_fee_regulation("de_not_a_regulation", full_charges())
+
+
 def test_incomplete_tier_raises():
     charges = pd.DataFrame(
         {

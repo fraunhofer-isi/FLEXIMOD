@@ -27,6 +27,7 @@ from flexi_mod.plants.steam_generation_plant import (
     SteamGenerationPlant,
 )
 from flexi_mod.plants.steel_plant import SteelPlant
+from flexi_mod.plants.technologies import ThermalStorage
 from flexi_mod.regulations import GridFeeResult, build_grid_fee_regulation
 from flexi_mod.simulation.market_stages import (
     MarketStageContext,
@@ -165,7 +166,7 @@ class SimulationRunner:
         additional_charges = self.loader.load_additional_charges(plant_inputs)
         for plant in plants:
             regulation = build_grid_fee_regulation(
-                self.config.country,
+                self.config.grid_fee_regulation,
                 additional_charges.get(plant.name),
                 assumed_tier=self.assumed_grid_tier,
             )
@@ -333,6 +334,7 @@ class SimulationRunner:
                 afrr_blocks=afrr_blocks,
                 output_dir=output_dir,
                 input_dir=self.input_dir,
+                charges_file=self.config.additional_charges_file,
             )
             path = write_case_dashboard(case)
         except Exception as error:
@@ -693,7 +695,9 @@ class SimulationRunner:
                 implemented = _add_stage_dispatch_columns(implemented, stage_outputs)
                 dispatch_parts.append(implemented)
                 if has_storage:
-                    current_soc = float(implemented["etes_soc_MWh"].iloc[-1])
+                    current_soc = _carried_soc(
+                        float(implemented["etes_soc_MWh"].iloc[-1]), plant.etes
+                    )
                     self._progress(
                         f"Delivery window {window.number} completed for {plant.name}; "
                         f"final ETES SoC = {current_soc:.3f} MWh_th"
@@ -933,6 +937,17 @@ def _decision_windows(config: CaseConfig, forecasts: pd.DataFrame) -> list[Decis
         position += delivery_count
         number += 1
     return windows
+
+
+def _carried_soc(soc_mwh: float, storage: ThermalStorage) -> float:
+    """Clamp a solver state of charge into the storage bounds before the next window.
+
+    A solver can return a value a rounding error outside ``[min, max]`` (for example
+    ``100.00000000000014`` for a 100 MWh store), which the next window's input check
+    would reject. Values already inside the bounds are returned unchanged.
+    """
+
+    return min(max(soc_mwh, storage.min_capacity_mwh), storage.max_capacity_mwh)
 
 
 def _window_progress_message(

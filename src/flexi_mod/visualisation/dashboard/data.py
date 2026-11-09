@@ -124,12 +124,17 @@ class CaseData:
         return frame[frame["plant_name"] == plant]
 
 
-def load_case(output_dir: str | Path, input_dir: str | Path | None = None) -> CaseData:
+def load_case(
+    output_dir: str | Path,
+    input_dir: str | Path | None = None,
+    charges_file: str = "additional_charges.csv",
+) -> CaseData:
     """Load a case output folder (``.csv`` or ``.csv.zst`` tables).
 
-    ``input_dir`` is the case input folder (``plants.csv``, ``additional_charges.csv``). It is
-    optional and enables the system-setup and investment views. When omitted it is looked up
-    from the output folder name.
+    ``input_dir`` is the case input folder (``plants.csv`` and the charges file, by default
+    ``additional_charges.csv``; pass ``charges_file`` when the case config names another one).
+    It is optional and enables the system-setup and investment views. When omitted it is
+    looked up from the output folder name.
     """
 
     output_dir = Path(output_dir)
@@ -148,6 +153,7 @@ def load_case(output_dir: str | Path, input_dir: str | Path | None = None) -> Ca
         afrr_blocks=_read_small(output_dir / RESULT_FILES["afrr_capacity_block_summary"]),
         output_dir=output_dir,
         input_dir=Path(input_dir) if input_dir else guess_input_dir(output_dir),
+        charges_file=charges_file,
     )
 
 
@@ -160,6 +166,7 @@ def build_case(
     afrr_blocks: pd.DataFrame | None = None,
     output_dir: Path | None = None,
     input_dir: Path | None = None,
+    charges_file: str = "additional_charges.csv",
 ) -> CaseData:
     """Build a :class:`CaseData` from in-memory tables (as produced by the runner)."""
 
@@ -179,7 +186,7 @@ def build_case(
         grid_fees=grid_fees if grid_fees is not None else pd.DataFrame(),
         afrr_blocks=afrr_blocks if afrr_blocks is not None else pd.DataFrame(),
         plant_config=_read_small(input_dir / "plants.csv") if input_dir else pd.DataFrame(),
-        charges=_read_small(input_dir / "additional_charges.csv") if input_dir else pd.DataFrame(),
+        charges=_read_small(input_dir / charges_file) if input_dir else pd.DataFrame(),
         output_dir=output_dir,
         input_dir=input_dir,
         family=detect_family(dispatch.columns),

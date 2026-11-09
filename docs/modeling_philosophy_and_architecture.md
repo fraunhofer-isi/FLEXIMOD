@@ -296,8 +296,9 @@ column may still exist in input files for later use, but it is not required for
 the current MVP.
 
 If the selected `cases.<case_name>` entry sets `additional_charges: true`,
-`additional_charges.csv` is interpreted by the network-tariff regulation selected
-from `case.country` (`src/flexi_mod/regulations/grid_fees.py`). The regulation is the single
+`additional_charges.csv` is interpreted by the network-tariff regulation named by
+`case.grid_fee_regulation` (default: `case.country`; `src/flexi_mod/regulations/grid_fees.py`).
+The regulation is the single
 seam between national network rules and the engine, exposing a small
 country-agnostic interface:
 
@@ -312,8 +313,9 @@ country-agnostic interface:
 For Germany the regulation implements full-load-hour tiers, the special network
 use A/B split, and §19(2) StromNEV atypical grid use (capacity billed on the
 high-load-window peak). These charges apply only to consumed electricity, not to
-aFRR capacity-award revenue. Adding a country is one `GridFeeRegulation`
-subclass plus one registry entry.
+aFRR capacity-award revenue. Adding a regulation (a country, or a prospective
+design for an existing one) is one `GridFeeRegulation` subclass plus one registry
+entry.
 
 ## Plant And Technology Layer
 

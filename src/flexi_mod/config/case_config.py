@@ -93,6 +93,16 @@ class CaseConfig:
         return bool(self.case.get("additional_charges", False))
 
     @property
+    def grid_fee_regulation(self) -> str:
+        """Name of the grid-fee regulation; defaults to ``country`` when unset."""
+        return str(self.case.get("grid_fee_regulation", self.country))
+
+    @property
+    def additional_charges_file(self) -> str:
+        """File (inside the case folder) holding the static grid-fee charge values."""
+        return str(self.case.get("additional_charges_file", "additional_charges.csv"))
+
+    @property
     def strategy_name(self) -> str:
         return str(self.case.get("strategy", {}).get("name", ""))
 

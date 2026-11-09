@@ -120,8 +120,10 @@ Heat demand is interpreted as average MW_th over the time step and is converted 
 Industrial electricity use faces network charges and levies on top of the market
 energy price. When the selected `cases.<case_name>` entry sets
 `additional_charges: true`, `additional_charges.csv` is interpreted by the
-network-tariff **regulation** selected from `case.country`
-(`src/flexi_mod/regulations.py`). For Germany (`country: DE`) the regulation
+network-tariff **regulation** named by `case.grid_fee_regulation`
+(`src/flexi_mod/regulations/grid_fees.py`; it defaults to `case.country`, and
+`additional_charges_file` can point at another charges file). For Germany
+(`grid_fee_regulation: de_atypical_grid_use`, or `country: DE`) the regulation
 models:
 
 - flat levies and taxes (CHP, offshore grid levy, concession, electricity tax);
@@ -159,8 +161,9 @@ the capacity charge — go to zero. Generate the column from the regulation's
 
 The assumed full-load-hour tier defaults to `>=2500 h/a`; override with
 `--assumed-grid-tier {high,low}`. If the realized tier differs, the bill is
-corrected ex-post and a warning suggests re-running. Adding another country is
-one `GridFeeRegulation` subclass in `regulations.py`.
+corrected ex-post and a warning suggests re-running. Adding another regulation is
+one `GridFeeRegulation` subclass plus one registry entry in
+`regulations/grid_fees.py`.
 
 These charges apply only to consumed electricity. aFRR capacity *revenue* is
 unaffected.

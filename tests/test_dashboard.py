@@ -428,6 +428,25 @@ def test_system_tab_needs_input_folder_and_reports_sizing(tmp_path: Path) -> Non
     assert STEAM_TABLES["per_mw"](ctx) is not None
 
 
+def test_dashboard_reads_the_charges_file_named_in_the_config(tmp_path: Path) -> None:
+    input_dir = _plants_csv(tmp_path)
+    charges = pd.DataFrame(
+        {"component": ["grid_capacity_charge"], "unit": ["EUR/MW.a"], "plant_1": [19629.0]}
+    )
+    charges.to_csv(input_dir / "additional_charges_reform.csv", index=False)
+
+    default_name = build_case("steam", _steam_dispatch(), input_dir=input_dir)
+    named = build_case(
+        "steam",
+        _steam_dispatch(),
+        input_dir=input_dir,
+        charges_file="additional_charges_reform.csv",
+    )
+
+    assert default_name.charges.empty
+    assert named.charges["component"].tolist() == ["grid_capacity_charge"]
+
+
 def test_steam_overview_reports_savings_against_gas_only(tmp_path: Path) -> None:
     case = build_case("steam", _steam_dispatch(), input_dir=_plants_csv(tmp_path))
 

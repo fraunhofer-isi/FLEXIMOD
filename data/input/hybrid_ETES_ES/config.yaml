@@ -6,6 +6,7 @@ cases:
   hybrid_ETES_ES:
     name: hybrid_ETES_ES
     country: ES
+    grid_fee_regulation: es_peajes_6xtd
     description: Hybrid ETES + gas boiler case for Spain
     timestep_minutes: 15
     simulation_start: 2025-01-01 00:00

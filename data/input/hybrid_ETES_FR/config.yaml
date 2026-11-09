@@ -6,6 +6,7 @@ cases:
   hybrid_ETES_FR:
     name: hybrid_ETES_FR
     country: FR
+    grid_fee_regulation: fr_turpe
     description: Hybrid ETES + gas boiler case for France (pay-as-cleared aFRR capacity)
     timestep_minutes: 15
     simulation_start: 2025-01-01 00:00
