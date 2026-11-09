@@ -257,7 +257,7 @@ def _prompt_grid_tier(config: Any, settings: dict[str, Any]) -> str | None:
 
     plant_charges = next(iter(charges.values()))
     try:
-        reg = build_grid_fee_regulation(config.country, plant_charges)
+        reg = build_grid_fee_regulation(config.grid_fee_regulation, plant_charges)
     except Exception:
         return None
 

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 
 from flexi_mod.visualisation.analytics import (
     RESULT_FILES,
@@ -124,12 +125,18 @@ class CaseData:
         return frame[frame["plant_name"] == plant]
 
 
-def load_case(output_dir: str | Path, input_dir: str | Path | None = None) -> CaseData:
+def load_case(
+    output_dir: str | Path,
+    input_dir: str | Path | None = None,
+    charges_file: str | None = None,
+) -> CaseData:
     """Load a case output folder (``.csv`` or ``.csv.zst`` tables).
 
-    ``input_dir`` is the case input folder (``plants.csv``, ``additional_charges.csv``). It is
-    optional and enables the system-setup and investment views. When omitted it is looked up
-    from the output folder name.
+    ``input_dir`` is the case input folder (``plants.csv`` and the charges file). It is optional
+    and enables the system-setup and investment views. When omitted it is looked up from the
+    output folder name. The charges file is the ``additional_charges_file`` named by the matching
+    case in the input folder's ``config.yaml`` (default ``additional_charges.csv``); pass
+    ``charges_file`` to override it.
     """
 
     output_dir = Path(output_dir)
@@ -139,6 +146,7 @@ def load_case(output_dir: str | Path, input_dir: str | Path | None = None) -> Ca
 
     dispatch = _read_dispatch(dispatch_path)
     storage = _read_small(output_dir / RESULT_FILES["storage_cost_ledger"], datetime_index=True)
+    resolved_input_dir = Path(input_dir) if input_dir else guess_input_dir(output_dir)
     return build_case(
         name=output_dir.name,
         dispatch=dispatch,
@@ -147,7 +155,8 @@ def load_case(output_dir: str | Path, input_dir: str | Path | None = None) -> Ca
         grid_fees=_read_small(output_dir / "grid_fee_summary.csv"),
         afrr_blocks=_read_small(output_dir / RESULT_FILES["afrr_capacity_block_summary"]),
         output_dir=output_dir,
-        input_dir=Path(input_dir) if input_dir else guess_input_dir(output_dir),
+        input_dir=resolved_input_dir,
+        charges_file=charges_file or charges_file_for_output(resolved_input_dir, output_dir.name),
     )
 
 
@@ -160,6 +169,7 @@ def build_case(
     afrr_blocks: pd.DataFrame | None = None,
     output_dir: Path | None = None,
     input_dir: Path | None = None,
+    charges_file: str = "additional_charges.csv",
 ) -> CaseData:
     """Build a :class:`CaseData` from in-memory tables (as produced by the runner)."""
 
@@ -179,7 +189,7 @@ def build_case(
         grid_fees=grid_fees if grid_fees is not None else pd.DataFrame(),
         afrr_blocks=afrr_blocks if afrr_blocks is not None else pd.DataFrame(),
         plant_config=_read_small(input_dir / "plants.csv") if input_dir else pd.DataFrame(),
-        charges=_read_small(input_dir / "additional_charges.csv") if input_dir else pd.DataFrame(),
+        charges=_read_small(input_dir / charges_file) if input_dir else pd.DataFrame(),
         output_dir=output_dir,
         input_dir=input_dir,
         family=detect_family(dispatch.columns),
@@ -187,6 +197,25 @@ def build_case(
         currency=currency,
         plants=plants,
     )
+
+
+def charges_file_for_output(input_dir: Path | None, output_name: str) -> str:
+    """Charges file of the case that produced ``<case name>_<strategy name>``, from its config."""
+
+    default = "additional_charges.csv"
+    config_path = Path(input_dir) / "config.yaml" if input_dir else None
+    if config_path is None or not config_path.exists():
+        return default
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            cases = (yaml.safe_load(handle) or {}).get("cases") or {}
+        for key, case in cases.items():
+            strategy = (case.get("strategy") or {}).get("name", "")
+            if output_name == f"{case.get('name', key)}_{strategy}":
+                return str(case.get("additional_charges_file", default))
+    except (OSError, yaml.YAMLError, AttributeError):
+        pass
+    return default
 
 
 def guess_input_dir(output_dir: Path) -> Path | None:

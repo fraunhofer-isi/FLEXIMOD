@@ -6,6 +6,7 @@ cases:
   hybrid_ETES_DA_ID_aFRR_energy_capacity_spain:
     name: hybrid_ETES_DA_ID_aFRR_energy_capacity_spain
     country: ES
+    grid_fee_regulation: es_peajes_6xtd
     description: Fictitious Spanish pay-as-cleared aFRR-capacity demonstration
     timestep_minutes: 15
     simulation_start: 2025-01-01 00:00

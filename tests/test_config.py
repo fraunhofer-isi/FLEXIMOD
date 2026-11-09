@@ -6,10 +6,13 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import yaml
 from conftest import case_config_text
 
 from flexi_mod.config.case_config import CaseConfig, ConfigError
-from flexi_mod.simulation.simulation_runner import _decision_windows
+from flexi_mod.data.data_loader import DataLoader
+from flexi_mod.plants.technologies import ThermalStorage
+from flexi_mod.simulation.simulation_runner import _carried_soc, _decision_windows
 
 CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_DA_ID_buy"
 
@@ -27,6 +30,33 @@ def test_config_can_be_loaded() -> None:
         "intraday_continuous",
         "afrr_energy",
     ]
+
+
+def test_grid_fee_regulation_defaults_to_country_and_default_charges_file(tmp_path: Path) -> None:
+    raw = yaml.safe_load((CASE_DIR / "config.yaml").read_text(encoding="utf-8"))
+    raw["cases"]["hybrid_ETES_DA_ID_buy"].pop("grid_fee_regulation", None)
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    config = CaseConfig.from_case_dir(tmp_path)
+    assert config.country == "DE"
+    assert config.grid_fee_regulation == "DE"
+    assert config.additional_charges_file == "additional_charges.csv"
+
+
+def test_grid_fee_regulation_and_charges_file_can_be_set_in_config(tmp_path: Path) -> None:
+    raw = yaml.safe_load((CASE_DIR / "config.yaml").read_text(encoding="utf-8"))
+    case = raw["cases"]["hybrid_ETES_DA_ID_buy"]
+    case["grid_fee_regulation"] = "de_atypical_grid_use"
+    case["additional_charges_file"] = "additional_charges_reform.csv"
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    config = CaseConfig.from_case_dir(tmp_path)
+    assert config.country == "DE"
+    assert config.grid_fee_regulation == "de_atypical_grid_use"
+    assert config.additional_charges_file == "additional_charges_reform.csv"
+    assert DataLoader(config, input_dir=tmp_path).additional_charges_path == (
+        tmp_path.resolve() / "additional_charges_reform.csv"
+    )
 
 
 def test_required_sections_exist() -> None:
@@ -396,3 +426,23 @@ markets:
         ),
         encoding="utf-8",
     )
+
+
+def test_carried_soc_is_clamped_into_storage_bounds() -> None:
+    storage = ThermalStorage(
+        max_power_charge_mw=20.0,
+        max_power_discharge_mw=20.0,
+        max_capacity_mwh=100.0,
+        min_capacity_mwh=0.0,
+        initial_soc_mwh=0.0,
+        efficiency_charge=0.98,
+        efficiency_discharge=0.97,
+        storage_loss_rate=0.00025,
+    )
+
+    # The solver value that crashed the Spanish full-year run on 2025-03-03.
+    assert _carried_soc(100.00000000000014, storage) == 100.0
+    assert _carried_soc(-1e-13, storage) == 0.0
+    # In-bound values must pass through bit-for-bit, so existing results do not change.
+    assert _carried_soc(37.123456789012345, storage) == 37.123456789012345
+    assert _carried_soc(100.0, storage) == 100.0

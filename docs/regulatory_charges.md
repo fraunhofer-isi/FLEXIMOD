@@ -10,9 +10,39 @@ This page lists the electricity network charges (grid fees), levies and taxes
 that FLEXIMOD models per country, **where you provide each one**, and whether it
 is **static** or **dynamic**. Use it when preparing input data for a case.
 
-The country is selected by `country:` in the case `config.yaml`
-(`DE` / `ES` / `FR`), which picks the matching regulation in
-[`src/flexi_mod/regulations/grid_fees.py`](../src/flexi_mod/regulations/grid_fees.py).
+The regulation is selected **by name** with `grid_fee_regulation:` in the case
+`config.yaml`. Each name matches a regulation registered in
+[`src/flexi_mod/regulations/grid_fees.py`](../src/flexi_mod/regulations/grid_fees.py):
+
+| `grid_fee_regulation` | Models |
+|---|---|
+| `de_atypical_grid_use` | Germany: full-load-hour tiers, special network use A/B, §19(2) StromNEV atypical grid use |
+| `es_peajes_6xtd` | Spain: 6.xTD access tariff (peajes) + IEE + capacity charge |
+| `fr_turpe` | France: TURPE + accise + fixed annual charges |
+
+If `grid_fee_regulation` is omitted, `country:` (`DE` / `ES` / `FR`) picks that
+country's regulation, so existing cases keep working. Naming the regulation lets
+one country carry several designs, for example today's rules and a prospective
+reform, as separate study cases in one `config.yaml`:
+
+```yaml
+cases:
+  de_baseline:
+    country: DE
+    grid_fee_regulation: de_atypical_grid_use
+    additional_charges: true
+  de_reform_test:
+    country: DE
+    grid_fee_regulation: de_atypical_grid_use   # same rules, different numbers
+    additional_charges_file: additional_charges_reform.csv
+    additional_charges: true
+```
+
+- **Same rules, different values** (a new levy rate, a higher capacity charge):
+  keep the regulation name and point `additional_charges_file` at another CSV in
+  the case folder (default `additional_charges.csv`).
+- **Different rules** (a new tier scheme, another peak basis): add a
+  `GridFeeRegulation` subclass and one registry entry, then name it here.
 
 ## The two input files
 

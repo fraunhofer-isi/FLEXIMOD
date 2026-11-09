@@ -6,6 +6,7 @@ cases:
   hybrid_ETES_DA_ID_buy:
     name: hybrid_ETES_DA_ID_buy
     country: DE
+    grid_fee_regulation: de_atypical_grid_use
     description: Hybrid ETES + gas boiler case for Germany
     timestep_minutes: 15
     simulation_start: 2025-01-01 00:00

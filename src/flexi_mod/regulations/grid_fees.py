@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Network-tariff (grid-fee) regulations — one module, country-selected.
+"""Network-tariff (grid-fee) regulations — one module, selected by name.
 
 This single file holds everything the engine needs for electricity network
 charges:
@@ -13,10 +13,13 @@ charges:
 * :class:`GermanGridFeeRegulation` - Germany (Netzentgelte, §19(2) StromNEV).
 * :class:`SpanishGridFeeRegulation` - Spain (peajes 6.xTD + IEE + capacity charge).
 * :class:`FrenchGridFeeRegulation` - France (TURPE + accise + fixed annual charges).
-* :func:`build_grid_fee_regulation` - factory selecting the regulation by country.
+* :func:`build_grid_fee_regulation` - factory selecting the regulation by name.
 
-To add another country, write one more ``GridFeeRegulation`` subclass below and
-register it in ``_REGISTRY``. The case ``config.country`` then selects it.
+To add another regulation (another country, or a prospective design for an
+existing one), write one more ``GridFeeRegulation`` subclass below and register
+it in ``_REGISTRY``. The case key ``grid_fee_regulation`` then selects it by
+name; when that key is omitted the case ``country`` picks that country's current
+regulation.
 """
 
 from __future__ import annotations
@@ -698,16 +701,27 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
 
 
 # --------------------------------------------------------------------- factory
-# Register one regulation per ISO country code. Adding a country is a one-line change.
+# Regulations are selected by name (``cases.<case>.grid_fee_regulation``), named
+# after the regulatory framework they model, so a case can compare today's rules
+# with a prospective design for the same country. Adding a regulation is one
+# subclass plus one entry here.
 _REGISTRY: dict[str, type[GridFeeRegulation]] = {
-    "DE": GermanGridFeeRegulation,
-    "ES": SpanishGridFeeRegulation,
-    "FR": FrenchGridFeeRegulation,
+    "de_atypical_grid_use": GermanGridFeeRegulation,  # StromNEV §19(2), full-load-hour tiers
+    "es_peajes_6xtd": SpanishGridFeeRegulation,  # 6.xTD access tariff + IEE
+    "fr_turpe": FrenchGridFeeRegulation,  # TURPE + accise + fixed annual charges
+}
+
+# Bare ISO country codes remain accepted: a case without ``grid_fee_regulation``
+# falls back to ``country``, which resolves to that country's current regulation.
+_ALIASES: dict[str, str] = {
+    "DE": "de_atypical_grid_use",
+    "ES": "es_peajes_6xtd",
+    "FR": "fr_turpe",
 }
 
 
 def build_grid_fee_regulation(
-    country: str,
+    regulation: str,
     plant_charges: pd.DataFrame | None,
     *,
     assumed_tier: str = "high",
@@ -715,16 +729,22 @@ def build_grid_fee_regulation(
     high_load_window_column: str = "high_load_window",
     capacity_peak_basis: str = "high_load_window",
 ) -> GridFeeRegulation:
-    """Build the regulation for ``country``; ``None`` charges -> :class:`NullGridFeeRegulation`."""
+    """Build the named regulation; ``None`` charges -> :class:`NullGridFeeRegulation`.
+
+    ``regulation`` is a registry name (e.g. ``de_atypical_grid_use``) or a bare
+    country code (``DE``/``ES``/``FR``), which maps to that country's regulation.
+    """
 
     if plant_charges is None:
         return NullGridFeeRegulation()
-    key = str(country).strip().upper()
+    text = str(regulation).strip()
+    key = _ALIASES.get(text.upper(), text.lower())
     regulation_cls = _REGISTRY.get(key)
     if regulation_cls is None:
         raise GridFeeConfigError(
-            f"No grid-fee regulation registered for country '{country}'. "
-            f"Available: {', '.join(sorted(_REGISTRY))}"
+            f"No grid-fee regulation registered as '{regulation}'. "
+            f"Available: {', '.join(sorted(_REGISTRY))} "
+            f"(country codes {', '.join(sorted(_ALIASES))} are also accepted)."
         )
     # These options are German-specific (full-load-hour tier + §19(2) high-load
     # window). Non-German regulations accept and ignore them via **kwargs.
