@@ -26,6 +26,7 @@ from flexi_mod.visualisation.dashboard.data import (
     aggregate_plants,
     auto_resolution,
     build_case,
+    charges_file_for_output,
     column_kind,
     detect_family,
     discover_cases,
@@ -445,6 +446,33 @@ def test_dashboard_reads_the_charges_file_named_in_the_config(tmp_path: Path) ->
 
     assert default_name.charges.empty
     assert named.charges["component"].tolist() == ["grid_capacity_charge"]
+
+
+def test_standalone_loading_finds_the_charges_file_from_the_case_config(tmp_path: Path) -> None:
+    input_dir = _plants_csv(tmp_path)
+    pd.DataFrame(
+        {"component": ["grid_capacity_charge"], "unit": ["EUR/MW.a"], "plant_1": [19629.0]}
+    ).to_csv(input_dir / "additional_charges_reform.csv", index=False)
+    (input_dir / "config.yaml").write_text(
+        "cases:\n"
+        "  steam:\n"
+        "    name: steam\n"
+        "    additional_charges_file: additional_charges_reform.csv\n"
+        "    strategy:\n"
+        "      name: hybrid_etes_gas\n"
+        "  other:\n"
+        "    name: other\n"
+        "    strategy:\n"
+        "      name: hybrid_etes_gas\n",
+        encoding="utf-8",
+    )
+
+    assert charges_file_for_output(input_dir, "steam_hybrid_etes_gas") == (
+        "additional_charges_reform.csv"
+    )
+    assert charges_file_for_output(input_dir, "other_hybrid_etes_gas") == "additional_charges.csv"
+    assert charges_file_for_output(input_dir, "unknown_run") == "additional_charges.csv"
+    assert charges_file_for_output(None, "steam_hybrid_etes_gas") == "additional_charges.csv"
 
 
 def test_steam_overview_reports_savings_against_gas_only(tmp_path: Path) -> None:
