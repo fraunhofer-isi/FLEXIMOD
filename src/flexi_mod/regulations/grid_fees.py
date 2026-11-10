@@ -11,6 +11,7 @@ charges:
 * :class:`GridFeeRegulation`    - the small interface the strategy + runner call.
 * :class:`NullGridFeeRegulation`- no-op (used when additional charges are disabled).
 * :class:`GermanGridFeeRegulation` - Germany (Netzentgelte, §19(2) StromNEV).
+* :class:`EnflexAgnesGridFeeRegulation` - prospective German capacity-order design (AgNes).
 * :class:`SpanishGridFeeRegulation` - Spain (peajes 6.xTD + IEE + capacity charge).
 * :class:`FrenchGridFeeRegulation` - France (TURPE + accise + fixed annual charges).
 * :func:`build_grid_fee_regulation` - factory selecting the regulation by name.
@@ -20,6 +21,10 @@ existing one), write one more ``GridFeeRegulation`` subclass below and register
 it in ``_REGISTRY``. The case key ``grid_fee_regulation`` then selects it by
 name; when that key is omitted the case ``country`` picks that country's current
 regulation.
+
+Levies, surcharges and taxes (CHP surcharge, offshore levy, concession fee,
+electricity tax) are not grid fees. They are the same under every German design and
+live in ``levies.py``; the German regulations below take them as one ``levies`` object.
 """
 
 from __future__ import annotations
@@ -27,10 +32,13 @@ from __future__ import annotations
 import inspect
 import warnings
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
+
+from flexi_mod.regulations.levies import LEVY_NAMES, ElectricityLevies, split_levies
 
 # Standard forecasts_df.csv column holding the time-varying per-MWh grid energy
 # charge (Arbeitspreis). Shared, country-neutral name for every regulation that
@@ -77,10 +85,16 @@ class GridFeeResult:
     special_network_use_EUR: float = 0.0
     warnings: list[str] = field(default_factory=list)
 
+    # --- Capacity-order detail (None for regulations without an ordered capacity) --
+    # ``None`` keeps these columns out of the summary of the other regulations, so
+    # their output files stay unchanged.
+    ordered_capacity_MW: float | None = None
+    excess_over_order_MWh: float | None = None
+
     def as_summary_dict(self) -> dict[str, float | str | bool]:
         """Flatten to scalar columns for ``summary_indicators`` / ``grid_fee_summary``."""
 
-        return {
+        summary: dict[str, float | str | bool] = {
             "grid_annual_energy_MWh": self.grid_energy_MWh,
             "grid_annual_peak_MW": self.annual_peak_MW,
             "grid_high_load_window_peak_MW": self.window_peak_MW,
@@ -97,6 +111,11 @@ class GridFeeResult:
             "grid_fee_total_EUR": self.grid_fee_total_EUR,
             "grid_fee_ex_post_addition_EUR": self.ex_post_addition_EUR,
         }
+        if self.ordered_capacity_MW is not None:
+            summary["grid_ordered_capacity_MW"] = self.ordered_capacity_MW
+        if self.excess_over_order_MWh is not None:
+            summary["grid_excess_over_order_MWh"] = self.excess_over_order_MWh
+        return summary
 
 
 # ------------------------------------------------------------------ interface
@@ -149,20 +168,25 @@ class GridFeeRegulation(ABC):
         }
 
     @classmethod
-    def _charges_from_frame(cls, plant_charges: pd.DataFrame) -> dict[str, float]:
+    def _charges_from_frame(
+        cls, plant_charges: pd.DataFrame, also_supported: Iterable[str] = ()
+    ) -> dict[str, float]:
         """Map ``additional_charges.csv`` component → value, rejecting unknown names.
 
         An unknown/misspelled component raises instead of being silently dropped
         into a levy bucket — the failure mode behind the France dropped-charges bug.
+        ``also_supported`` names rows that were already taken out of the frame (the
+        levies); they are only listed in the error message.
         """
         valid = cls._charge_param_names()
         charges: dict[str, float] = {}
         for _, row in plant_charges.iterrows():
             name = str(row["component"]).strip()
             if name not in valid:
+                supported = sorted(valid | set(also_supported))
                 raise GridFeeConfigError(
                     f"Unknown grid-fee charge '{name}' for {cls.__name__}. "
-                    f"Supported charges: {', '.join(sorted(valid))}."
+                    f"Supported charges: {', '.join(supported)}."
                 )
             charges[name] = float(row["value"])
         return charges
@@ -213,27 +237,32 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         (15 * 60, 19 * 60 + 15),
     )  # 11:15–13:45, 15:00–19:15
 
-    # Constructor parameters that are behavioural options rather than charge
-    # values. Everything else in __init__ is a named static charge, which is how
-    # from_charges_frame tells the two apart when mapping the CSV.
+    # Constructor parameters that are not grid-fee charge rows of the CSV: the
+    # behavioural options and the levies object. Everything else in __init__ is a
+    # named static charge, which is how from_charges_frame tells the two apart when
+    # mapping the CSV.
     _BEHAVIOURAL_PARAMS = frozenset(
-        {"assumed_tier", "avoid_high_load_window", "high_load_window_column", "capacity_peak_basis"}
+        {
+            "levies",
+            "assumed_tier",
+            "avoid_high_load_window",
+            "high_load_window_column",
+            "capacity_peak_basis",
+        }
     )
 
     def __init__(
         self,
         *,
-        # --- Static charges (from additional_charges.csv) -----------------------
+        # --- Static grid-fee charges (from additional_charges.csv) --------------
         grid_energy_charge_high: float = 0.0,  # EUR/MWh  — full-load-hours >= 2500 h/a
         grid_energy_charge_low: float = 0.0,  # EUR/MWh  — full-load-hours < 2500 h/a
         grid_capacity_charge_high: float = 0.0,  # EUR/MW.a — >= 2500 h/a
         grid_capacity_charge_low: float = 0.0,  # EUR/MW.a — < 2500 h/a
         special_network_use_a: float = 0.0,  # EUR/MWh  — group A (first 1 GWh)
         special_network_use_b: float = 0.0,  # EUR/MWh  — group B (remainder)
-        chp_surcharge: float = 0.0,  # EUR/MWh
-        offshore_grid_levy: float = 0.0,  # EUR/MWh
-        concession_fee: float = 0.0,  # EUR/MWh
-        electricity_tax: float = 0.0,  # EUR/MWh  — flat Stromsteuer levy
+        # --- Levies and taxes (CHP, offshore, concession fee, tax), see levies.py -
+        levies: ElectricityLevies | None = None,
         # --- Behavioural options (from config, not charges) ---------------------
         assumed_tier: str = DEFAULT_ASSUMED_TIER,
         avoid_high_load_window: bool = True,
@@ -251,28 +280,31 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         self._missing_col_warned = False
 
         # Group the named charges into the internal structures the rest of the
-        # class uses (tier dicts, special A/B, summed levies).
+        # class uses (tier dicts, special A/B).
         self._energy = {"high": grid_energy_charge_high, "low": grid_energy_charge_low}
         self._capacity = {"high": grid_capacity_charge_high, "low": grid_capacity_charge_low}
         self._special_a = special_network_use_a
         self._special_b = special_network_use_b
-        self._levies = chp_surcharge + offshore_grid_levy + concession_fee + electricity_tax
+        self._levies = levies if levies is not None else ElectricityLevies()
 
     # -------------------------------------------------------------- CSV adapter
     @classmethod
     def from_charges_frame(cls, plant_charges: pd.DataFrame, **options) -> GermanGridFeeRegulation:
         """Build from additional_charges.csv.
 
-        Each ``component`` must match one of the constructor's named charge
-        parameters (e.g. ``grid_energy_charge_high``, ``chp_surcharge``). Unknown
-        component names raise, so a typo can't silently disappear into a levy
-        bucket. The ``unit`` column is descriptive; the expected unit for each
-        charge is documented on the constructor. Behavioural ``options``
-        (assumed_tier, capacity_peak_basis, …) are forwarded to the constructor.
+        The levy rows (``chp_surcharge``, ``offshore_grid_levy``, ``concession_fee``,
+        ``electricity_tax``) are taken out first and become the ``levies`` object.
+        Every other ``component`` must match one of the constructor's named charge
+        parameters (e.g. ``grid_energy_charge_high``). Unknown component names
+        raise, so a typo can't silently disappear into a levy bucket. The ``unit``
+        column is descriptive; the expected unit for each charge is documented on
+        the constructor. Behavioural ``options`` (assumed_tier, capacity_peak_basis,
+        …) are forwarded to the constructor.
         """
-        charges = cls._charges_from_frame(plant_charges)
+        levies, grid_fee_rows = split_levies(plant_charges)
+        charges = cls._charges_from_frame(grid_fee_rows, also_supported=LEVY_NAMES)
         cls._validate_tier_completeness(charges)
-        return cls(**charges, **options)
+        return cls(**charges, levies=levies, **options)
 
     @staticmethod
     def _validate_tier_completeness(charges: dict[str, float]) -> None:
@@ -313,7 +345,7 @@ class GermanGridFeeRegulation(GridFeeRegulation):
     # ------------------------------------------------------------ interface (A)
     def marginal_charge_eur_per_mwh(self) -> float:
         # Marginal MWh sits beyond the 1 GWh special-use threshold -> group B rate.
-        return self._levies + self._energy[self._assumed_tier] + self._special_b
+        return self._levies.eur_per_mwh + self._energy[self._assumed_tier] + self._special_b
 
     def charging_block_mask(self, forecasts: pd.DataFrame) -> pd.Series:
         if not self._avoid_window:
@@ -364,7 +396,7 @@ class GermanGridFeeRegulation(GridFeeRegulation):
         special = (
             min(grid_energy, thr) * self._special_a + max(0.0, grid_energy - thr) * self._special_b
         )
-        levies = self._levies * grid_energy
+        levies = self._levies.eur_per_mwh * grid_energy
         total = energy_charge + capacity_charge + special + levies
 
         group_a_premium = (self._special_a - self._special_b) * min(grid_energy, thr)
@@ -425,6 +457,190 @@ class GermanGridFeeRegulation(GridFeeRegulation):
 
         flag = is_weekday & ((winter & winter_win) | (autumn & autumn_win))
         return pd.Series(flag.astype(int), index=idx)
+
+
+# ------------------------------------------------------- Germany (AgNes design)
+class EnflexAgnesGridFeeRegulation(GridFeeRegulation):
+    """Germany, prospective AgNes capacity-order design.
+
+    The consumer orders a grid capacity ``P_ordered`` (MW) and pays
+
+    * a capacity charge on the ordered capacity, independent of the realised load::
+
+          grid_ordered_capacity_charge [EUR/MW.a] x grid_ordered_capacity [MW]
+
+    * an energy charge that depends on the load of each timestep: energy drawn up to
+      ``P_ordered`` is charged ``grid_energy_charge_within_order``, energy drawn above
+      it ``grid_energy_charge_above_order`` (both EUR/MWh),
+    * the usual per-MWh levies on all energy (``levies.py``, not part of the tariff).
+
+    The order is judged per timestep: a step of ``dt`` hours is within the order up to
+    ``P_ordered x dt`` MWh and above the order beyond that. There is no
+    high-load-window block, no full-load-hour tier and no special network use.
+
+    The ordered capacity is a scenario input, fixed for the whole run.
+    The capacity charge is an annual value and is not prorated by the simulated period,
+    like the capacity charges of the other regulations.
+
+    Dispatch-time: the energy charge within the order plus the levies is the marginal
+    adder. The surcharge for energy above the order
+    (``excess_energy_surcharge_eur_per_mwh`` x excess energy) is settled ex-post here;
+    it only reaches the dispatch decisions once the plant objective prices it.
+    """
+
+    # Expected unit of every accepted charge. The loader only validates the set of
+    # allowed units, so a charge given in the wrong unit (e.g. EUR/kW.a) is caught here.
+    _CHARGE_UNITS: dict[str, str] = {
+        "grid_ordered_capacity": "MW",
+        "grid_ordered_capacity_charge": "EUR/MW.a",
+        "grid_energy_charge_within_order": "EUR/MWh",
+        "grid_energy_charge_above_order": "EUR/MWh",
+        "chp_surcharge": "EUR/MWh",
+        "offshore_grid_levy": "EUR/MWh",
+        "concession_fee": "EUR/MWh",
+        "electricity_tax": "EUR/MWh",
+    }
+    # The levies object is a constructor parameter, not a grid-fee row of the CSV.
+    _BEHAVIOURAL_PARAMS = frozenset({"levies"})
+
+    # Charges that must be given. A missing one would silently read as 0 (for the
+    # ordered capacity that means every MWh is charged above the order).
+    _REQUIRED_CHARGES = (
+        "grid_ordered_capacity",
+        "grid_ordered_capacity_charge",
+        "grid_energy_charge_within_order",
+        "grid_energy_charge_above_order",
+    )
+
+    def __init__(
+        self,
+        *,
+        grid_ordered_capacity: float,  # MW       - P_ordered (KP applies to it)
+        grid_ordered_capacity_charge: float,  # EUR/MW.a - KP
+        grid_energy_charge_within_order: float,  # EUR/MWh  - AP1
+        grid_energy_charge_above_order: float,  # EUR/MWh  - AP2
+        levies: ElectricityLevies | None = None,  # CHP, offshore, concession fee, tax
+    ):
+        values = {
+            "grid_ordered_capacity": grid_ordered_capacity,
+            "grid_ordered_capacity_charge": grid_ordered_capacity_charge,
+            "grid_energy_charge_within_order": grid_energy_charge_within_order,
+            "grid_energy_charge_above_order": grid_energy_charge_above_order,
+        }
+        negative = sorted(name for name, value in values.items() if value < 0)
+        if negative:
+            raise GridFeeConfigError(
+                f"Grid-fee charges must not be negative: {', '.join(negative)}"
+            )
+        if grid_energy_charge_above_order < grid_energy_charge_within_order:
+            # The excess variable of the dispatch model is only well defined for a
+            # non-negative surcharge; a cheaper tier above the order would also
+            # reward drawing more than ordered.
+            raise GridFeeConfigError(
+                "grid_energy_charge_above_order must not be lower than "
+                "grid_energy_charge_within_order "
+                f"({grid_energy_charge_above_order} < {grid_energy_charge_within_order} EUR/MWh)."
+            )
+        self._ordered_capacity_mw = float(grid_ordered_capacity)
+        self._ordered_capacity_charge = float(grid_ordered_capacity_charge)
+        self._energy_within = float(grid_energy_charge_within_order)
+        self._energy_above = float(grid_energy_charge_above_order)
+        self._levies = levies if levies is not None else ElectricityLevies()
+
+    # -------------------------------------------------------------- CSV adapter
+    @classmethod
+    def from_charges_frame(
+        cls, plant_charges: pd.DataFrame, **options
+    ) -> EnflexAgnesGridFeeRegulation:
+        """Build from additional_charges.csv.
+
+        The levy rows are taken out first and become the ``levies`` object (see
+        ``levies.py``). Unknown component names raise, as do missing required charges
+        and charges given in a unit other than the expected one. Behavioural
+        ``options`` of other regulations (tier, high-load window) do not apply here
+        and are ignored.
+        """
+        del options
+        levies, grid_fee_rows = split_levies(plant_charges)
+        charges = cls._charges_from_frame(grid_fee_rows, also_supported=LEVY_NAMES)
+        missing = [name for name in cls._REQUIRED_CHARGES if name not in charges]
+        if missing:
+            raise GridFeeConfigError(
+                "additional_charges.csv is missing required charge(s) for "
+                f"{cls.__name__}: {', '.join(missing)}."
+            )
+        if "unit" in plant_charges.columns:
+            for _, row in plant_charges.iterrows():
+                name = str(row["component"]).strip()
+                unit = str(row["unit"]).strip()
+                if unit != cls._CHARGE_UNITS[name]:
+                    raise GridFeeConfigError(
+                        f"Charge '{name}' must be given in {cls._CHARGE_UNITS[name]}, not '{unit}'."
+                    )
+        return cls(**charges, levies=levies)
+
+    # ------------------------------------------------------ values for the plant
+    @property
+    def ordered_capacity_mw(self) -> float:
+        """The ordered grid capacity ``P_ordered`` in MW."""
+        return self._ordered_capacity_mw
+
+    @property
+    def excess_energy_surcharge_eur_per_mwh(self) -> float:
+        """Extra charge per MWh drawn above the order (above-order minus within-order rate)."""
+        return self._energy_above - self._energy_within
+
+    # ------------------------------------------------------------ interface (A)
+    def marginal_charge_eur_per_mwh(self) -> float:
+        # Every MWh pays at least the within-order rate; the above-order surcharge is
+        # load dependent and therefore not part of this scalar.
+        return self._energy_within + self._levies.eur_per_mwh
+
+    def charging_block_mask(self, forecasts: pd.DataFrame) -> pd.Series:
+        """No hard block: the price signal replaces the high-load-window avoidance."""
+        return pd.Series(False, index=forecasts.index)
+
+    # ------------------------------------------------------------ interface (B)
+    def settle(self, dispatch_results: pd.DataFrame, timestep_minutes: int) -> GridFeeResult:
+        dt_h = timestep_minutes / 60.0
+        consumption = pd.to_numeric(
+            dispatch_results.get("actual_electricity_consumption_MWh"), errors="coerce"
+        ).fillna(0.0)
+        grid_energy = float(consumption.sum())
+        power = consumption / dt_h if dt_h > 0 else consumption * 0.0
+        annual_peak = float(power.max()) if len(power) else 0.0
+        full_load_hours = grid_energy / annual_peak if annual_peak > 0 else 0.0
+
+        # Energy of each timestep above what the order allows (P_ordered x dt).
+        excess_energy = float(
+            (consumption - self._ordered_capacity_mw * dt_h).clip(lower=0.0).sum()
+        )
+        within_energy = grid_energy - excess_energy
+
+        energy_charge = within_energy * self._energy_within + excess_energy * self._energy_above
+        capacity_charge = self._ordered_capacity_charge * self._ordered_capacity_mw
+        levies = self._levies.eur_per_mwh * grid_energy
+        total = energy_charge + capacity_charge + levies
+
+        # What the dispatch has not booked through the marginal adder (within-order
+        # rate + levies): the capacity charge and the above-order surcharge.
+        ex_post_addition = (
+            capacity_charge + self.excess_energy_surcharge_eur_per_mwh * excess_energy
+        )
+
+        return GridFeeResult(
+            grid_energy_MWh=grid_energy,
+            annual_peak_MW=annual_peak,
+            billed_peak_MW=self._ordered_capacity_mw,
+            full_load_hours=full_load_hours,
+            energy_charge_EUR=energy_charge,
+            capacity_charge_EUR=capacity_charge,
+            levies_EUR=levies,
+            grid_fee_total_EUR=total,
+            ex_post_addition_EUR=ex_post_addition,
+            ordered_capacity_MW=self._ordered_capacity_mw,
+            excess_over_order_MWh=excess_energy,
+        )
 
 
 # --------------------------------------------------------------------- Spain
@@ -707,6 +923,7 @@ class FrenchGridFeeRegulation(GridFeeRegulation):
 # subclass plus one entry here.
 _REGISTRY: dict[str, type[GridFeeRegulation]] = {
     "de_atypical_grid_use": GermanGridFeeRegulation,  # StromNEV §19(2), full-load-hour tiers
+    "de_agnes_enflex": EnflexAgnesGridFeeRegulation,  # prospective AgNes capacity-order design
     "es_peajes_6xtd": SpanishGridFeeRegulation,  # 6.xTD access tariff + IEE
     "fr_turpe": FrenchGridFeeRegulation,  # TURPE + accise + fixed annual charges
 }

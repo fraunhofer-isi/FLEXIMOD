@@ -17,6 +17,7 @@ The regulation is selected **by name** with `grid_fee_regulation:` in the case
 | `grid_fee_regulation` | Models |
 |---|---|
 | `de_atypical_grid_use` | Germany: full-load-hour tiers, special network use A/B, §19(2) StromNEV atypical grid use |
+| `de_agnes_enflex` | Germany, prospective AgNes design: capacity charge on an ordered capacity, energy charge within / above the order |
 | `es_peajes_6xtd` | Spain: 6.xTD access tariff (peajes) + IEE + capacity charge |
 | `fr_turpe` | France: TURPE + accise + fixed annual charges |
 
@@ -97,9 +98,62 @@ All charges are **static**; Germany has **no** dynamic `grid_energy_charge` colu
 the plant's realized annual full-load hours (threshold 2500 h/a). Both halves of
 a tiered pair must be provided.
 
+**Levies are not grid fees.** The last four rows (CHP surcharge, offshore grid
+levy, concession fee, electricity tax) are fixed amounts per MWh set by law. They
+are the same under every German design, so they are not part of a grid-fee class:
+they are modelled once in
+[`src/flexi_mod/regulations/levies.py`](../src/flexi_mod/regulations/levies.py)
+(`ElectricityLevies`) and shared by `de_atypical_grid_use` and `de_agnes_enflex`.
+They stay in `additional_charges.csv`, under the same names as before. Every MWh
+drawn from the grid pays their sum, in the electricity price the plant sees and in
+the settlement after the run.
+
 **§19(2) atypical grid use:** if `capacity_peak_basis = high_load_window`, the
 capacity charge is billed on the peak **within the high-load windows** — so
 avoiding consumption in those windows lowers the bill.
+
+---
+
+## 🇩🇪 Germany, prospective AgNes design (`de_agnes_enflex`)
+
+Selected with `grid_fee_regulation: de_agnes_enflex`. The consumer orders a grid
+capacity and pays for it whether or not it is used; energy drawn above the order
+is charged at a higher rate. All charges are **static** (no dynamic column), and
+all are required except the levies.
+
+| Charge | Name | Unit | Applied | Notes |
+|---|---|---|---|---|
+| Ordered capacity (P_ordered) | `grid_ordered_capacity` | MW | scenario input | fixed for the whole run; a sweep is a set of cases that differ only here |
+| Capacity charge (KP) | `grid_ordered_capacity_charge` | EUR/MW.a | ex-post | `charge x ordered capacity`, independent of the realised load; annual, not prorated. 100 EUR/kW.a = 100000 EUR/MW.a |
+| Energy charge within the order (AP1) | `grid_energy_charge_within_order` | EUR/MWh | dispatch | marginal adder on every MWh |
+| Energy charge above the order (AP2) | `grid_energy_charge_above_order` | EUR/MWh | ex-post | given directly (not derived from a factor); must not be below AP1 |
+| Levies | `chp_surcharge`, `offshore_grid_levy`, `concession_fee`, `electricity_tax` | EUR/MWh | dispatch | as for `de_atypical_grid_use` |
+
+The order is judged **per timestep**: a step of `dt` hours is within the order up
+to `ordered capacity x dt` MWh and above it beyond that. There is no
+high-load-window block, no full-load-hour tier and no special network use.
+A charge given in a different unit than listed, a missing required charge or an
+unknown name raises an error.
+
+```csv
+component,unit,plant_1
+grid_ordered_capacity,MW,5
+grid_ordered_capacity_charge,EUR/MW.a,100000
+grid_energy_charge_within_order,EUR/MWh,20
+grid_energy_charge_above_order,EUR/MWh,60
+chp_surcharge,EUR/MWh,2.77
+offshore_grid_levy,EUR/MWh,8.16
+concession_fee,EUR/MWh,1.10
+electricity_tax,EUR/MWh,0.50
+```
+
+The summary additionally reports `grid_ordered_capacity_MW` and
+`grid_excess_over_order_MWh`. The settlement reproduces the cost curves of the
+study's capacity-order Excel (tested).
+
+**Current limit:** the dispatch only sees the within-order rate plus the levies.
+The surcharge for energy above the order is settled after the run and does not
+yet influence the dispatch decisions.
 
 ---
 
@@ -137,10 +191,12 @@ avoiding consumption in those windows lowers the bill.
 
 ## Adding or changing a static charge
 
-Each regulation's constructor **is** the list of supported static charges — the
-component names above are exactly the constructor parameters. The loader maps
-`additional_charges.csv` rows to those parameters and **rejects an unknown or
-misspelled name** with a clear error, e.g.:
+Each regulation's constructor **is** the list of its supported grid-fee charges —
+the component names above are exactly the constructor parameters. The German levies
+are the exception: they are listed in `levies.py` (`ElectricityLevies`) and taken
+out of the CSV first. The loader maps the other `additional_charges.csv` rows to the
+constructor parameters and **rejects an unknown or misspelled name** with a clear
+error, e.g.:
 
 ```
 GridFeeConfigError: Unknown grid-fee charge 'grid_capcity_charge_high' for

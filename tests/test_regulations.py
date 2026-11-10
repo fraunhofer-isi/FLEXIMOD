@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from flexi_mod.regulations import (
+    EnflexAgnesGridFeeRegulation,
     FrenchGridFeeRegulation,
     GermanGridFeeRegulation,
     GridFeeConfigError,
@@ -358,3 +359,195 @@ def test_french_settle_sums_all_fixed_annual_charges():
     total_rate = 14650.0 + 11545.32 + 3800.04 + 12948.94  # 42944.30
     assert res.capacity_charge_EUR == pytest.approx(total_rate * 4.0)  # 4 MW peak, no proration
     assert res.electricity_tax_EUR == pytest.approx(0.0)  # France has no multiplicative tax
+
+
+# ------------------------------------------------------- Germany (AgNes design)
+AGNES_CHARGE_NAMES = [
+    "grid_ordered_capacity",
+    "grid_ordered_capacity_charge",
+    "grid_energy_charge_within_order",
+    "grid_energy_charge_above_order",
+    "chp_surcharge",
+    "offshore_grid_levy",
+    "concession_fee",
+    "electricity_tax",
+]
+AGNES_CHARGE_UNITS = ["MW", "EUR/MW.a"] + ["EUR/MWh"] * 6
+
+
+def agnes_charges(**values: float) -> pd.DataFrame:
+    """The example case values (5 MW order, KP 100 EUR/kW.a, AP1 20, AP2 60 EUR/MWh)."""
+    defaults = dict(
+        zip(AGNES_CHARGE_NAMES, [5.0, 100000.0, 20.0, 60.0, 2.77, 8.16, 1.1, 0.5], strict=True)
+    )
+    defaults.update(values)
+    return pd.DataFrame(
+        {
+            "component": AGNES_CHARGE_NAMES,
+            "unit": AGNES_CHARGE_UNITS,
+            "value": [defaults[name] for name in AGNES_CHARGE_NAMES],
+        }
+    )
+
+
+def test_agnes_is_selected_by_name_and_marginal_charge_is_within_order_rate_plus_levies():
+    reg = build_grid_fee_regulation("de_agnes_enflex", agnes_charges())
+    assert isinstance(reg, EnflexAgnesGridFeeRegulation)
+    assert reg.marginal_charge_eur_per_mwh() == pytest.approx(20.0 + LEVIES)
+    assert reg.ordered_capacity_mw == 5.0
+    assert reg.excess_energy_surcharge_eur_per_mwh == pytest.approx(40.0)
+    assert reg.electricity_tax_rate == 0.0
+    assert reg.dynamic_charge_column is None
+
+
+def test_agnes_never_blocks_charging():
+    reg = build_grid_fee_regulation("de_agnes_enflex", agnes_charges())
+    forecasts = pd.DataFrame({"high_load_window": [1, 1, 0]}, index=year_index()[:3])
+    assert not reg.charging_block_mask(forecasts).any()
+
+
+def test_agnes_settle_splits_energy_at_the_ordered_capacity():
+    reg = build_grid_fee_regulation("de_agnes_enflex", agnes_charges())
+    index = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
+    # 5 MW order = 1.25 MWh per 15 min. Steps of 1.0, 2.0, 1.25 and 0.0 MWh.
+    result = reg.settle(dispatch(index, [1.0, 2.0, 1.25, 0.0]), timestep_minutes=15)
+
+    assert result.grid_energy_MWh == pytest.approx(4.25)
+    assert result.excess_over_order_MWh == pytest.approx(0.75)  # only the 2.0 MWh step
+    assert result.annual_peak_MW == pytest.approx(8.0)
+    assert result.billed_peak_MW == pytest.approx(5.0)
+    assert result.ordered_capacity_MW == pytest.approx(5.0)
+    assert result.energy_charge_EUR == pytest.approx(3.5 * 20.0 + 0.75 * 60.0)
+    assert result.capacity_charge_EUR == pytest.approx(100000.0 * 5.0)  # not prorated
+    assert result.levies_EUR == pytest.approx(LEVIES * 4.25)
+    assert result.grid_fee_total_EUR == pytest.approx(
+        result.energy_charge_EUR + result.capacity_charge_EUR + result.levies_EUR
+    )
+    # Not booked through the marginal adder: capacity charge + above-order surcharge.
+    assert result.ex_post_addition_EUR == pytest.approx(500000.0 + 0.75 * 40.0)
+
+
+def test_agnes_load_below_the_order_has_no_excess():
+    reg = build_grid_fee_regulation("de_agnes_enflex", agnes_charges())
+    index = pd.date_range("2025-01-01 00:00", periods=3, freq="15min")
+    result = reg.settle(dispatch(index, [1.25, 0.5, 0.0]), timestep_minutes=15)
+    assert result.excess_over_order_MWh == pytest.approx(0.0)
+    assert result.energy_charge_EUR == pytest.approx(1.75 * 20.0)
+
+
+def test_agnes_without_consumption_still_pays_the_ordered_capacity():
+    reg = build_grid_fee_regulation("de_agnes_enflex", agnes_charges())
+    index = pd.date_range("2025-01-01 00:00", periods=4, freq="15min")
+    result = reg.settle(dispatch(index, [0.0, 0.0, 0.0, 0.0]), timestep_minutes=15)
+    assert result.grid_fee_total_EUR == pytest.approx(500000.0)
+    assert result.full_load_hours == 0.0
+
+
+def test_agnes_summary_has_order_columns_but_other_regulations_do_not():
+    index = pd.date_range("2025-01-01 00:00", periods=2, freq="15min")
+    agnes = build_grid_fee_regulation("de_agnes_enflex", agnes_charges())
+    summary = agnes.settle(dispatch(index, [1.0, 2.0]), 15).as_summary_dict()
+    assert summary["grid_ordered_capacity_MW"] == pytest.approx(5.0)
+    assert summary["grid_excess_over_order_MWh"] == pytest.approx(0.75)
+
+    german = build_grid_fee_regulation("de_atypical_grid_use", full_charges())
+    german_summary = german.settle(dispatch(index, [1.0, 2.0]), 15).as_summary_dict()
+    assert "grid_ordered_capacity_MW" not in german_summary
+    assert "grid_excess_over_order_MWh" not in german_summary
+
+
+# Reference values of "Analyse AgNes Kapazitätsbestellung.xlsx", sheet "50 % Auslastungsgrad":
+# cost per kW of peak capacity for an ordered capacity of 0, 10, ..., 100 % of the peak
+# (KP 100 EUR/kW.a, AP1 2 ct/kWh, AP2 6 ct/kWh, 8760 h), excluding the AP1 base energy
+# cost, and the resulting average price in ct/kWh. Each case is a load-duration curve in
+# ten deciles of the year, as a share of the peak.
+AGNES_EXCEL_50_PERCENT = {
+    "worst": {
+        "profile": [1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
+        "cost_eur_per_kw": [175.2, 167.68, 160.16, 152.64, 145.12, 137.6]
+        + [130.08, 122.56, 115.04, 107.52, 100.0],
+        "price_ct_per_kwh": [6.0, 5.828310502283105, 5.65662100456621, 5.484931506849314]
+        + [5.31324200913242, 5.141552511415525, 4.96986301369863, 4.798173515981735]
+        + [4.62648401826484, 4.454794520547945, 4.28310502283105],
+    },
+    "real": {
+        "profile": [1, 0.9, 0.8, 0.7, 0.6, 0.4, 0.3, 0.2, 0.1, 0],
+        "cost_eur_per_kw": [175.2, 153.664, 135.632, 121.104, 110.08, 102.56]
+        + [95.04, 91.024, 90.512, 93.504, 100.0],
+        "price_ct_per_kwh": [6.0, 5.508310502283105, 5.0966210045662095, 4.764931506849315]
+        + [4.51324200913242, 4.341552511415525, 4.16986301369863, 4.078173515981735]
+        + [4.06648401826484, 4.134794520547945, 4.28310502283105],
+    },
+    "best": {
+        "profile": [1, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0],
+        "cost_eur_per_kw": [175.2, 153.664, 132.128, 110.592, 89.056, 67.52]
+        + [74.016, 80.512, 87.008, 93.504, 100.0],
+        "price_ct_per_kwh": [6.0, 5.508310502283105, 5.016621004566209, 4.524931506849315]
+        + [4.03324200913242, 3.5415525114155253, 3.6898630136986297, 3.8381735159817345]
+        + [3.9864840182648402, 4.134794520547945, 4.28310502283105],
+    },
+}
+
+
+@pytest.mark.parametrize("case", sorted(AGNES_EXCEL_50_PERCENT))
+def test_agnes_reproduces_the_reference_excel(case):
+    """A plant with a 1 kW peak follows the Excel's load-duration curve for a whole year."""
+    reference = AGNES_EXCEL_50_PERCENT[case]
+    hourly_load_mwh = np.repeat(np.asarray(reference["profile"], dtype=float), 876) * 0.001
+    index = pd.date_range("2025-01-01 00:00", periods=8760, freq="h")
+    load = dispatch(index, hourly_load_mwh)
+
+    for step, (cost, price) in enumerate(
+        zip(reference["cost_eur_per_kw"], reference["price_ct_per_kwh"], strict=True)
+    ):
+        order_mw = 0.001 * step / 10.0
+        charges = agnes_charges(
+            grid_ordered_capacity=order_mw,
+            grid_energy_charge_within_order=20.0,
+            grid_energy_charge_above_order=60.0,
+            chp_surcharge=0.0,
+            offshore_grid_levy=0.0,
+            concession_fee=0.0,
+            electricity_tax=0.0,
+        )
+        result = build_grid_fee_regulation("de_agnes_enflex", charges).settle(load, 60)
+        assert result.ex_post_addition_EUR == pytest.approx(cost, abs=1e-9), (case, step)
+        average_ct_per_kwh = result.grid_fee_total_EUR / result.grid_energy_MWh / 10.0
+        assert average_ct_per_kwh == pytest.approx(price, abs=1e-9), (case, step)
+
+
+def test_agnes_missing_required_charge_raises():
+    frame = agnes_charges()
+    frame = frame[frame["component"] != "grid_ordered_capacity"]
+    with pytest.raises(GridFeeConfigError, match="missing required charge.*grid_ordered_capacity"):
+        build_grid_fee_regulation("de_agnes_enflex", frame)
+
+
+def test_agnes_unknown_charge_raises():
+    frame = pd.concat(
+        [
+            agnes_charges(),
+            pd.DataFrame({"component": ["grid_ordered_power"], "unit": ["MW"], "value": [1.0]}),
+        ]
+    )
+    with pytest.raises(GridFeeConfigError, match="Unknown grid-fee charge 'grid_ordered_power'"):
+        build_grid_fee_regulation("de_agnes_enflex", frame)
+
+
+def test_agnes_rejects_a_charge_in_the_wrong_unit():
+    frame = agnes_charges()
+    frame.loc[frame["component"] == "grid_ordered_capacity_charge", "unit"] = "EUR/MWh"
+    with pytest.raises(GridFeeConfigError, match="grid_ordered_capacity_charge.*EUR/MW.a"):
+        build_grid_fee_regulation("de_agnes_enflex", frame)
+
+
+def test_agnes_rejects_a_cheaper_rate_above_the_order():
+    with pytest.raises(GridFeeConfigError, match="above_order must not be lower"):
+        build_grid_fee_regulation(
+            "de_agnes_enflex", agnes_charges(grid_energy_charge_above_order=10.0)
+        )
+
+
+def test_agnes_rejects_negative_charges():
+    with pytest.raises(GridFeeConfigError, match="must not be negative.*grid_ordered_capacity"):
+        build_grid_fee_regulation("de_agnes_enflex", agnes_charges(grid_ordered_capacity=-1.0))

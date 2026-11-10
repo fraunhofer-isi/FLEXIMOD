@@ -6,7 +6,7 @@ cases:
   hybrid_ETES_DA_aFRR_energy_capacity_enflex:
     name: hybrid_ETES_DA_aFRR_energy_capacity_enflex
     country: DE
-    grid_fee_regulation: de_agnes_capacity_order
+    grid_fee_regulation: de_agnes_enflex
     description: Hybrid ETES + gas boiler case for Germany with the AgNes capacity-order grid-fee design (day-ahead, aFRR energy, aFRR capacity)
     timestep_minutes: 15
     simulation_start: 2025-01-01 00:00
