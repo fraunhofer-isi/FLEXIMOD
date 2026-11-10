@@ -446,3 +446,19 @@ def test_carried_soc_is_clamped_into_storage_bounds() -> None:
     # In-bound values must pass through bit-for-bit, so existing results do not change.
     assert _carried_soc(37.123456789012345, storage) == 37.123456789012345
     assert _carried_soc(100.0, storage) == 100.0
+
+
+def test_agnes_example_case_enables_three_markets_and_defines_intraday() -> None:
+    """The aFRR energy stage reads the intraday price signal, so intraday stays defined."""
+    case_dir = CASE_DIR.parent / "hybrid_ETES_DA_aFRR_energy_capacity_enflex"
+    config = CaseConfig.from_case_dir(case_dir)
+
+    assert config.grid_fee_regulation == "de_agnes_enflex"
+    assert config.market_sequence == [
+        "afrr_capacity",
+        "day_ahead",
+        "intraday_continuous",
+        "afrr_energy",
+    ]
+    assert config.enabled_markets == ["afrr_capacity", "day_ahead", "afrr_energy"]
+    assert config.market_signal("intraday_continuous", "price") == "DE_ID3_price"

@@ -126,7 +126,7 @@ all are required except the levies.
 | Ordered capacity (P_ordered) | `grid_ordered_capacity` | MW | scenario input | fixed for the whole run; a sweep is a set of cases that differ only here |
 | Capacity charge (KP) | `grid_ordered_capacity_charge` | EUR/MW.a | ex-post | `charge x ordered capacity`, independent of the realised load; annual, not prorated. 100 EUR/kW.a = 100000 EUR/MW.a |
 | Energy charge within the order (AP1) | `grid_energy_charge_within_order` | EUR/MWh | dispatch | marginal adder on every MWh |
-| Energy charge above the order (AP2) | `grid_energy_charge_above_order` | EUR/MWh | ex-post | given directly (not derived from a factor); must not be below AP1 |
+| Energy charge above the order (AP2) | `grid_energy_charge_above_order` | EUR/MWh | dispatch | given directly (not derived from a factor); must not be below AP1. The plant pays `AP2 - AP1` on top of AP1 for every MWh above the order |
 | Levies | `chp_surcharge`, `offshore_grid_levy`, `concession_fee`, `electricity_tax` | EUR/MWh | dispatch | as for `de_atypical_grid_use` |
 
 The order is judged **per timestep**: a step of `dt` hours is within the order up
@@ -151,9 +151,37 @@ The summary additionally reports `grid_ordered_capacity_MW` and
 `grid_excess_over_order_MWh`. The settlement reproduces the cost curves of the
 study's capacity-order Excel (tested).
 
-**Current limit:** the dispatch only sees the within-order rate plus the levies.
-The surcharge for energy above the order is settled after the run and does not
-yet influence the dispatch decisions.
+The dashboard (tab "Grid fees") shows the ordered capacity on the capacity-charge card,
+a card "Energy above the order" with its share of the grid energy, and a chart "Load
+against the ordered capacity": the load duration curve with the order as a dashed line and
+the energy above it shaded.
+
+**How the dispatch sees it.** In every timestep the plant draws some energy from the
+grid. The ordered capacity allows `ordered capacity x timestep length` MWh per
+timestep. The plant objective charges the surcharge `AP2 - AP1` for each MWh above that
+limit (a linear term, so the model stays a linear programme), and every MWh pays
+`AP1 + levies`. The plant therefore weighs the cost of drawing more than ordered
+against its alternatives, such as gas. The capacity charge does not depend on the load,
+so it is settled after the run. The dispatch column
+`additional_electricity_charges_cost_EUR` contains `AP1 + levies` on all energy plus the
+surcharge on the energy above the order.
+
+**How the strategies handle the order.** The study uses day-ahead, aFRR energy and aFRR
+capacity (intraday is switched off).
+
+| Market | Rule |
+|---|---|
+| Day-ahead | The gate is a yes/no test on the price within the order (`AP1 + levies`). The plant optimisation then decides how much to buy, paying the surcharge above the order. |
+| aFRR energy | The charging headroom is split in two. The part below the order is offered if the aFRR price passes the normal price test. The part between the order and the maximum charging power is offered only if the price also passes the test with the surcharge added. |
+| aFRR capacity | A reservation cannot exceed the ordered capacity. In the plant model, wherever capacity is reserved, the day-ahead load plus the reservation must stay below the order, so an activation of reserved capacity never lands above it. |
+
+**Current limits.** The aFRR capacity rule is a fixed cap, not a price test: the plant
+never reserves capacity that would not fit below the order, even if the above-order
+price would still pay. The capacity price test does not include the effect of the order on
+day-ahead charging. This is an assumption of the study: once the capacity is ordered, an
+industrial operator keeps its load below the order most of the time. The intraday rules
+still use only the charging power, so they are not order-aware (intraday is not part of the
+study).
 
 ---
 

@@ -202,6 +202,11 @@ class HybridETESGasStrategy(BaseStrategy):
             return None
         return getattr(regulation, "dynamic_charge_column", None)
 
+    @staticmethod
+    def _ordered_capacity_mw(plant: SteamGenerationPlant) -> float | None:
+        """Ordered grid capacity (MW) of the plant's grid fee, or None if it has no order."""
+        return getattr(plant.grid_fee_regulation, "ordered_capacity_mw", None)
+
     def calculate_additional_charges_t(
         self, plant: SteamGenerationPlant, forecasts: pd.DataFrame
     ) -> pd.Series:
@@ -507,6 +512,14 @@ class HybridETESGasStrategy(BaseStrategy):
 
         timestep_hours = self.config.timestep_minutes / 60.0
         max_charge_mwh = plant.etes.max_power_charge_mw * timestep_hours
+        # TODO (AgNes capacity-order grid fee, de_agnes_enflex): the intraday rules are not
+        # aware of the ordered capacity yet. The buy gate tests the price within the order
+        # only, and the buy bound below uses the charging power (max charge - day-ahead
+        # position) instead of the room below the order. Intraday still runs with AgNes,
+        # because the plant optimiser prices the surcharge above the order, but the bound
+        # should be split like the aFRR energy rule (room below the order is tested with
+        # the normal price, room above it with the surcharge added). Do this and add a test
+        # before intraday is used in the AgNes study.
         idc_buy_upper_bound = pd.Series(0.0, index=forecasts.index)
         idc_sell_upper_bound = pd.Series(0.0, index=forecasts.index)
         idc_buy_upper_bound.loc[buy_allowed] = (max_charge_mwh - da_position.loc[buy_allowed]).clip(
@@ -659,6 +672,37 @@ class HybridETESGasStrategy(BaseStrategy):
         charge_power_headroom_after_reserve = (
             max_charge_mwh - final_planned - reserved_capacity
         ).clip(lower=0.0)
+
+        ordered_capacity_mw = self._ordered_capacity_mw(plant)
+        if ordered_capacity_mw is not None:
+            # Capacity-order grid fee: energy above the ordered capacity pays a surcharge,
+            # so the charging headroom has two prices. The part below the order is tested
+            # with the normal delivered price above (price_allowed). The part between the
+            # order and the maximum charging power is offered only if the aFRR price also
+            # passes the test with the surcharge added.
+            order_limit_mwh = ordered_capacity_mw * timestep_hours
+            surcharge = plant.grid_fee_regulation.excess_energy_surcharge_eur_per_mwh
+            delivered_afrr_price_above_order = self._delivered_electricity_price(
+                clean_afrr["afrr_energy_down_price_EUR_per_MWh"],
+                tax_rate,
+                additional_charges_t + surcharge,
+            )
+            price_allowed_above_order = (
+                (delivered_afrr_price_above_order <= afrr_energy_delivered_bid_price)
+                & valid_price
+                & ~self._grid_charging_block(plant, forecasts)
+            )
+            load_already_planned = final_planned + reserved_capacity
+            headroom_below_order = (
+                (order_limit_mwh - load_already_planned)
+                .clip(lower=0.0)
+                .clip(upper=charge_power_headroom_after_reserve)
+            )
+            headroom_above_order = charge_power_headroom_after_reserve - headroom_below_order
+            charge_power_headroom_after_reserve = headroom_below_order + headroom_above_order.where(
+                price_allowed_above_order, 0.0
+            )
+
         storage_headroom_after_reserve = (storage_capacity_headroom - reserved_capacity).clip(
             lower=0.0
         )
@@ -1054,6 +1098,7 @@ class HybridETESGasStrategy(BaseStrategy):
         )
 
         max_charge_power_mw = plant.etes.max_power_charge_mw
+        ordered_capacity_mw = self._ordered_capacity_mw(plant)
         min_bid_mw = float(capacity_market.product_rules.get("min_bid_mw", 0.0))
         bid_increment_mw = float(capacity_market.product_rules.get("bid_increment_mw", 1.0))
         _validate_bid_rules("afrr_capacity", min_bid_mw, bid_increment_mw)
@@ -1117,6 +1162,11 @@ class HybridETESGasStrategy(BaseStrategy):
                 else 0.0
             )
             deliverable_capacity_mw = min(max_charge_power_mw, storage_capacity_mw + direct_use_mw)
+            if ordered_capacity_mw is not None:
+                # Capacity-order grid fee: a reservation must fit inside the ordered grid
+                # capacity (the plant model keeps the day-ahead load and the reservation
+                # together below the order), so an activation never lands above it.
+                deliverable_capacity_mw = min(deliverable_capacity_mw, ordered_capacity_mw)
             max_activation_need_mwh = float(
                 afrr_energy["afrr_system_activation_MWh"].loc[mask].max()
             )

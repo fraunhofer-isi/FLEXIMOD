@@ -18,6 +18,7 @@ from flexi_mod.markets.electricity_settlement import (
 from flexi_mod.markets.intraday_continuous import IntradayAdjustment
 from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
+from flexi_mod.regulations import EnflexAgnesGridFeeRegulation, GermanGridFeeRegulation
 from flexi_mod.simulation.market_stages import (
     MarketStageContext,
     MarketStageInstruction,
@@ -343,3 +344,86 @@ def test_steam_generation_plant_fails_when_real_heat_supply_is_insufficient() ->
 def _assert_useful_heat_matches_demand(result: pd.DataFrame) -> None:
     supplied_heat = result["gas_heat_MWh"] + result["etes_discharge_MWh"]
     assert supplied_heat.to_numpy() == pytest.approx(result["heat_demand_MWh"].to_numpy())
+
+
+# --- Capacity-order grid fee in the plant objective ----------------------------------
+
+
+def _solve_day_ahead_with_grid_fee(grid_fee_regulation) -> pd.DataFrame:
+    """Solve 2 h of day-ahead dispatch with free electricity plus a 20 EUR/MWh grid charge.
+
+    The plant has a heat demand of 8 MW. Electricity is far cheaper than gas (about
+    94 EUR/MWh_th), so the plant charges its thermal storage as much as the grid fee
+    allows. The plant draws up to 2.5 MWh per 15 min; an ordered capacity of 5 MW allows
+    1.25 MWh per 15 min.
+    """
+    config = CaseConfig.from_case_dir(CASE_DIR)
+    plant = build_plants(DataLoader(config, input_dir=CASE_DIR).load_plants())[0]
+    plant.grid_fee_regulation = grid_fee_regulation
+    forecasts = pd.DataFrame(
+        {
+            "plant_1_heat_demand": [8.0] * 8,
+            "DE_DA_price": [0.0] * 8,
+            "natural_gas_price": [80.0] * 8,
+            "co2_price": [0.0] * 8,
+        },
+        index=pd.date_range("2025-01-01 00:00", periods=8, freq="15min"),
+    )
+    position = DayAheadPosition(
+        electricity_price_col=config.market_signal("day_ahead", "price"),
+        gas_price_col="natural_gas_price",
+        co2_price_col="co2_price",
+        gas_benchmark_eur_per_mwh_th=HybridETESGasStrategy(config).calculate_gas_based_heat_cost(
+            plant, forecasts
+        ),
+        charge_allowed=pd.Series(True, index=forecasts.index),
+        additional_electricity_charge_eur_per_mwh=pd.Series(20.0, index=forecasts.index),
+    )
+    return plant.solve_horizon(config, forecasts, position)
+
+
+def _capacity_order_regulation(surcharge_eur_per_mwh: float) -> EnflexAgnesGridFeeRegulation:
+    """AgNes design with a 5 MW order, 20 EUR/MWh within the order and a surcharge above."""
+    return EnflexAgnesGridFeeRegulation(
+        grid_ordered_capacity=5.0,
+        grid_ordered_capacity_charge=100000.0,
+        grid_energy_charge_within_order=20.0,
+        grid_energy_charge_above_order=20.0 + surcharge_eur_per_mwh,
+    )
+
+
+ORDER_LIMIT_MWH = 5.0 * 0.25  # 5 MW ordered, 15 min timestep
+
+
+def test_without_an_ordered_capacity_the_plant_charges_above_5_mw() -> None:
+    result = _solve_day_ahead_with_grid_fee(GermanGridFeeRegulation())
+
+    assert result["actual_electricity_consumption_MWh"].max() > ORDER_LIMIT_MWH + 0.1
+
+
+def test_a_surcharge_above_the_order_that_is_dearer_than_gas_keeps_the_plant_within_the_order():
+    # Above the order a MWh costs (20 + 200) / (0.98 * 0.97) = 231 EUR/MWh_th, more than gas.
+    result = _solve_day_ahead_with_grid_fee(_capacity_order_regulation(200.0))
+
+    consumption = result["actual_electricity_consumption_MWh"]
+    assert consumption.max() <= ORDER_LIMIT_MWH + 1e-6
+    assert consumption.max() > 0.5  # it still charges within the order
+    assert result["additional_electricity_charges_cost_EUR"].to_numpy() == pytest.approx(
+        20.0 * consumption.to_numpy()
+    )
+
+
+def test_a_surcharge_above_the_order_that_is_cheaper_than_gas_is_paid_not_avoided():
+    # Above the order a MWh costs (20 + 40) / (0.98 * 0.97) = 63 EUR/MWh_th, less than gas.
+    unlimited = _solve_day_ahead_with_grid_fee(GermanGridFeeRegulation())
+    result = _solve_day_ahead_with_grid_fee(_capacity_order_regulation(40.0))
+
+    consumption = result["actual_electricity_consumption_MWh"]
+    assert consumption.max() > ORDER_LIMIT_MWH + 0.1
+    assert consumption.sum() == pytest.approx(
+        unlimited["actual_electricity_consumption_MWh"].sum(), rel=1e-6
+    )
+    above_order = (consumption - ORDER_LIMIT_MWH).clip(lower=0.0)
+    assert result["additional_electricity_charges_cost_EUR"].to_numpy() == pytest.approx(
+        20.0 * consumption.to_numpy() + 40.0 * above_order.to_numpy()
+    )

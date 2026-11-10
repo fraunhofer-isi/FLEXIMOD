@@ -1379,6 +1379,135 @@ def test_afrr_reports_physical_headroom_diagnostics(
     ).all()
 
 
+# --- Capacity-order grid fee (de_agnes_enflex) in the aFRR rules -----------------
+
+
+def _write_order_charges(path: Path, ordered_mw: float, surcharge_eur_per_mwh: float) -> None:
+    """AgNes charges: 20 EUR/MWh within the order, 20 + surcharge above it, no levies."""
+    path.write_text(
+        "\n".join(
+            [
+                "component,unit,plant_1",
+                f"grid_ordered_capacity,MW,{ordered_mw}",
+                "grid_ordered_capacity_charge,EUR/MW.a,0",
+                "grid_energy_charge_within_order,EUR/MWh,20",
+                f"grid_energy_charge_above_order,EUR/MWh,{20.0 + surcharge_eur_per_mwh}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _first_afrr_energy_bid_mwh(case_dir: Path, tmp_path: Path) -> float:
+    """Run the 2 h case and return the aFRR energy bid of the first timestep (MWh)."""
+    market = _run_case(case_dir, tmp_path)["market"].sort_values("datetime")
+    return float(market["afrr_energy_bid_MWh_el"].iloc[0])
+
+
+def _afrr_energy_order_case(
+    tmp_path: Path, ordered_mw: float | None, surcharge_eur_per_mwh: float
+) -> Path:
+    """Day-ahead + aFRR energy case. The plant charges at most 7 MW (1.75 MWh per step).
+
+    Electricity is too expensive on the day-ahead market, so only aFRR energy is offered.
+    The aFRR price of 20 EUR/MWh passes the price test at the within-order price
+    (20 + 20 = 40) against a benchmark of about 75 EUR/MWh. Above the order it passes only
+    if the surcharge is small enough. ``ordered_mw=None`` is the German tier design.
+    """
+    case_dir = tmp_path / "afrr_order_case"
+    case_dir.mkdir()
+    _write_config(
+        case_dir / "config.yaml",
+        afrr_enabled=True,
+        additional_charges=True,
+        grid_fee_regulation=None if ordered_mw is None else "de_agnes_enflex",
+    )
+    _write_plants(case_dir / "plants.csv")
+    _write_forecasts(
+        case_dir / "forecasts_df.csv",
+        da_prices=[120.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[7.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+    if ordered_mw is None:
+        (case_dir / "additional_charges.csv").write_text(
+            "\n".join(
+                [
+                    "component,unit,plant_1",
+                    "grid_energy_charge_high,EUR/MWh,20",
+                    "grid_energy_charge_low,EUR/MWh,20",
+                ]
+            ),
+            encoding="utf-8",
+        )
+    else:
+        _write_order_charges(case_dir / "additional_charges.csv", ordered_mw, surcharge_eur_per_mwh)
+    return case_dir
+
+
+def test_afrr_energy_without_an_order_is_offered_up_to_the_charging_power(tmp_path: Path) -> None:
+    case_dir = _afrr_energy_order_case(tmp_path, ordered_mw=None, surcharge_eur_per_mwh=0.0)
+
+    assert _first_afrr_energy_bid_mwh(case_dir, tmp_path) == pytest.approx(7.0 * 0.25)
+
+
+def test_afrr_energy_above_the_order_is_not_offered_when_the_surcharge_makes_it_unprofitable(
+    tmp_path: Path,
+) -> None:
+    # Above the order the price test is 20 + 20 + 100 = 140 > 75: not profitable.
+    case_dir = _afrr_energy_order_case(tmp_path, ordered_mw=2.0, surcharge_eur_per_mwh=100.0)
+
+    assert _first_afrr_energy_bid_mwh(case_dir, tmp_path) == pytest.approx(2.0 * 0.25)
+
+
+def test_afrr_energy_above_the_order_is_offered_when_the_surcharge_is_small(
+    tmp_path: Path,
+) -> None:
+    # Above the order the price test is 20 + 20 + 10 = 50 <= 75: still profitable.
+    case_dir = _afrr_energy_order_case(tmp_path, ordered_mw=2.0, surcharge_eur_per_mwh=10.0)
+
+    assert _first_afrr_energy_bid_mwh(case_dir, tmp_path) == pytest.approx(7.0 * 0.25)
+
+
+def test_afrr_capacity_reservation_and_day_ahead_load_stay_within_the_order(
+    tmp_path: Path,
+) -> None:
+    """Cheap day-ahead electricity wants to charge, but the reservation takes the order first."""
+    case_dir = tmp_path / "capacity_order_case"
+    case_dir.mkdir()
+    _write_config(
+        case_dir / "config.yaml",
+        afrr_enabled=True,
+        afrr_capacity_enabled=True,
+        additional_charges=True,
+        grid_fee_regulation="de_agnes_enflex",
+    )
+    _write_plants(case_dir / "plants.csv", storage_capacity=24.0)
+    _write_forecasts(
+        case_dir / "forecasts_df.csv",
+        da_prices=[10.0] * 8,
+        afrr_prices=[20.0] * 8,
+        afrr_quantities=[2.0] * 8,
+        afrr_capacity_prices=[100.0] * 8,
+        heat_demand=[2.0] * 8,
+    )
+    _write_order_charges(
+        case_dir / "additional_charges.csv", ordered_mw=1.0, surcharge_eur_per_mwh=100.0
+    )
+
+    results = _run_case(case_dir, tmp_path)
+    market = results["market"]
+
+    reserved_mw = results["afrr_capacity_blocks"]["reserved_capacity_MW"]
+    assert reserved_mw.sum() > 0.0
+    assert (reserved_mw <= 1.0 + 1e-9).all()  # without an order the strategy would reserve 2 MW
+    assert (
+        market["scheduled_electricity_procurement_MWh_el"] + market["afrr_capacity_reserved_MWh"]
+        <= 1.0 * 0.25 + 1e-8
+    ).all()
+
+
 def _run_case(case_dir: Path, tmp_path: Path) -> dict[str, pd.DataFrame]:
     runner = SimulationRunner(
         case_dir=case_dir,
@@ -1443,13 +1572,17 @@ def _write_config(
     afrr_capacity_product_length: str = "4h",
     afrr_capacity_price_unit: str = "EUR_per_MW_per_h",
     additional_charges: bool = False,
+    grid_fee_regulation: str | None = None,
 ) -> None:
+    regulation_line = (
+        f"\n  grid_fee_regulation: {grid_fee_regulation}" if grid_fee_regulation else ""
+    )
     path.write_text(
         case_config_text(
             f"""
 case:
   name: day_ahead_strategy_test_case
-  country: DE
+  country: DE{regulation_line}
   description: "Synthetic day-ahead strategy test case"
   timestep_minutes: 15
   simulation_start: "2025-01-01 00:00"

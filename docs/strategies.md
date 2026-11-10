@@ -711,6 +711,155 @@ A complete synthetic input example is available in:
 data/input/hybrid_ETES_DA_ID_aFRR_energy_capacity_spain/
 ```
 
+## Strategy With A Capacity-Order Grid Fee (`de_agnes_enflex`)
+
+With the AgNes design the plant orders a grid capacity `ORDER` (MW). Energy drawn
+up to the order is cheap, energy drawn above it pays a surcharge. This section
+describes, in the order in which the model runs them, how the strategy and the
+plant model handle that. It covers the three markets of the study: aFRR capacity,
+day-ahead and aFRR energy. The text uses `if` statements so that every decision can
+be followed step by step. Intraday is not covered, see the limits at the end.
+
+### Quantities used below
+
+```text
+ORDER       = ordered capacity in MW (for example 5)
+AP1         = grid energy price within the order           (EUR/MWh)
+SURCHARGE   = AP2 - AP1, extra price above the order         (EUR/MWh)
+GRID_PRICE  = AP1 + levies, the price every MWh pays         (EUR/MWh)
+GAS_VALUE   = what the heat is worth if it is made with gas  (EUR/MWh of electricity)
+            = gas price / boiler efficiency
+              x charge efficiency x discharge efficiency
+```
+
+The capacity charge `KP x ORDER` does not depend on the load. It never enters a
+decision and is settled after the run. CO2 is not part of `GAS_VALUE` (see the TODO
+in `calculate_gas_based_heat_cost`).
+
+### Step 1: aFRR capacity (decided first, in 4-hour blocks)
+
+```text
+FOR each 4-hour block:
+
+    IF no aFRR activation is expected in the block
+        reserve 0 MW and go to the next block
+
+    FOR each timestep with expected activation:
+        IF (aFRR energy price + GRID_PRICE) > GAS_VALUE
+            the activation is not profitable
+    IF any such timestep is not profitable
+        reserve 0 MW
+
+    IF capacity price < opportunity cost + margin
+        reserve 0 MW
+    (opportunity cost = block average of GAS_VALUE - (day-ahead price + GRID_PRICE),
+     never below 0)
+
+    maximum reservation = the smallest of
+        charging power
+        free storage room plus heat used directly
+        ORDER                                      <- AgNes only
+        largest expected activation (at least the minimum bid)
+        quantity the market wants
+
+    round the maximum reservation down to the market increment
+    IF the result is below the minimum bid
+        reserve 0 MW
+    ELSE
+        reserve that many MW
+```
+
+### Step 2: day-ahead (a gate, then the plant optimiser)
+
+```text
+FOR each timestep:
+
+    GATE (yes/no)
+    IF (day-ahead price + GRID_PRICE) / round-trip efficiency <= gas heat cost
+        charging is allowed in this timestep
+    ELSE
+        charging is blocked: buy 0
+
+    OPTIMISER (only in timesteps where charging is allowed)
+    chooses how much to buy, within
+        the charging power
+        IF capacity is reserved in this timestep:
+            day-ahead load + reserved capacity <= ORDER   <- AgNes only
+    and weighs against gas, per MWh
+        up to ORDER : day-ahead price + GRID_PRICE
+        above ORDER : day-ahead price + GRID_PRICE + SURCHARGE   <- AgNes only
+    so
+        IF buying within the order is cheaper than gas   it buys up to ORDER
+        IF buying above the order is also cheaper        it buys more, up to the charging power
+        ELSE                                             it stops at ORDER
+```
+
+The gate does not add the surcharge. A yes/no gate cannot say "yes up to `ORDER`,
+no beyond it", and it is only a first filter: it uses the lowest price, so it never
+blocks an hour that would pay. The surcharge acts in the optimiser, which can set the
+amount.
+
+### Step 3: aFRR energy (decided last, with the day-ahead load known)
+
+The amount of aFRR energy to offer is set by this rule alone. The plant optimiser
+cannot change it afterwards, it only pays the cost, so the rule itself has to test the
+surcharge.
+
+```text
+FOR each timestep:
+
+    room_total  = charging power - day-ahead load - reserved capacity
+    room_below  = ORDER - day-ahead load - reserved capacity
+                  (not below 0, not above room_total)           <- AgNes only
+    room_above  = room_total - room_below                       <- AgNes only
+
+    IF (aFRR price + GRID_PRICE) > GAS_VALUE
+        offer 0 and stop
+    ELSE
+        offer = room_below
+        IF (aFRR price + GRID_PRICE + SURCHARGE) <= GAS_VALUE   <- AgNes only
+            offer = offer + room_above
+        offer = smaller of (offer, free storage room)
+        round the offer down to the bid increment
+        IF the offer is below the minimum bid
+            offer 0
+
+    bid        = reserved capacity (if any) + offer
+    activation = smaller of (bid, what the system asks for)
+```
+
+Without an order (`room_total` is the only room) the same rule offers the whole
+charging headroom if the price test passes.
+
+### Step 4: after the run (settlement)
+
+```text
+FOR each timestep:
+    energy above ORDER = load - ORDER x timestep length   (not below 0)
+
+capacity charge = capacity price x ORDER                 (not dependent on the load)
+energy charge   = AP1 x energy within the order + AP2 x energy above the order
+levies          = levies x all energy
+```
+
+The dispatch has already paid `GRID_PRICE` on all energy and `SURCHARGE` on the energy
+above the order. The summary reports `grid_excess_over_order_MWh`.
+
+### Limits
+
+- The aFRR capacity rule is a fixed cap, not a price test. The plant never reserves
+  capacity that would not fit below the order, even if the above-order price would still
+  pay. The capacity price test also does not include the effect of the order on day-ahead
+  charging. This is an assumption of the study: once the capacity is ordered, an industrial
+  operator keeps its load below the order most of the time. The grid-fee limit on aFRR
+  capacity is a fixed rule in the current regime too (no capacity block that touches a
+  high-load window), so both regimes are treated the same way.
+- The intraday rules are not aware of the order yet (see the TODO in
+  `HybridETESGasStrategy.prepare_intraday_continuous_instruction`). Intraday still runs
+  with this regulation, because the plant optimiser prices the surcharge.
+- Regulations without an ordered capacity (`de_atypical_grid_use`, `es_peajes_6xtd`,
+  `fr_turpe`) skip every line marked "AgNes only".
+
 ## Current Simplifications
 
 The current DA + IDC + aFRR down strategy is deliberately simple:

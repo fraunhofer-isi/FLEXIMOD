@@ -153,6 +153,20 @@ class GridFeeRegulation(ABC):
         """Forecasts column with time-varying charges, or None for scalar-only."""
         return None
 
+    @property
+    def ordered_capacity_mw(self) -> float | None:
+        """Ordered grid capacity in MW if the grid fee depends on the load, else None.
+
+        A regulation that returns a value here makes the plant objective charge
+        ``excess_energy_surcharge_eur_per_mwh`` for every MWh drawn above this capacity.
+        """
+        return None
+
+    @property
+    def excess_energy_surcharge_eur_per_mwh(self) -> float:
+        """Extra charge per MWh drawn above the ordered capacity (0 without an order)."""
+        return 0.0
+
     # Constructor parameters that are behavioural options rather than named
     # charge values. Regulations that mix charges and options (Germany) override
     # this so from_charges_frame can tell the two apart.
@@ -482,10 +496,24 @@ class EnflexAgnesGridFeeRegulation(GridFeeRegulation):
     The capacity charge is an annual value and is not prorated by the simulated period,
     like the capacity charges of the other regulations.
 
-    Dispatch-time: the energy charge within the order plus the levies is the marginal
-    adder. The surcharge for energy above the order
-    (``excess_energy_surcharge_eur_per_mwh`` x excess energy) is settled ex-post here;
-    it only reaches the dispatch decisions once the plant objective prices it.
+    How it reaches the dispatch decisions:
+
+    * the energy charge within the order plus the levies is the marginal adder, a price
+      every MWh pays (``marginal_charge_eur_per_mwh``),
+    * the surcharge for energy above the order
+      (``excess_energy_surcharge_eur_per_mwh`` per MWh) is priced in the plant objective,
+      which reads ``ordered_capacity_mw`` (see ``_add_above_order_surcharge``),
+    * the capacity charge does not depend on the load and is settled after the run.
+
+    How the strategy rules handle the order: day-ahead is decided by the plant optimiser
+    (it prices the surcharge); the aFRR energy rule tests the room below and above the
+    order separately; an aFRR capacity reservation must fit below the order.
+
+    TODO: the intraday rules are not aware of the ordered capacity yet. Intraday still runs
+    with this regulation, because the plant optimiser prices the surcharge, but its buy bound
+    uses the charging power instead of the room below the order. Make it order-aware and add
+    a test before intraday is used in the AgNes study (see the TODO in
+    ``HybridETESGasStrategy.prepare_intraday_continuous_instruction``).
     """
 
     # Expected unit of every accepted charge. The loader only validates the set of
@@ -622,11 +650,10 @@ class EnflexAgnesGridFeeRegulation(GridFeeRegulation):
         levies = self._levies.eur_per_mwh * grid_energy
         total = energy_charge + capacity_charge + levies
 
-        # What the dispatch has not booked through the marginal adder (within-order
-        # rate + levies): the capacity charge and the above-order surcharge.
-        ex_post_addition = (
-            capacity_charge + self.excess_energy_surcharge_eur_per_mwh * excess_energy
-        )
+        # The dispatch already booked the within-order rate and the levies (marginal
+        # adder) and the above-order surcharge (plant objective). Only the capacity
+        # charge, which does not depend on the load, is added after the run.
+        ex_post_addition = capacity_charge
 
         return GridFeeResult(
             grid_energy_MWh=grid_energy,

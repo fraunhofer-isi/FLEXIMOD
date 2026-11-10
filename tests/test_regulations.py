@@ -423,8 +423,9 @@ def test_agnes_settle_splits_energy_at_the_ordered_capacity():
     assert result.grid_fee_total_EUR == pytest.approx(
         result.energy_charge_EUR + result.capacity_charge_EUR + result.levies_EUR
     )
-    # Not booked through the marginal adder: capacity charge + above-order surcharge.
-    assert result.ex_post_addition_EUR == pytest.approx(500000.0 + 0.75 * 40.0)
+    # The dispatch books the within-order rate, the levies and the above-order surcharge.
+    # Only the capacity charge is added after the run.
+    assert result.ex_post_addition_EUR == pytest.approx(500000.0)
 
 
 def test_agnes_load_below_the_order_has_no_excess():
@@ -511,7 +512,10 @@ def test_agnes_reproduces_the_reference_excel(case):
             electricity_tax=0.0,
         )
         result = build_grid_fee_regulation("de_agnes_enflex", charges).settle(load, 60)
-        assert result.ex_post_addition_EUR == pytest.approx(cost, abs=1e-9), (case, step)
+        # The Excel cost = capacity charge + surcharge on the energy above the order.
+        surcharge = 40.0  # AP2 - AP1 in EUR/MWh
+        excel_cost = result.capacity_charge_EUR + surcharge * result.excess_over_order_MWh
+        assert excel_cost == pytest.approx(cost, abs=1e-9), (case, step)
         average_ct_per_kwh = result.grid_fee_total_EUR / result.grid_energy_MWh / 10.0
         assert average_ct_per_kwh == pytest.approx(price, abs=1e-9), (case, step)
 

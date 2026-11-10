@@ -42,7 +42,9 @@ from flexi_mod.visualisation.dashboard.steam_charts import (
     atypical_grid_use,
     cashflow_waterfall,
     gas_only_benchmark,
+    grid_fee_kpis,
     heat_split,
+    ordered_capacity_duration,
     plant_sizing,
     system_kpis,
 )
@@ -510,6 +512,75 @@ def test_atypical_grid_use_needs_tiers_and_draws_high_load_bands() -> None:
     figure = atypical_grid_use(with_tiers)
     assert figure is not None and len(figure.layout.shapes) >= 1
     assert atypical_grid_use(without) is None
+
+
+def _order_summary() -> pd.DataFrame:
+    """Summary of a plant under the capacity-order grid fee (5 MW order, 20 % above it)."""
+    return pd.DataFrame(
+        {
+            "plant_name": ["plant_1"],
+            "grid_annual_energy_MWh": [100.0],
+            "grid_annual_peak_MW": [8.0],
+            "grid_billed_peak_MW": [5.0],
+            "grid_fee_total_EUR": [900.0],
+            "grid_fee_energy_charge_EUR": [300.0],
+            "grid_fee_capacity_charge_EUR": [500.0],
+            "grid_fee_levies_EUR": [100.0],
+            "grid_ordered_capacity_MW": [5.0],
+            "grid_excess_over_order_MWh": [20.0],
+        }
+    )
+
+
+def test_grid_fee_tiles_show_the_order_only_with_an_ordered_capacity() -> None:
+    dispatch = _steam_dispatch(days=3)
+    with_order = ChartContext(build_case("steam", dispatch, summary=_order_summary()))
+    plain = _order_summary().drop(
+        columns=["grid_ordered_capacity_MW", "grid_excess_over_order_MWh"]
+    )
+    without_order = ChartContext(build_case("steam", dispatch, summary=plain))
+
+    tiles = {label: (value, note) for label, value, note in grid_fee_kpis(with_order)}
+    assert tiles["Capacity charge"][1] == "ordered capacity 5.00 MW"
+    assert tiles["Energy above the order"] == ("20 MWh", "20% of grid energy, peak 8.0 MW")
+
+    plain_tiles = {label: note for label, _, note in grid_fee_kpis(without_order)}
+    assert plain_tiles["Capacity charge"] == "billed peak 5.00 MW"
+    assert "Energy above the order" not in plain_tiles
+
+
+def test_ordered_capacity_duration_draws_the_order_line_and_needs_an_order() -> None:
+    dispatch = _steam_dispatch(days=3)
+    with_order = ChartContext(build_case("steam", dispatch, summary=_order_summary()))
+    without_order = ChartContext(build_case("steam", dispatch))
+
+    figure = ordered_capacity_duration(with_order)
+
+    assert figure is not None
+    order_line = next(trace for trace in figure.data if trace.name.startswith("Ordered capacity"))
+    assert list(order_line.y) == [5.0, 5.0]
+    assert ordered_capacity_duration(without_order) is None
+
+
+def test_grid_fee_tab_describes_the_order_instead_of_the_tier_check() -> None:
+    dispatch = _steam_dispatch(days=3)
+    with_order = ChartContext(build_case("steam", dispatch, summary=_order_summary()))
+    plain = _order_summary().drop(
+        columns=["grid_ordered_capacity_MW", "grid_excess_over_order_MWh"]
+    )
+    without_order = ChartContext(build_case("steam", dispatch, summary=plain))
+
+    def blocks(ctx: ChartContext) -> dict[str, str]:
+        tab = build_tabs(ctx, only="gridfees")[0]
+        return {block.id: block.description for block in tab.blocks}
+
+    order_blocks = blocks(with_order)
+    assert "ordered_capacity_duration" in order_blocks
+    assert "tier check" not in order_blocks["grid_fee_breakdown"]
+
+    plain_blocks = blocks(without_order)
+    assert "ordered_capacity_duration" not in plain_blocks
+    assert "full-load-hour tier check" in plain_blocks["grid_fee_breakdown"]
 
 
 def test_comparison_cost_stack_and_volumes_for_steam_cases(tmp_path: Path) -> None:

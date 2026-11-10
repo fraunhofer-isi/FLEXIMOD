@@ -230,15 +230,32 @@ def grid_fee_kpis(ctx: ChartContext) -> list[tuple[str, str, str]]:
     def val(column: str) -> float:
         return ctx.case.summary_total(column, ctx.plant) or 0.0
 
+    # Capacity-order grid fee (de_agnes_enflex): the capacity charge is billed on the ordered
+    # capacity, and the energy charge has a price within and a price above the order.
+    ordered_mw = ctx.case.summary_total("grid_ordered_capacity_MW", ctx.plant)
+    if ordered_mw is None:
+        energy_note = tier_text(ctx)
+        capacity_note = f"billed peak {val('grid_billed_peak_MW'):,.2f} MW"
+    else:
+        energy_note = "within and above the order"
+        capacity_note = f"ordered capacity {ordered_mw:,.2f} MW"
+
     tiles = [
         ("Total grid fee", money(total), "settled ex-post"),
-        ("Energy charge", money(val("grid_fee_energy_charge_EUR")), tier_text(ctx)),
-        (
-            "Capacity charge",
-            money(val("grid_fee_capacity_charge_EUR")),
-            f"billed peak {val('grid_billed_peak_MW'):,.2f} MW",
-        ),
+        ("Energy charge", money(val("grid_fee_energy_charge_EUR")), energy_note),
+        ("Capacity charge", money(val("grid_fee_capacity_charge_EUR")), capacity_note),
     ]
+    if ordered_mw is not None:
+        excess_mwh = val("grid_excess_over_order_MWh")
+        grid_energy_mwh = val("grid_annual_energy_MWh")
+        share = excess_mwh / grid_energy_mwh if grid_energy_mwh else 0.0
+        tiles.append(
+            (
+                "Energy above the order",
+                f"{excess_mwh:,.0f} MWh",
+                f"{share:.0%} of grid energy, peak {val('grid_annual_peak_MW'):,.1f} MW",
+            )
+        )
     if val("grid_fee_special_network_use_EUR"):
         tiles.append(("Special network use", money(val("grid_fee_special_network_use_EUR")), ""))
     tiles.append(("Levies", money(val("grid_fee_levies_EUR")), ""))
@@ -617,6 +634,66 @@ def grid_peaks(ctx: ChartContext) -> go.Figure | None:
     _yaxis(fig, 1, "MW", range=[0, max(values + [1e-9]) * 1.2])
     _finish(ctx, fig)
     fig.update_layout(hovermode="closest", showlegend=False)
+    return fig
+
+
+def ordered_capacity_duration(ctx: ChartContext) -> go.Figure | None:
+    """Load duration curve against the ordered capacity (capacity-order grid fee).
+
+    The load of every timestep is sorted from the highest to the lowest. The dashed line is
+    the ordered capacity. The shaded area above it is the energy drawn above the order, which
+    pays the surcharge.
+    """
+
+    ordered_mw = ctx.case.summary_total("grid_ordered_capacity_MW", ctx.plant)
+    raw = ctx.raw
+    if ctx.sliced or ordered_mw is None or "actual_electricity_consumption_MWh" not in raw:
+        return None
+    load = np.sort(_mw(raw, "actual_electricity_consumption_MWh", ctx.case.step_hours).to_numpy())
+    load = load[::-1]
+    share_of_time = np.linspace(0, 100, len(load))
+    theme = ctx.theme
+    fig = _new_figure(ctx, height=380)
+    # The order line comes first so that the shaded trace can fill down to it.
+    fig.add_trace(
+        go.Scatter(
+            x=[0, 100],
+            y=[ordered_mw, ordered_mw],
+            mode="lines",
+            line={"color": theme.entity("cost"), "width": 2, "dash": "dash"},
+            name=f"Ordered capacity ({ordered_mw:,.1f} MW)",
+            hovertemplate="%{y:,.2f} MW<extra>Ordered capacity</extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=_f32(share_of_time),
+            y=_f32(np.maximum(load, ordered_mw)),
+            mode="lines",
+            line={"width": 0},
+            fill="tonexty",
+            fillcolor=with_alpha(theme.entity("cost"), 0.25),
+            name="Energy above the order",
+            hoverinfo="skip",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=_f32(share_of_time),
+            y=_f32(load),
+            mode="lines",
+            line={"color": theme.entity("electricity"), "width": 2},
+            name="Grid load",
+            hovertemplate="%{y:,.2f} MW<extra>exceeded %{x:.0f}% of the time</extra>",
+        )
+    )
+    fig.update_xaxes(title_text="Share of time the load is exceeded (%)")
+    _yaxis(fig, 1, "Grid load (MW)")
+    excess_mwh = ctx.case.summary_total("grid_excess_over_order_MWh", ctx.plant) or 0.0
+    grid_energy_mwh = ctx.case.summary_total("grid_annual_energy_MWh", ctx.plant) or 0.0
+    share = excess_mwh / grid_energy_mwh if grid_energy_mwh else 0.0
+    _finish(ctx, fig, f"{excess_mwh:,.0f} MWh above the order ({share:.0%} of grid energy)")
+    fig.update_layout(hovermode="closest")
     return fig
 
 
@@ -1050,6 +1127,7 @@ STEAM_BUILDERS: dict[str, FigureBuilder] = {
     "cashflow_waterfall": cashflow_waterfall,
     "sequential_profile": sequential_profile,
     "grid_peaks": grid_peaks,
+    "ordered_capacity_duration": ordered_capacity_duration,
     "atypical_grid_use": atypical_grid_use,
     "heat_heatmap": heat_heatmap,
     "demand_weekday_heatmap": demand_weekday_heatmap,
