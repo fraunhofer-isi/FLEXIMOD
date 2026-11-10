@@ -12,6 +12,11 @@ from conftest import case_config_text
 from flexi_mod.config.case_config import CaseConfig, ConfigError
 from flexi_mod.data.data_loader import DataLoader
 from flexi_mod.plants.technologies import ThermalStorage
+from flexi_mod.regulations import (
+    EnflexAgnesGridFeeRegulation,
+    GermanGridFeeRegulation,
+    build_grid_fee_regulation,
+)
 from flexi_mod.simulation.simulation_runner import _carried_soc, _decision_windows
 
 CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_DA_ID_buy"
@@ -462,3 +467,28 @@ def test_agnes_example_case_enables_three_markets_and_defines_intraday() -> None
     ]
     assert config.enabled_markets == ["afrr_capacity", "day_ahead", "afrr_energy"]
     assert config.market_signal("intraday_continuous", "price") == "DE_ID3_price"
+
+
+@pytest.mark.parametrize(
+    ("scenario", "regulation_name", "regulation_class"),
+    [
+        ("DE_ENFLEX_2025", "de_atypical_grid_use", GermanGridFeeRegulation),
+        ("DE_ENFLEX_2030", "de_agnes_enflex", EnflexAgnesGridFeeRegulation),
+        ("DE_ENFLEX_2035", "de_agnes_enflex", EnflexAgnesGridFeeRegulation),
+    ],
+)
+def test_enflex_scenarios_name_a_regulation_that_accepts_their_charges(
+    scenario: str, regulation_name: str, regulation_class: type
+) -> None:
+    """Each scenario folder: the named regulation is built from the folder's own charges."""
+    case_dir = CASE_DIR.parent / scenario
+    config = CaseConfig.from_case_dir(case_dir)
+    loader = DataLoader(config, input_dir=case_dir)
+    charges = loader.load_additional_charges(loader.load_plants())["plant_1"]
+
+    regulation = build_grid_fee_regulation(config.grid_fee_regulation, charges)
+
+    assert config.grid_fee_regulation == regulation_name
+    assert isinstance(regulation, regulation_class)
+    assert config.timestep_minutes == 60
+    assert config.enabled_markets == ["day_ahead"]
