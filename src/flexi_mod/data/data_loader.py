@@ -292,11 +292,11 @@ class DataLoader:
             raise DataValidationError("additional_charges.csv contains no charge rows")
 
         units = charges["unit"].astype(str).str.strip()
-        allowed_units = {"EUR/MWh", "EUR/MW.a"}
+        allowed_units = {"EUR/MWh", "EUR/MW.a", "MW"}
         invalid_units = sorted(set(units) - allowed_units)
         if invalid_units:
             raise DataValidationError(
-                "additional_charges.csv supports units 'EUR/MWh' and 'EUR/MW.a'; found: "
+                "additional_charges.csv supports units 'EUR/MWh', 'EUR/MW.a' and 'MW'; found: "
                 + ", ".join(invalid_units)
             )
 

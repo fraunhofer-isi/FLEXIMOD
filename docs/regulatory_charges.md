@@ -51,8 +51,9 @@ cases:
 | `additional_charges.csv` | **Static** charges — one fixed value each | `grid_capacity_charge,EUR/MW.a,19629` |
 | `forecasts_df.csv` | **Dynamic** charges — one value per 15-min time slot | `grid_energy_charge` column |
 
-Only two units are accepted in `additional_charges.csv`: **`EUR/MWh`** (per-energy)
-and **`EUR/MW.a`** (per-peak-power, per year).
+Only three units are accepted in `additional_charges.csv`: **`EUR/MWh`** (per-energy),
+**`EUR/MW.a`** (per-power, per year) and **`MW`** (a power value, for example the ordered
+grid capacity of a capacity-order design).
 
 ## Static vs. dynamic — the quick rule
 
