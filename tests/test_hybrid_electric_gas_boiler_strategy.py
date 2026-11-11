@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +13,7 @@ from flexi_mod.config.case_config import CaseConfig, ConfigError
 from flexi_mod.plants.factory import build_plants
 from flexi_mod.plants.steam_generation_plant import SteamGenerationPlant
 from flexi_mod.regulations import GermanGridFeeRegulation, SpanishGridFeeRegulation
+from flexi_mod.simulation.simulation_runner import OutputOptions, SimulationRunner
 from flexi_mod.strategies import build_strategy
 from flexi_mod.strategies.hybrid_electric_gas_boiler_strategy import (
     HybridElectricGasBoilerStrategy,
@@ -21,6 +23,7 @@ from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 ETES_CASE_DIR = (
     Path(__file__).resolve().parents[1] / "data" / "input" / "hybrid_ETES_DA_ID_aFRR_energy"
 )
+ENFLEX_CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "DE_ENFLEX_2030"
 
 
 def test_direct_strategy_uses_full_gas_and_co2_benchmark(tmp_path: Path) -> None:
@@ -58,8 +61,90 @@ def test_direct_strategy_rejects_blank_co2_price(tmp_path: Path) -> None:
     forecasts = _forecasts()
     forecasts["co2_price"] = float("nan")
 
-    with pytest.raises(ValueError, match="blank cells are not zero"):
+    with pytest.raises(ValueError, match="partly filled column are not zero"):
         strategy.calculate_gas_based_heat_cost(plant, forecasts)
+
+
+def test_empty_co2_price_column_is_used_as_zero(tmp_path: Path) -> None:
+    config = _write_config(tmp_path)
+    plant = _direct_plant()
+    strategy = HybridElectricGasBoilerStrategy(config)
+    forecasts = _forecasts()
+    forecasts["co2_price"] = float("nan")
+
+    prepared, problem = strategy.use_zero_for_blank_co2_price(forecasts)
+
+    assert problem == "empty"
+    assert prepared["co2_price"].eq(0.0).all()
+    assert forecasts["co2_price"].isna().all()  # the input is not changed
+    benchmark = strategy.calculate_gas_based_heat_cost(plant, prepared)
+    assert benchmark.to_numpy() == pytest.approx([100.0] * len(forecasts))  # 80 / 0.8
+
+
+def test_partly_blank_or_filled_co2_price_is_left_alone(tmp_path: Path) -> None:
+    strategy = HybridElectricGasBoilerStrategy(_write_config(tmp_path))
+    partly_blank = _forecasts()
+    partly_blank.loc[partly_blank.index[0], "co2_price"] = float("nan")
+    filled = _forecasts()
+
+    for forecasts in (partly_blank, filled):
+        prepared, problem = strategy.use_zero_for_blank_co2_price(forecasts)
+        assert problem is None
+        assert prepared["co2_price"].equals(forecasts["co2_price"])
+
+
+def test_missing_co2_price_column_is_added_as_zero(tmp_path: Path) -> None:
+    strategy = HybridElectricGasBoilerStrategy(_write_config(tmp_path))
+    forecasts = _forecasts().drop(columns="co2_price")
+
+    prepared, problem = strategy.use_zero_for_blank_co2_price(forecasts)
+
+    assert problem == "missing"
+    assert prepared["co2_price"].eq(0.0).all()
+    assert "co2_price" not in forecasts.columns  # the input is not changed
+
+
+@pytest.mark.parametrize("problem", ["empty", "missing"])
+def test_direct_case_runs_with_a_blank_co2_price_column(tmp_path: Path, problem: str) -> None:
+    """An empty or missing co2_price column runs as 0 EUR/t and warns about it."""
+    case_dir = tmp_path / "enflex_direct"
+    shutil.copytree(ENFLEX_CASE_DIR, case_dir)
+    plants = pd.read_csv(case_dir / "plants.csv")
+    plants = plants[plants["technology"] == "boiler"].copy()
+    plants.loc[:, "max_power"] = 6.0
+    electric_boiler = plants.iloc[0].copy()
+    electric_boiler["technology"] = "electric_boiler"
+    electric_boiler["fuel_type"] = "electricity"
+    electric_boiler["max_power"] = 5.0
+    electric_boiler["efficiency"] = 0.95
+    electric_boiler["gas_emissions_factor_kg_per_mwh"] = float("nan")
+    pd.concat([pd.DataFrame([electric_boiler]), plants]).to_csv(
+        case_dir / "plants.csv", index=False
+    )
+    config_path = case_dir / "config.yaml"
+    config = config_path.read_text(encoding="utf-8")
+    config = config.replace("name: hybrid_etes_gas", "name: hybrid_electric_gas_boiler", 1)
+    config = config.replace("simulation_end: 2025-12-31 23:00", "simulation_end: 2025-01-03 23:00")
+    config_path.write_text(config, encoding="utf-8")
+    forecasts = pd.read_csv(case_dir / "forecasts_df.csv")
+    assert forecasts["co2_price"].isna().all()  # the ENFLEX forecasts have an empty column
+    if problem == "missing":
+        forecasts.drop(columns="co2_price").to_csv(case_dir / "forecasts_df.csv", index=False)
+
+    runner = SimulationRunner(
+        case_dir=case_dir,
+        input_dir=case_dir,
+        output_dir=tmp_path / "output",
+        output_options=OutputOptions(create_plots=False),
+    )
+    with pytest.warns(UserWarning, match=f"Column 'co2_price' is {problem}"):
+        outputs = runner.run()
+
+    dispatch = pd.read_csv(outputs["dispatch_results"])
+    assert len(dispatch) == 72
+    assert dispatch["co2_price_EUR_per_t"].eq(0.0).all()
+    heat = dispatch["gas_heat_MWh"] + 0.95 * dispatch["actual_electricity_consumption_MWh"]
+    assert heat.to_numpy() == pytest.approx(dispatch["heat_demand_MWh"].to_numpy())
 
 
 def test_direct_strategy_runs_da_idc_and_free_afrr_energy(tmp_path: Path) -> None:

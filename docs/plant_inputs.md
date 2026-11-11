@@ -71,6 +71,13 @@ For the day-ahead stage, forecasts normally include the configured
 electricity-price column, `natural_gas_price`, and the heat-demand column.
 `co2_price` is only needed when the selected steam operating inputs use it.
 
+`co2_price` is optional. The `hybrid_electric_gas_boiler` strategy adds
+`co2_price x emission factor` to the gas price in its benchmark; the hybrid ETES strategy
+does not use CO2 prices at the moment. If the column is **missing** (both strategies) or
+**completely empty** (electric-boiler strategy), the model uses 0 EUR/t and prints a warning
+that names the column. A column with some numbers and some blank cells is treated as missing
+data and stops the run, so fill every row.
+
 An empty intraday-price value is the existing explicit exception: it is handled
 as a no-action interval and the steam strategy emits a data-quality warning.
 

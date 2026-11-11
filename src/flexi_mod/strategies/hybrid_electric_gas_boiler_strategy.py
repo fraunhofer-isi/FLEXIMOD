@@ -47,8 +47,8 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
     has no thermal storage and does not offer aFRR capacity.
     """
 
-    def required_forecast_columns(self) -> set[str]:
-        return super().required_forecast_columns() | {CO2_PRICE_SIGNAL}
+    # ``co2_price`` is not a required column: a missing or empty column is used as 0 EUR/t
+    # (see use_zero_for_blank_co2_price), and the runner warns about it.
 
     def prepare_day_ahead_instruction(
         self,
@@ -382,14 +382,38 @@ class HybridElectricGasBoilerStrategy(HybridETESGasStrategy):
             co2_price,
             CO2_PRICE_SIGNAL,
             zero_guidance=(
-                " If the natural-gas price already includes CO2 cost, populate "
-                "co2_price explicitly with numeric 0.0 values; blank cells are not zero."
+                " If the natural-gas price already includes CO2 cost, either leave the whole "
+                "co2_price column empty (no CO2 price) or fill every row with a number such "
+                "as 0.0; blank cells in a partly filled column are not zero."
             ),
         )
         fuel_cost = gas_price + co2_price * emission_factor
         benchmark = fuel_cost / gas_efficiency
         benchmark.name = "gas_based_heat_benchmark_EUR_per_MWh_th"
         return benchmark
+
+    @staticmethod
+    def use_zero_for_blank_co2_price(forecasts: pd.DataFrame) -> tuple[pd.DataFrame, str | None]:
+        """Read a missing or completely empty ``co2_price`` column as "no CO2 price" (0 EUR/t).
+
+        The gas benchmark of this strategy adds ``co2_price x emission factor`` to the gas
+        price. If the column is missing or has no number at all, it is set to 0.0. A column
+        with some numbers and some blank cells is left as it is: the blanks look like missing
+        data, and the strategy then stops with an error.
+
+        Returns the forecasts and what was wrong with the column: ``"missing"``,
+        ``"empty"`` or ``None`` (nothing changed).
+        """
+
+        if CO2_PRICE_SIGNAL not in forecasts.columns:
+            problem = "missing"
+        elif pd.to_numeric(forecasts[CO2_PRICE_SIGNAL], errors="coerce").isna().all():
+            problem = "empty"
+        else:
+            return forecasts, None
+        forecasts = forecasts.copy()
+        forecasts[CO2_PRICE_SIGNAL] = 0.0
+        return forecasts, problem
 
     def calculate_electricity_trading_benchmark(
         self,

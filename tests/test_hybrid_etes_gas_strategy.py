@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +19,8 @@ from flexi_mod.strategies.hybrid_etes_gas_strategy import (
     HybridETESGasStrategy,
     _round_bid_down_to_increment,
 )
+
+ENFLEX_CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "DE_ENFLEX_2030"
 
 
 @pytest.fixture
@@ -1506,6 +1509,25 @@ def test_afrr_capacity_reservation_and_day_ahead_load_stay_within_the_order(
         market["scheduled_electricity_procurement_MWh_el"] + market["afrr_capacity_reserved_MWh"]
         <= 1.0 * 0.25 + 1e-8
     ).all()
+
+
+def test_missing_co2_price_column_warns_and_the_etes_case_runs(tmp_path: Path) -> None:
+    """The ETES strategy does not use CO2 prices; a missing column is only reported."""
+    case_dir = tmp_path / "etes_without_co2_column"
+    shutil.copytree(ENFLEX_CASE_DIR, case_dir)
+    forecasts = pd.read_csv(case_dir / "forecasts_df.csv")
+    forecasts.drop(columns="co2_price").to_csv(case_dir / "forecasts_df.csv", index=False)
+    config_path = case_dir / "config.yaml"
+    config = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        config.replace("simulation_end: 2025-12-31 23:00", "simulation_end: 2025-01-03 23:00"),
+        encoding="utf-8",
+    )
+
+    with pytest.warns(UserWarning, match="Column 'co2_price' is missing"):
+        results = _run_case(case_dir, tmp_path)
+
+    assert len(results["dispatch"]) == 72
 
 
 def _run_case(case_dir: Path, tmp_path: Path) -> dict[str, pd.DataFrame]:
