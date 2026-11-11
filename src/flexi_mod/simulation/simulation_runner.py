@@ -36,6 +36,9 @@ from flexi_mod.simulation.market_stages import (
 )
 from flexi_mod.strategies import build_strategy
 from flexi_mod.strategies.building_strategy import BuildingStrategy
+from flexi_mod.strategies.hybrid_electric_gas_boiler_strategy import (
+    HybridElectricGasBoilerStrategy,
+)
 from flexi_mod.strategies.hybrid_etes_gas_strategy import HybridETESGasStrategy
 from flexi_mod.strategies.industrial_day_ahead_strategy import (
     IndustrialDayAheadCostMinimisationStrategy,
@@ -187,6 +190,19 @@ class SimulationRunner:
             extra_required_columns=extra_required_columns,
         )
         forecasts = self._load_case_forecasts(plant_inputs, required_columns)
+        # co2_price is optional. A missing (or, for the electric-boiler strategy, empty)
+        # column is used as 0 EUR/t, and the user is told.
+        co2_price_problem = None
+        if isinstance(strategy, HybridElectricGasBoilerStrategy):
+            forecasts, co2_price_problem = strategy.use_zero_for_blank_co2_price(forecasts)
+        elif "co2_price" not in forecasts.columns:
+            co2_price_problem = "missing"
+        if co2_price_problem is not None:
+            warnings.warn(
+                f"Column 'co2_price' is {co2_price_problem} in forecasts_df.csv and is used as "
+                "0 EUR/t (no CO2 price). Add the column with numbers to include a CO2 price.",
+                stacklevel=2,
+            )
         self._progress("Input data loaded")
         dispatch_results = self._run_market_sequence(plants, forecasts, strategy)
 

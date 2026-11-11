@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +19,8 @@ from flexi_mod.strategies.hybrid_etes_gas_strategy import (
     HybridETESGasStrategy,
     _round_bid_down_to_increment,
 )
+
+ENFLEX_CASE_DIR = Path(__file__).resolve().parents[1] / "data" / "input" / "DE_ENFLEX_2030"
 
 
 @pytest.fixture
