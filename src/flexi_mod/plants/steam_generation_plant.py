@@ -669,6 +669,16 @@ class SteamGenerationPlant(BasePlant):
             initialize=float(market_input.co2_emission_factor_t_per_mwh_fuel)
         )
         model.tax_rate = pyo.Param(initialize=float(market_input.tax_rate))
+
+        # Capacity-order grid fee (e.g. de_agnes_enflex): the energy one timestep may
+        # draw within the ordered grid capacity, and the extra price per MWh above it.
+        # Grid fees without an order do not define these two parameters.
+        ordered_capacity_mw = getattr(self.grid_fee_regulation, "ordered_capacity_mw", None)
+        if ordered_capacity_mw is not None:
+            model.order_limit_mwh = pyo.Param(initialize=ordered_capacity_mw * timestep_hours)
+            model.above_order_surcharge = pyo.Param(
+                initialize=self.grid_fee_regulation.excess_energy_surcharge_eur_per_mwh
+            )
         return [float(value) for value in heat_demand]
 
     def initialize_electricity_market(
@@ -733,6 +743,8 @@ class SteamGenerationPlant(BasePlant):
 
     def define_objective(self, model: pyo.ConcreteModel) -> None:
         """Add costs and the route-specific market settlement objective."""
+        if hasattr(model, "order_limit_mwh"):
+            _add_above_order_surcharge(model)
         _add_common_costs_and_objective(model, self.route_process)
 
     def _build_stage_model(
@@ -871,6 +883,20 @@ class ThermalStorageGasBoilerProcess(SteamRouteProcess):
                 <= max_charge_mwh
             ),
         )
+        if hasattr(model, "order_limit_mwh"):
+            # Capacity-order grid fee: where capacity is reserved, the planned load plus
+            # the reservation must stay within the ordered grid capacity, so that an
+            # activation never lands above it. Without a reservation the load may exceed
+            # the order (the surcharge in the objective prices that).
+            model.reserve_order_headroom = pyo.Constraint(
+                model.T,
+                rule=lambda mm, t: (
+                    storage.electric_charge_to_storage[t] + mm.reserved_capacity_mwh[t]
+                    <= mm.order_limit_mwh
+                    if pyo.value(mm.reserved_capacity_mwh[t]) > 1e-9
+                    else pyo.Constraint.Skip
+                ),
+            )
         model.reserve_storage_headroom = pyo.Constraint(
             model.T,
             rule=lambda mm, t: (
@@ -1149,6 +1175,47 @@ def resolve_steam_route_process(
 # --- Common economics -------------------------------------------------
 
 
+def _add_above_order_surcharge(model: pyo.ConcreteModel) -> None:
+    """Price the energy drawn above the ordered grid capacity (capacity-order grid fee).
+
+    In every timestep the plant draws ``actual_electricity_consumption_mwh`` from the
+    grid. The ordered capacity allows ``order_limit_mwh`` per timestep (ordered MW times
+    the timestep length). Energy above that limit costs ``above_order_surcharge`` EUR/MWh
+    on top of the price every MWh pays::
+
+        energy_above_order[t] >= consumption[t] - order_limit      (and >= 0)
+        above_order_surcharge_cost[t] = above_order_surcharge * energy_above_order[t]
+
+    Because the surcharge is not negative, the optimiser has no reason to let
+    ``energy_above_order`` exceed ``max(0, consumption - order_limit)``, so it equals
+    exactly the energy above the order. The model stays a linear programme.
+    """
+
+    model.energy_above_order_mwh = pyo.Var(model.T, within=pyo.NonNegativeReals)
+    model.energy_above_order_definition = pyo.Constraint(
+        model.T,
+        rule=lambda mm, t: (
+            mm.energy_above_order_mwh[t]
+            >= mm.actual_electricity_consumption_mwh[t] - mm.order_limit_mwh
+        ),
+    )
+    model.above_order_surcharge_cost = pyo.Expression(
+        model.T,
+        rule=lambda mm, t: mm.above_order_surcharge * mm.energy_above_order_mwh[t],
+    )
+
+
+def _additional_charges_cost(model: pyo.ConcreteModel, t: int):
+    """Charges on the grid electricity of one timestep, before tax (EUR)."""
+
+    # Every MWh pays the per-MWh charges (grid energy charge within the order + levies).
+    cost = model.actual_electricity_consumption_mwh[t] * model.additional_electricity_charge[t]
+    # With a capacity-order grid fee, the energy above the order pays a surcharge on top.
+    if hasattr(model, "above_order_surcharge_cost"):
+        cost = cost + model.above_order_surcharge_cost[t]
+    return cost
+
+
 def _add_common_costs_and_objective(
     model: pyo.ConcreteModel,
     route: SteamRouteProcess,
@@ -1156,9 +1223,7 @@ def _add_common_costs_and_objective(
     boiler = model.technology_blocks["boiler"]
     model.additional_electricity_charges_cost = pyo.Expression(
         model.T,
-        rule=lambda mm, t: (
-            mm.actual_electricity_consumption_mwh[t] * mm.additional_electricity_charge[t]
-        ),
+        rule=_additional_charges_cost,
     )
     model.electricity_cost = pyo.Expression(
         model.T,

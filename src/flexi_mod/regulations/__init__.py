@@ -6,6 +6,7 @@
 
 from flexi_mod.regulations.grid_fees import (
     GRID_ENERGY_CHARGE_COLUMN,
+    EnflexAgnesGridFeeRegulation,
     FrenchGridFeeRegulation,
     GermanGridFeeRegulation,
     GridFeeConfigError,
@@ -15,9 +16,12 @@ from flexi_mod.regulations.grid_fees import (
     SpanishGridFeeRegulation,
     build_grid_fee_regulation,
 )
+from flexi_mod.regulations.levies import ElectricityLevies, split_levies
 
 __all__ = [
     "GRID_ENERGY_CHARGE_COLUMN",
+    "ElectricityLevies",
+    "EnflexAgnesGridFeeRegulation",
     "FrenchGridFeeRegulation",
     "GermanGridFeeRegulation",
     "GridFeeConfigError",
@@ -26,4 +30,5 @@ __all__ = [
     "NullGridFeeRegulation",
     "SpanishGridFeeRegulation",
     "build_grid_fee_regulation",
+    "split_levies",
 ]

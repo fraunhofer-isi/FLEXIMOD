@@ -204,6 +204,39 @@ def test_additional_charges_are_loaded_only_when_enabled(tmp_path: Path) -> None
     assert plant_charges["value"].sum() == pytest.approx(12.1)
 
 
+def test_additional_charges_accept_a_power_value_and_reject_unknown_units(tmp_path: Path) -> None:
+    case_dir = _write_loader_case(tmp_path)
+    config_path = case_dir / "config.yaml"
+    config_data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config_data["cases"]["loader_case"]["additional_charges"] = True
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+    charges_path = case_dir / "additional_charges.csv"
+    charges_path.write_text(
+        "\n".join(
+            [
+                "component,unit,plant_1",
+                "grid_ordered_capacity,MW,5",
+                "grid_ordered_capacity_charge,EUR/MW.a,100000",
+                "grid_energy_charge_within_order,EUR/MWh,20",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    loader = DataLoader(CaseConfig.from_case_dir(case_dir), input_dir=case_dir)
+    plants = loader.load_plants()
+
+    frame = loader.load_additional_charges(plants)["plant_1"]
+    assert frame.set_index("component")["unit"].to_dict() == {
+        "grid_ordered_capacity": "MW",
+        "grid_ordered_capacity_charge": "EUR/MW.a",
+        "grid_energy_charge_within_order": "EUR/MWh",
+    }
+
+    charges_path.write_text("\n".join(["component,unit,plant_1", "x,kW,5"]), encoding="utf-8")
+    with pytest.raises(DataValidationError, match="supports units"):
+        loader.load_additional_charges(plants)
+
+
 def test_day_ahead_only_ignores_dst_irregularities_outside_case_range(tmp_path: Path) -> None:
     case_dir = _write_day_ahead_only_case(tmp_path)
     index = pd.date_range("2025-01-01 00:00", "2025-04-01 00:00", freq="15min")

@@ -717,6 +717,13 @@ def grid_fee_breakdown(ctx: ChartContext) -> go.Figure | None:
     fig.update_xaxes(title_text="EUR", tickformat=".3s", range=[0, max(amounts) * 1.22])
     total = sum(values.values())
     _finish(ctx, fig, f"Total {money(total)}")
+    if ctx.case.summary_total("grid_ordered_capacity_MW", ctx.plant) is not None:
+        # The page text of this chart speaks of the full-load-hour tier check, which a
+        # capacity-order grid fee does not have.
+        fig._ctx_description = (  # type: ignore[attr-defined]
+            "Grid fee components: the energy charge within and above the ordered capacity, "
+            "the capacity charge on the ordered capacity, and the levies."
+        )
     fig.update_layout(hovermode="closest", showlegend=False)
     return fig
 

@@ -17,6 +17,7 @@ The regulation is selected **by name** with `grid_fee_regulation:` in the case
 | `grid_fee_regulation` | Models |
 |---|---|
 | `de_atypical_grid_use` | Germany: full-load-hour tiers, special network use A/B, §19(2) StromNEV atypical grid use |
+| `de_agnes_enflex` | Germany, prospective AgNes design: capacity charge on an ordered capacity, energy charge within / above the order |
 | `es_peajes_6xtd` | Spain: 6.xTD access tariff (peajes) + IEE + capacity charge |
 | `fr_turpe` | France: TURPE + accise + fixed annual charges |
 
@@ -51,8 +52,9 @@ cases:
 | `additional_charges.csv` | **Static** charges — one fixed value each | `grid_capacity_charge,EUR/MW.a,19629` |
 | `forecasts_df.csv` | **Dynamic** charges — one value per 15-min time slot | `grid_energy_charge` column |
 
-Only two units are accepted in `additional_charges.csv`: **`EUR/MWh`** (per-energy)
-and **`EUR/MW.a`** (per-peak-power, per year).
+Only three units are accepted in `additional_charges.csv`: **`EUR/MWh`** (per-energy),
+**`EUR/MW.a`** (per-power, per year) and **`MW`** (a power value, for example the ordered
+grid capacity of a capacity-order design).
 
 ## Static vs. dynamic — the quick rule
 
@@ -96,9 +98,90 @@ All charges are **static**; Germany has **no** dynamic `grid_energy_charge` colu
 the plant's realized annual full-load hours (threshold 2500 h/a). Both halves of
 a tiered pair must be provided.
 
+**Levies are not grid fees.** The last four rows (CHP surcharge, offshore grid
+levy, concession fee, electricity tax) are fixed amounts per MWh set by law. They
+are the same under every German design, so they are not part of a grid-fee class:
+they are modelled once in
+[`src/flexi_mod/regulations/levies.py`](../src/flexi_mod/regulations/levies.py)
+(`ElectricityLevies`) and shared by `de_atypical_grid_use` and `de_agnes_enflex`.
+They stay in `additional_charges.csv`, under the same names as before. Every MWh
+drawn from the grid pays their sum, in the electricity price the plant sees and in
+the settlement after the run.
+
 **§19(2) atypical grid use:** if `capacity_peak_basis = high_load_window`, the
 capacity charge is billed on the peak **within the high-load windows** — so
 avoiding consumption in those windows lowers the bill.
+
+---
+
+## 🇩🇪 Germany, prospective AgNes design (`de_agnes_enflex`)
+
+Selected with `grid_fee_regulation: de_agnes_enflex`. The consumer orders a grid
+capacity and pays for it whether or not it is used; energy drawn above the order
+is charged at a higher rate. All charges are **static** (no dynamic column), and
+all are required except the levies.
+
+| Charge | Name | Unit | Applied | Notes |
+|---|---|---|---|---|
+| Ordered capacity (P_ordered) | `grid_ordered_capacity` | MW | scenario input | fixed for the whole run; a sweep is a set of cases that differ only here |
+| Capacity charge (KP) | `grid_ordered_capacity_charge` | EUR/MW.a | ex-post | `charge x ordered capacity`, independent of the realised load; annual, not prorated. 100 EUR/kW.a = 100000 EUR/MW.a |
+| Energy charge within the order (AP1) | `grid_energy_charge_within_order` | EUR/MWh | dispatch | marginal adder on every MWh |
+| Energy charge above the order (AP2) | `grid_energy_charge_above_order` | EUR/MWh | dispatch | given directly (not derived from a factor); must not be below AP1. The plant pays `AP2 - AP1` on top of AP1 for every MWh above the order |
+| Levies | `chp_surcharge`, `offshore_grid_levy`, `concession_fee`, `electricity_tax` | EUR/MWh | dispatch | as for `de_atypical_grid_use` |
+
+The order is judged **per timestep**: a step of `dt` hours is within the order up
+to `ordered capacity x dt` MWh and above it beyond that. There is no
+high-load-window block, no full-load-hour tier and no special network use.
+A charge given in a different unit than listed, a missing required charge or an
+unknown name raises an error.
+
+```csv
+component,unit,plant_1
+grid_ordered_capacity,MW,5
+grid_ordered_capacity_charge,EUR/MW.a,100000
+grid_energy_charge_within_order,EUR/MWh,20
+grid_energy_charge_above_order,EUR/MWh,60
+chp_surcharge,EUR/MWh,2.77
+offshore_grid_levy,EUR/MWh,8.16
+concession_fee,EUR/MWh,1.10
+electricity_tax,EUR/MWh,0.50
+```
+
+The summary additionally reports `grid_ordered_capacity_MW` and
+`grid_excess_over_order_MWh`. The settlement reproduces the cost curves of the
+study's capacity-order Excel (tested).
+
+The dashboard (tab "Grid fees") shows the ordered capacity on the capacity-charge card,
+a card "Energy above the order" with its share of the grid energy, and a chart "Load
+against the ordered capacity": the load duration curve with the order as a dashed line and
+the energy above it shaded.
+
+**How the dispatch sees it.** In every timestep the plant draws some energy from the
+grid. The ordered capacity allows `ordered capacity x timestep length` MWh per
+timestep. The plant objective charges the surcharge `AP2 - AP1` for each MWh above that
+limit (a linear term, so the model stays a linear programme), and every MWh pays
+`AP1 + levies`. The plant therefore weighs the cost of drawing more than ordered
+against its alternatives, such as gas. The capacity charge does not depend on the load,
+so it is settled after the run. The dispatch column
+`additional_electricity_charges_cost_EUR` contains `AP1 + levies` on all energy plus the
+surcharge on the energy above the order.
+
+**How the strategies handle the order.** The study uses day-ahead, aFRR energy and aFRR
+capacity (intraday is switched off).
+
+| Market | Rule |
+|---|---|
+| Day-ahead | The gate is a yes/no test on the price within the order (`AP1 + levies`). The plant optimisation then decides how much to buy, paying the surcharge above the order. |
+| aFRR energy | The charging headroom is split in two. The part below the order is offered if the aFRR price passes the normal price test. The part between the order and the maximum charging power is offered only if the price also passes the test with the surcharge added. |
+| aFRR capacity | A reservation cannot exceed the ordered capacity. In the plant model, wherever capacity is reserved, the day-ahead load plus the reservation must stay below the order, so an activation of reserved capacity never lands above it. |
+
+**Current limits.** The aFRR capacity rule is a fixed cap, not a price test: the plant
+never reserves capacity that would not fit below the order, even if the above-order
+price would still pay. The capacity price test does not include the effect of the order on
+day-ahead charging. This is an assumption of the study: once the capacity is ordered, an
+industrial operator keeps its load below the order most of the time. The intraday rules
+still use only the charging power, so they are not order-aware (intraday is not part of the
+study).
 
 ---
 
@@ -136,10 +219,12 @@ avoiding consumption in those windows lowers the bill.
 
 ## Adding or changing a static charge
 
-Each regulation's constructor **is** the list of supported static charges — the
-component names above are exactly the constructor parameters. The loader maps
-`additional_charges.csv` rows to those parameters and **rejects an unknown or
-misspelled name** with a clear error, e.g.:
+Each regulation's constructor **is** the list of its supported grid-fee charges —
+the component names above are exactly the constructor parameters. The German levies
+are the exception: they are listed in `levies.py` (`ElectricityLevies`) and taken
+out of the CSV first. The loader maps the other `additional_charges.csv` rows to the
+constructor parameters and **rejects an unknown or misspelled name** with a clear
+error, e.g.:
 
 ```
 GridFeeConfigError: Unknown grid-fee charge 'grid_capcity_charge_high' for

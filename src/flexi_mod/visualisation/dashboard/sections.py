@@ -260,7 +260,8 @@ class PlantDashboard:
                     Block(
                         id=chart.key,
                         title=chart.title,
-                        description=chart.description,
+                        # A builder can replace the text of the spec when it does not fit the case.
+                        description=getattr(figure, "_ctx_description", "") or chart.description,
                         figure=figure,
                         caption=getattr(figure, "_ctx_caption", "") or "",
                         wide=chart.wide,
@@ -428,6 +429,14 @@ class SteamDashboard(PlantDashboard):
                     "Capacity charge peak basis",
                     "Atypical grid use: the capacity charge is billed on the peak inside the "
                     "high-load windows, not on the annual peak.",
+                    wide=False,
+                ),
+                ChartSpec(
+                    "ordered_capacity_duration",
+                    "Load against the ordered capacity",
+                    "Capacity-order grid fee: the grid load of every timestep, sorted from the "
+                    "highest to the lowest. The dashed line is the ordered capacity; the shaded "
+                    "area above it is the energy that pays the surcharge.",
                     wide=False,
                 ),
                 ChartSpec(

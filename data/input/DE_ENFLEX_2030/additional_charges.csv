@@ -1,0 +1,9 @@
+component,unit,plant_1
+grid_ordered_capacity,MW,2.5
+grid_ordered_capacity_charge,EUR/MW.a,100000
+grid_energy_charge_within_order,EUR/MWh,20
+grid_energy_charge_above_order,EUR/MWh,60
+chp_surcharge,EUR/MWh,2.77
+offshore_grid_levy,EUR/MWh,8.16
+concession_fee,EUR/MWh,1.1
+electricity_tax,EUR/MWh,0.5
